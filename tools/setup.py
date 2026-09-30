@@ -16,6 +16,7 @@ for i, line in enumerate(lines, 1):
     print('   ', (r.stdout or r.stderr).strip()[-300:])
     if r.returncode != 0:
         sys.exit('Download failed. Check your internet connection and run setup again (it resumes).')
+subprocess.run([sys.executable, 'tools/gen_manifest_js.py'], check=True)
 print('packing assets ...', flush=True)
 subprocess.run([sys.executable, 'tools/build_assets.py'], check=True)
 print('\nDone! Open index.html (or run ./play.sh / play.bat) to play.')

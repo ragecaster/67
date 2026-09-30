@@ -6,20 +6,27 @@ Ohio, Fanum tax, rizz, sigma, mewing, aura, Labubu and Dubai chocolate.
 
 It runs in the browser with plain JS and a canvas. There is no build step.
 
-## Setup (once per computer)
+## Play online (GitHub Pages)
 
-The Terraria sprites, sounds and music aren't in this repo. Download them straight from the Terraria Wiki with:
+Host the repo with GitHub Pages: **Settings → Pages → Deploy from a branch → `main` / root**.
+Then anyone can play at `https://<you>.github.io/<repo>/`, and multiplayer works from there too.
+
+The Terraria sprites, sounds and music are **not** in this repo. On a player's first visit, their browser
+downloads the sprites and sounds (~5 MB) straight from the Terraria Wiki and caches them. After that it
+loads instantly. Music streams from the wiki.
+
+## Play locally / offline (optional)
 
 ```sh
 git clone <this repo> && cd terraria67
-python3 tools/setup.py        # needs python3 + curl, downloads ~80 MB
+python3 tools/setup.py        # downloads everything incl. music (~80 MB) for offline play; needs python3 + curl
 ```
 
 ## Play
 
 - **Mac/Linux:** `./play.sh` serves the game at http://localhost:6767 and opens it. It runs setup first if the assets are missing.
 - **Windows:** double-click `play.bat`.
-- Or just open `index.html` in Chrome, Edge or Firefox.
+- Or just open `index.html` in Chrome, Edge or Firefox. Without setup, it downloads the assets from the wiki on first launch.
 
 Click once on the title screen to enable audio. Browsers block sound until you interact.
 
@@ -86,8 +93,9 @@ Crafted items land on your cursor, as in Terraria.
 
 Terraria © Re-Logic. Tile, item, NPC and buff sprites, sound effects and music come from the
 [Terraria Wiki](https://terraria.fandom.com). They are **not** included in this repository.
-`tools/setup.py` downloads them to your computer (the list is in `tools/manifest.txt`) and packs them into
-`src/assets_data.js`, which is git-ignored. This is a personal, non-commercial fan project.
+Either the game downloads them into the player's browser on first launch (`src/assets_remote.js`),
+or `tools/setup.py` downloads them to your computer and packs them into `src/assets_data.js`, which is git-ignored.
+The list of files is in `tools/manifest.txt`. This is a personal, non-commercial fan project.
 The meme monsters are drawn procedurally in `src/art.js`.
 Multiplayer uses [PeerJS](https://peerjs.com) (MIT, vendored in `vendor/`).
 

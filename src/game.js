@@ -9,22 +9,25 @@ const G = {
   get players() { return [this.player, ...Object.values(this.remotes)]; },
 
   init() {
-    if (typeof ASSET_DATA === 'undefined') {
-      document.getElementById('loading').innerHTML = '<div>Assets not installed yet.</div><div style="font-size:15px;font-weight:normal">Run <code>python3 tools/setup.py</code> in the game folder once (it downloads the sprites &amp; music from the Terraria Wiki), then reload.</div>';
-      return;
-    }
     this.canvas = document.getElementById('game');
     this.ctx = this.canvas.getContext('2d');
     this.resize();
     window.addEventListener('resize', () => this.resize());
     Input.init(this.canvas);
-    const bar = document.getElementById('loadbar');
-    Promise.all([Save.open(), loadAssets(f => { if (bar) bar.style.width = Math.round(f * 100) + '%'; })]).then(() => {
-      Render.init();
-      document.getElementById('loading').style.display = 'none';
-      Menu.open();
-      this.state = 'menu';
-    });
+    const bar = document.getElementById('loadbar'), label = document.getElementById('loadtext');
+    const progress = f => { if (bar) bar.style.width = Math.round(f * 100) + '%'; };
+    prepareAssets(progress, msg => { if (label) label.textContent = msg; })
+      .then(() => { if (label) label.textContent = 'TERRARI67 — loading brainrot...'; progress(0); return Promise.all([Save.open(), loadAssets(progress)]); })
+      .then(() => {
+        Render.init();
+        document.getElementById('loading').style.display = 'none';
+        Menu.open();
+        this.state = 'menu';
+      })
+      .catch(e => {
+        console.error(e);
+        document.getElementById('loading').innerHTML = '<div>Could not download the game assets from the Terraria Wiki.</div><div style="font-size:15px;font-weight:normal;max-width:600px;text-align:center">Check your internet connection and reload. Playing offline? Run <code>python3 tools/setup.py</code> in the game folder once, then open index.html.<br>(' + e.message + ')</div>';
+      });
     let last = performance.now(), acc = 0, frames = 0, fpsT = last;
     const loop = now => {
       requestAnimationFrame(loop);

@@ -24,12 +24,16 @@ const Audio67 = {
     try {
       this.ctx = new (window.AudioContext || window.webkitAudioContext)();
       this.sfxGain = this.ctx.createGain(); this.sfxGain.gain.value = SETTINGS.sfx; this.sfxGain.connect(this.ctx.destination);
-      const keys = Object.keys(ASSET_DATA).filter(k => k.startsWith('sfx/'));
-      keys.forEach(k => {
-        const b64 = ASSET_DATA[k].split(',')[1];
-        const bin = atob(b64), buf = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
-        this.ctx.decodeAudioData(buf.buffer).then(ab => { this.buffers[k.slice(4)] = ab; }).catch(() => { });
+      const keys = Object.keys(ASSET_SRC).filter(k => k.startsWith('sfx/'));
+      keys.forEach(async k => {
+        const src = ASSET_SRC[k];
+        let buf;
+        if (typeof src === 'string') { // data URL from the local install
+          const bin = atob(src.split(',')[1]); const u8 = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+          buf = u8.buffer;
+        } else buf = await src.arrayBuffer(); // Blob downloaded from the wiki
+        this.ctx.decodeAudioData(buf).then(ab => { this.buffers[k.slice(4)] = ab; }).catch(() => { });
       });
       this.ready = true;
     } catch (e) { console.warn('audio unavailable', e); }
@@ -54,8 +58,8 @@ const Audio67 = {
   playMusic(track) {
     this.targetTrack = track;
     if (track && !this.music[track]) {
-      const a = new Audio('assets/music/Music-' + track + '.mp3');
-      a.loop = true; a.volume = 0; a.preload = 'auto';
+      const a = new Audio(MUSIC_SRC[track] || 'assets/music/Music-' + track + '.mp3');
+      a.loop = true; a.volume = 0; a.preload = 'auto'; a.referrerPolicy = 'no-referrer';
       this.music[track] = a;
     }
   },

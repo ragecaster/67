@@ -2,6 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<!-- the Terraria Wiki image server rejects hotlinked requests that carry a foreign Referer -->
+<meta name="referrer" content="no-referrer">
 <title>Terrari67</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
@@ -15,11 +17,13 @@
 <body>
 <canvas id="game"></canvas>
 <div id="loading">
-  <div>TERRARI67 — loading brainrot...</div>
+  <div id="loadtext">TERRARI67 — loading brainrot...</div>
   <div class="bar"><div id="loadbar"></div></div>
 </div>
 <script src="vendor/peerjs.min.js"></script>
-<script src="src/assets_data.js"></script>
+<script src="src/assets_data.js" onerror="/* not installed locally: assets are downloaded from the wiki instead */"></script>
+<script src="src/asset_manifest.js"></script>
+<script src="src/assets_remote.js"></script>
 <script src="src/util.js"></script>
 <script src="src/data_tiles.js"></script>
 <script src="src/data_items.js"></script>

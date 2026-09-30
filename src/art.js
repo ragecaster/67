@@ -5,13 +5,13 @@ const WALL_TEX = [];     // wall id -> canvas 48x48 (3x3 repeating)
 const SPRITE_CACHE = {}; // misc generated frames
 
 function loadAssets(onProgress) {
-  const keys = Object.keys(ASSET_DATA).filter(k => !k.startsWith('sfx/'));
+  const keys = Object.keys(ASSET_SRC).filter(k => !k.startsWith('sfx/'));
   let done = 0;
   return Promise.all(keys.map(k => new Promise(res => {
     const im = new Image();
     im.onload = () => { IMG[k] = im; done++; onProgress && onProgress(done / keys.length); res(); };
     im.onerror = () => { console.warn('failed image', k); done++; res(); };
-    im.src = ASSET_DATA[k];
+    im.src = ASSET_SRC[k];
   }))).then(() => {
     generateSprites();
     buildTileAtlases();
