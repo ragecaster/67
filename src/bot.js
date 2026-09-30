@@ -547,8 +547,10 @@ const Bot = {
     // a doorstep: clear two columns outside the door so the house can actually be left
     for (let y = fy - 4; y <= fy - 1; y++) for (let x = hx - 3; x <= hx - 1; x++) plan.push(['clear', x, y]);
     for (let x = hx; x <= hx + 10; x++) plan.push(['block', x, fy]);
-    for (let y = fy - 1; y >= fy - 6; y--) { if (!(y >= fy - 3)) plan.push(['block', hx, y]); plan.push(['block', hx + 10, y]); }
+    for (let y = fy - 1; y >= fy - 6; y--) { plan.push(['block', hx, y]); plan.push(['block', hx + 10, y]); }
     for (let x = hx; x <= hx + 10; x++) plan.push(['block', x, fy - 6]);
+    // the door opening is cut out of the finished wall (a block needs a neighbour to attach to)
+    for (let y = fy - 3; y <= fy - 1; y++) plan.push(['dig', hx, y]);
     for (let y = fy - 5; y <= fy - 1; y++) for (let x = hx + 1; x <= hx + 9; x++) plan.push(['wall', x, y]);
     for (let y = fy - 3; y <= fy - 1; y++) plan.push(['wall', hx, y]);
     plan.push(['furn', hx, fy - 1, 'wooden_door'], ['furn', hx + 3, fy - 1, 'work_bench'], ['furn', hx + 7, fy - 1, 'wooden_chair'], ['furn', hx + 5, fy - 4, 'torch']);
@@ -557,30 +559,38 @@ const Bot = {
     return {
       step() {
         const p = self.p();
-        // a work bench must be standing at the base before anything else can be crafted
-        if (!self.nearestTile(t => t === T.WORKBENCH, 10, 6, self.base)) {
-          if (self.has('work_bench')) { self.task = self.taskPlaceItem('work_bench', self.base); return; }
-          if (self.count('wood') < 10) { self.task = self.taskChop(self.count('wood') + 40); return; }
-          self.task = self.taskCraftAtBase(['work_bench', 1, 'place']); return;
-        }
-        // craft prerequisites first (at a bench once one exists)
-        for (const [id, n] of Object.entries(needs)) {
-          const placed = id === 'work_bench' ? !!self.nearestTile(t => t === T.WORKBENCH, 12, 8, self.base) : id === 'wooden_door' ? [0, 1, 2].some(j => TILES[w.tile(hx, fy - 1 - j)]?.door) : id === 'wooden_chair' ? w.tile(hx + 7, fy - 1) === T.CHAIR : false;
-          if (!placed && self.count(id) < (id === 'wood_wall' ? Math.min(n, 4) : 1) && !(id === 'wood_wall' && i >= plan.findIndex(q => q[0] === 'furn'))) {
-            if (id === 'work_bench') continue;
-            if (self.count('wood') < 12) { self.task = self.taskChop(self.count('wood') + 40); return; }
-            if (self.blocked(id)) continue;
-            self.task = self.taskCraftAtBase([id, id === 'wood_wall' ? 12 : 1]); return;
-          }
-        }
         while (i < plan.length && self.planStepDone(plan[i])) i++;
         if (i >= plan.length) { this.done = true; self.log('house finished'); return; }
+        // clearing needs no tools; everything after it needs a work bench standing at the base
+        if (plan[i][0] !== 'clear') {
+          if (!self.nearestTile(t => t === T.WORKBENCH, 10, 6, self.base)) {
+            if (self.has('work_bench')) { self.task = self.taskPlaceItem('work_bench', self.base); return; }
+            if (self.count('wood') < 10) { self.task = self.taskChop(self.count('wood') + 40); return; }
+            self.task = self.taskCraftAtBase(['work_bench', 1, 'place']); return;
+          }
+          // craft prerequisites first
+          for (const [id, n] of Object.entries(needs)) {
+            const placed = id === 'work_bench' ? !!self.nearestTile(t => t === T.WORKBENCH, 12, 8, self.base) : id === 'wooden_door' ? [0, 1, 2].some(j => TILES[w.tile(hx, fy - 1 - j)]?.door) : id === 'wooden_chair' ? w.tile(hx + 7, fy - 1) === T.CHAIR : false;
+            if (!placed && self.count(id) < (id === 'wood_wall' ? Math.min(n, 4) : 1) && !(id === 'wood_wall' && i >= plan.findIndex(q => q[0] === 'furn'))) {
+              if (id === 'work_bench') continue;
+              if (self.count('wood') < 12) { self.task = self.taskChop(self.count('wood') + 40); return; }
+              if (self.blocked(id)) continue;
+              self.task = self.taskCraftAtBase([id, id === 'wood_wall' ? 12 : 1]); return;
+            }
+          }
+        }
         const [op, x, y, item] = plan[i];
         self.goal = 'building a house (' + i + '/' + plan.length + ': ' + op + ' ' + (item || '') + ' @' + x + ',' + y + ' ' + (TILES[w.tile(x, y)]?.name || 'air') + ')';
         // stand inside the house footprint near the target
         const standX = clamp(x, hx + 2, hx + 8);
-        if (!p.inReach(x, y) || Math.abs(self.feet()[0] - standX) > 4) { const r = self.moveTo(standX, fy - 1, 1); if (r === 'fail') i++; return; }
-        if (op === 'clear') { self.dig(x, y); return; }
+        let standY = fy - 1; while (standY > fy - 4 && (w.solid(standX, standY) || w.solid(standX + 1, standY) || w.solid(standX, standY - 1))) standY--;
+        if (!p.inReach(x, y) || Math.abs(self.feet()[0] - standX) > 4) {
+          const r = self.moveTo(standX, standY, 1);
+          if (r === 'fail') { this.fails = (this.fails || 0) + 1; if (this.fails > 5) { this.fails = 0; self.log('house: skipping ' + op + ' ' + x + ',' + y + ' (unreachable)'); i++; } }
+          return;
+        }
+        this.fails = 0;
+        if (op === 'clear' || op === 'dig') { self.dig(x, y); return; }
         const id = op === 'block' ? 'wood' : op === 'wall' ? 'wood_wall' : item;
         const s = self.slotOf(it => it.id === id);
         if (s < 0) { if (id === 'wood') { self.task = self.taskChop(self.count('wood') + 30); } else self.task = self.taskCraftAtBase([id, 1]); return; }
@@ -588,7 +598,8 @@ const Bot = {
         self.selectSlot(s);
         if (op === 'block' && p.overlapsTile(x, y)) { self.hold(x > self.feet()[0] ? 'a' : 'd'); return; }
         self.aimTile(x, y); self.clickOnce();
-        if (++this.tries > 30) { this.tries = 0; i++; } else this.tries = this.tries || 1;
+        if (this.triesI !== i) { this.triesI = i; this.tries = 0; }
+        if (++this.tries > 120) { this.tries = 0; self.log('house: giving up on ' + op + ' ' + x + ',' + y); i++; }
       },
     };
   },
@@ -596,6 +607,7 @@ const Bot = {
     const w = G.world, t = w.tile(x, y), td = TILES[t];
     if (this.badTiles && this.badTiles.has(x + ',' + y)) return true;
     if (op === 'clear') return !t || (td && (td.cut || td.door || td.torch || td.chair || t === T.WORKBENCH || t === T.WOOD));
+    if (op === 'dig') return !t || (td && td.door);
     if (op === 'block') return td && td.solid && !td.door ? true : (td && td.door);
     if (op === 'wall') return w.wall(x, y) !== 0 || (td && td.door);
     if (op === 'furn') { const want = ITEMS[item].place; return t === want || (want === T.DOOR_CLOSED && td && td.door) || [-1, 0, 1].some(d => w.tile(x + d, y) === want && want === T.WORKBENCH); }

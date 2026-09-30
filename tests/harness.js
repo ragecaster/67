@@ -1,4 +1,7 @@
 const { chromium } = require('playwright');
+const fs = require('fs');
+if (!process.env.CHROME_PATH) { const p = '/opt/pw-browsers/chromium-1194/chrome-linux/chrome'; if (fs.existsSync(p)) process.env.CHROME_PATH = p; }
+if (!fs.existsSync(require('path').resolve(__dirname, '..', 'src', 'assets_data.js'))) process.env.NO_ASSETS = '1';
 module.exports = async function run(fn, opts = {}) {
   const browser = await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {});
   const page = await browser.newPage({ viewport: { width: opts.w || 1440, height: opts.h || 900 } });
