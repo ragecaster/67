@@ -5,6 +5,12 @@ module.exports = async function run(fn, opts = {}) {
   const errors = [];
   page.on('console', m => { if (m.type() === 'error') errors.push('console: ' + m.text()); });
   page.on('pageerror', e => errors.push('PAGEERROR: ' + e.message + '\n' + (e.stack || '').split('\n').slice(0, 4).join('\n')));
+  if (process.env.NO_ASSETS) await page.addInitScript(() => {
+    const c = document.createElement('canvas'); c.width = c.height = 64; const x = c.getContext('2d'); x.fillStyle = '#888'; x.fillRect(0, 0, 64, 64);
+    const url = c.toDataURL();
+    const keys = () => { const o = []; for (const [f, names] of Object.entries(ASSET_MANIFEST)) if (f !== 'music' && f !== 'sfx') for (const n of names) o.push(f + '/' + n.replace(/\.[^.]+$/, '')); return o; };
+    window.ASSET_DATA = new Proxy({}, { ownKeys: keys, getOwnPropertyDescriptor: () => ({ value: url, enumerable: true, configurable: true }), get: () => url });
+  });
   await page.goto('file://' + require('path').resolve(__dirname, '..', 'index.html'));
   await page.waitForFunction(() => typeof G !== 'undefined' && G.state === 'menu', null, { timeout: 30000 });
   await page.evaluate(() => { SETTINGS.tts = false; SETTINGS.sfx = 0; SETTINGS.music = 0; window.speechSynthesis && (window.speechSynthesis.speak = () => {}); });
