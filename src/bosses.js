@@ -39,6 +39,7 @@ function bossDefeated(n, key) {
   G.announce(n.name + ' has been defeated! ' + pick(['W.', 'Ratio.', 'Mogged.', 'GG no re.', 'Aura +10000.']), '#af4bff');
   G.achieve(key);
   G.chatReact();
+  if (G.player) G.player.addAura(25);
   if (key === 'wall_of_flesh') {
     w.flags.hardmode = true;
     G.announce('The spirits of Skibidi and Sigma have been released.', '#32ff82');

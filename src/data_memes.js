@@ -68,6 +68,8 @@ const MEME = {
         "Six seven? Six seven. SIX SEVEN! ...Sorry. It's a condition.",
         "Your aura is looking kinda mid today. Go farm some.",
         "Life Crystals — I mean Aura Crystals — are pink and glowing, hidden in caves. Smash 'em with a pickaxe.",
+        "There's a glitched purple-and-black block somewhere on the surface. Touch it and you noclip into the Backrooms. Level 0. Bring Almond Water. Or find some.",
+        "Fill your aura meter by cooking enemies and hitting 67s. When it's full you're literally him. Not figuratively. Literally.",
       ],
     },
     merchant: {
@@ -139,6 +141,9 @@ const MEME = {
     home: ['No Place Like Home', 'Have a town NPC move into a house.'],
     cooked: ['Cooked', 'Die for the first time. It happens to the best of us.'],
     labubu: ['Secret Pull', 'Summon a Labubu.'],
+    noclip: ['Noclipped Out of Reality', 'Enter the Backrooms. Level 0. Don\'t touch the carpet.'],
+    exit: ['There Is An Exit?', 'Find the EXIT sign in the Backrooms.'],
+    him: ['Literally Him', 'Fill your aura meter and enter HIM MODE.'],
   },
   events: {
     bloodMoon: 'The Ohio Moon is rising... Only in Ohio.',
@@ -161,6 +166,7 @@ const MEME = {
     tralalero: ['tralalero tralala!', 'porco dio porco allah'],
     bombardiro: ['BOMBARDIRO CROCODILO!', 'bombardiro!!'],
     ballerina: ['mi mi mi!', 'ballerina cappuccina!'],
+    partygoer: ['hey =)', 'wanna party? =)', 'come to the party =)', 'why are you leaving =)', '=)'],
   },
   chatReactions: ['chat is this real', 'W', 'L', 'ratio', 'no way', 'he is so him', 'aura +1000', 'cooked', 'bro is locked in', 'bussin', 'sheesh', 'glazing fr', 'that was sigma'],
 };

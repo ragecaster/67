@@ -84,3 +84,23 @@ function wrapText(ctx, text, maxW) {
   }
   return out;
 }
+
+// color helpers for the character creator
+function normHex(hex) { hex = String(hex || '#000'); return hex.length === 4 ? '#' + hex[1] + hex[1] + hex[2] + hex[2] + hex[3] + hex[3] : hex; }
+function hexToHsl(hex) {
+  const n = parseInt(normHex(hex).slice(1), 16);
+  let r = (n >> 16) / 255, g = ((n >> 8) & 255) / 255, b = (n & 255) / 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+  let h = 0, s = 0; const l = (mx + mn) / 2;
+  if (mx !== mn) {
+    const d = mx - mn;
+    s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+    h = mx === r ? (g - b) / d + (g < b ? 6 : 0) : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+    h /= 6;
+  }
+  return [h, s, l];
+}
+function hslToHex(h, s, l) {
+  const f = n => { const k = (n + h * 12) % 12, a = s * Math.min(l, 1 - l); return Math.round(255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)))); };
+  return '#' + [f(0), f(8), f(4)].map(v => v.toString(16).padStart(2, '0')).join('');
+}

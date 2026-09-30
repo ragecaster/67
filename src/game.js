@@ -23,6 +23,8 @@ const G = {
         document.getElementById('loading').style.display = 'none';
         Menu.open();
         this.state = 'menu';
+        const qs = new URLSearchParams(location.search);
+        if (qs.has('bot')) Menu.startBotRun(qs.get('seed') || 'bot67', parseInt(qs.get('turbo') || '8'), qs.get('size') || 'small');
       })
       .catch(e => {
         console.error(e);
@@ -32,6 +34,18 @@ const G = {
     const loop = now => {
       requestAnimationFrame(loop);
       acc += Math.min(100, now - last); last = now;
+      if (Bot.active && this.state === 'play') {
+        // turbo: run several game ticks per frame; draw when the bot needs the UI (clicks) and at the end
+        for (let s = 0; s < Bot.turbo; s++) {
+          Bot.wantsDraw = false;
+          this.update();
+          if (Bot.wantsDraw || s === Bot.turbo - 1) this.draw();
+          Input.endFrame();
+        }
+        acc = 0; frames++;
+        if (now - fpsT > 1000) { this.fps = frames; frames = 0; fpsT = now; }
+        return;
+      }
       let steps = 0;
       while (acc >= 1000 / 60 && steps < 4) {
         this.update(); acc -= 1000 / 60;
@@ -233,6 +247,7 @@ const G = {
     for (let i = 0; i < 50; i++) spawnDust(x, y, pick(['#ffd23a', '#ff4d6d', '#4dd2ff', '#7dff6b', '#ffffff']), 1, 4, { up: 2, life: 70, size: 3 });
     this.achieve('six_seven');
     this.player.stats.sixSevens++;
+    this.player.addAura(15);
     this.dropItem(x, y, 'copper_coin', 67);
     this.chatReact();
   },
@@ -335,11 +350,53 @@ const G = {
     return null;
   },
 
+  // ---------- the backrooms ----------
+  inBackrooms(e) {
+    const b = this.world && this.world.backrooms;
+    if (!b) return false;
+    const tx = e.cx / TS, ty = e.cy / TS;
+    return tx >= b.x0 && tx < b.x0 + b.w && ty >= b.y0 && ty < b.y0 + b.h;
+  },
+  checkNoclip(p) {
+    const w = this.world, b = w.backrooms;
+    if (p.dead || !b) return;
+    const x0 = Math.floor(p.x / TS), x1 = Math.floor((p.x + p.w - 1) / TS), y0 = Math.floor(p.y / TS), y1 = Math.floor((p.y + p.h - 1) / TS);
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+      const t = w.tile(x, y);
+      if (t === T.NOCLIP) {
+        glitchBurst(p);
+        p.x = b.entry[0] * TS; p.y = (b.entry[1] + 1) * TS - p.h; p.vx = 0; p.vy = 0; p.fallStart = null; p.hook = null;
+        this.snapCamera();
+        this.chat('You noclipped out of reality. Welcome to Level 0.', '#e6d487');
+        this.chat('Find the EXIT sign. Drink Almond Water. Avoid the Smilers. =)', '#e6d487');
+        this.achieve('noclip'); speak('you noclipped out of reality', 1, 0.8);
+        return;
+      }
+      if (t === T.EXIT_SIGN) {
+        glitchBurst(p);
+        p.spawn(w); p.life = Math.max(p.life, 1);
+        this.snapCamera();
+        this.chat('You found the EXIT. That is... very rare. Welcome back to reality (Ohio).', '#3aff6a');
+        this.achieve('exit');
+        return;
+      }
+    }
+  },
+  updateBackroomsAmbience() {
+    const inside = this.inBackrooms(this.player);
+    if (inside !== this.wasInBackrooms) {
+      this.wasInBackrooms = inside;
+      if (inside) Hum.start(); else Hum.stop();
+    }
+    if (inside && Math.random() < 1 / 2400) this.chat(pick(['You hear the fluorescent lights buzzing.', 'The carpet is moist. Why is it moist.', 'It feels like someone is watching you. =)', 'You have been walking for hours. Or minutes. Hard to tell.', 'The wallpaper is the same yellow. Always the same yellow.', 'Distant footsteps. Not yours.']), '#e6d487');
+  },
+
   // ---------- update ----------
   update() {
     if (this.state === 'menu' || this.state === 'gen') { Menu.update(); Audio67.updateMusic(); return; }
     if (this.state !== 'play') return;
     const w = this.world, p = this.player;
+    if (Bot.active) Bot.tick();
     this.handleKeys();
     // single player pauses in menus; multiplayer never pauses (like Terraria)
     const paused = !Net.active && (UI.settingsOpen || this.victory);
@@ -349,6 +406,9 @@ const G = {
     this.glows = [];
     this.updateTime();
     p.update(w);
+    this.checkNoclip(p);
+    this.updateBackroomsAmbience();
+    if (this.himBanner > 0) this.himBanner--;
     Net.updateRemotes();
     if (client) Net.clientNPCs(w, p);
     else for (const n of this.npcs) n.update(w);
@@ -416,6 +476,8 @@ const G = {
     if (Input.hit('=') || Input.hit('+')) { SETTINGS.zoom = clamp((SETTINGS.zoom || this.zoom) + 0.25, 1, 3); saveSettings(); this.resize(); }
     if (Input.hit('-')) { SETTINGS.zoom = clamp((SETTINGS.zoom || this.zoom) - 0.25, 1, 3); saveSettings(); this.resize(); }
     if (Input.hit('F5')) this.save();
+    if (Input.hit('F8')) { if (Bot.active) Bot.stop(); else Bot.start(); }
+    if (Input.hit('F9') && Bot.active) { const sp = [1, 2, 4, 8, 16, 32, 64]; Bot.turbo = sp[(sp.indexOf(Bot.turbo) + 1) % sp.length]; }
     // right-click interactions
     if (Input.rClick && !UI.mouseOverUI && !WorldMap.open && !p.dead) this.interact();
   },
@@ -545,7 +607,7 @@ const G = {
       const type = this.chooseSpawn(tx, ty, zone, night, blood, p);
       if (!type) return;
       const d = NPC_TYPES[type];
-      const flying = ['flyer', 'bat', 'demon', 'harpy', 'bombardiro'].includes(d.ai);
+      const flying = ['flyer', 'bat', 'demon', 'harpy', 'bombardiro', 'smiler'].includes(d.ai);
       if (flying) {
         if (w.solid(tx, ty) || w.solid(tx + 1, ty) || w.liq(tx, ty) > 0) continue;
         if (type === 'bombardiro') { this.spawnNPC(type, tx * TS, (pty - 18) * TS).ai[1] = -side; return; }
@@ -562,6 +624,7 @@ const G = {
         if (type === 'shark' ? !water : (w.liq(tx, y) > 0)) ok = false;
         const wl = WALLS[w.wall(tx, y)];
         if (wl && !wl.natural) ok = false;
+        if (type !== 'partygoer' && w.wall(tx, y) === W.WALLPAPER) ok = false;
         if (!ok) continue;
         this.spawnNPC(type, tx * TS + 8, (y + 1) * TS);
         return;
@@ -570,6 +633,8 @@ const G = {
   },
   chooseSpawn(tx, ty, zone, night, blood, p) {
     const w = this.world;
+    const b = w.backrooms;
+    if (b && tx >= b.x0 && tx < b.x0 + b.w && ty >= b.y0 && ty < b.y0 + b.h) return Math.random() < 0.55 ? 'smiler' : 'partygoer';
     const biome = this.biomeAt(tx);
     const r = Math.random();
     if (zone === 'surface') {
@@ -642,7 +707,8 @@ const G = {
     const boss = this.npcs.find(n => n.boss);
     let track;
     const ty = p.cy / TS, biome = this.biomeAt(Math.floor(p.cx / TS));
-    if (boss) track = boss.def.music;
+    if (this.inBackrooms(p) && !boss) track = null;
+    else if (boss) track = boss.def.music;
     else if (ty >= w.hellLayer - 10) track = 'Underworld';
     else if (ty >= w.worldSurface) track = biome === 'brainrot' ? 'Underground_Corruption' : 'Underground';
     else if (w.flags.bloodMoon && !w.dayTime) track = 'Eerie';
@@ -684,6 +750,8 @@ const G = {
     const held = p.heldItem();
     if (held && held.holdLight && !p.dead) dyn.push({ x: p.cx + p.dir * 8, y: p.y + 10, r: held.holdLight[0], g: held.holdLight[1], b: held.holdLight[2] });
     if (p.buffs.aura) dyn.push({ x: p.cx, y: p.cy, r: 0.5, g: 0.45, b: 0.15 });
+    if (p.buffs.him) dyn.push({ x: p.cx, y: p.cy, r: 1, g: 0.85, b: 0.35 });
+    for (const n of this.npcs) if (n.def.glow) dyn.push({ x: n.cx, y: n.cy, r: n.def.glow[0], g: n.def.glow[1], b: n.def.glow[2] });
     for (const n of this.npcs) if (n.type === 'lava_slime' || n.type === 'fire_imp' || n.type === 'hellbat' || n.buffs.on_fire) dyn.push({ x: n.cx, y: n.cy, r: 0.8, g: 0.4, b: 0.1 });
     if (p.buffs.on_fire) dyn.push({ x: p.cx, y: p.cy, r: 0.8, g: 0.4, b: 0.1 });
     // the player always has a faint light so they can see themselves (Terraria does this too)
@@ -702,6 +770,26 @@ const G = {
         const ax = clamp(vw / 2 + Math.cos(a) * vw, 30, vw - 30), ay = clamp(vh / 2 + Math.sin(a) * vh, 60, vh - 60);
         txt(ctx, rp.name + ' ' + Math.round(dist(rp.cx, rp.cy, p.cx, p.cy) / TS) + "'", ax, ay, '#9ad7ff', 11, 'center');
       }
+    }
+    // the backrooms: mono-yellow haze + VHS grain
+    if (this.inBackrooms(p)) {
+      ctx.fillStyle = 'rgba(230,200,90,0.10)'; ctx.fillRect(0, 0, vw, vh);
+      ctx.fillStyle = 'rgba(0,0,0,0.06)';
+      for (let y = (this.tick * 2) % 4; y < vh; y += 4) ctx.fillRect(0, y, vw, 1);
+      for (let i = 0; i < 40; i++) { ctx.fillStyle = Math.random() < 0.5 ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.1)'; ctx.fillRect(Math.random() * vw, Math.random() * vh, 2, 2); }
+      if (this.tick % 240 < 3) { ctx.fillStyle = 'rgba(255,255,255,0.05)'; ctx.fillRect(0, randRange(0, vh), vw, randRange(4, 30)); }
+    }
+    // HIM MODE: golden vignette + banner
+    if (p.buffs.him) {
+      const g = ctx.createRadialGradient(vw / 2, vh / 2, Math.min(vw, vh) * 0.35, vw / 2, vh / 2, Math.max(vw, vh) * 0.75);
+      g.addColorStop(0, 'rgba(255,210,58,0)'); g.addColorStop(1, `rgba(255,190,40,${0.22 + Math.sin(this.tick * 0.1) * 0.06})`);
+      ctx.fillStyle = g; ctx.fillRect(0, 0, vw, vh);
+    }
+    if (this.himBanner > 0) {
+      const a = Math.min(1, this.himBanner / 30), s = 1 + Math.max(0, (this.himBanner - 150) / 30) * 0.6;
+      ctx.save(); ctx.globalAlpha = a; ctx.translate(vw / 2, vh * 0.3); ctx.scale(s, s); ctx.rotate(Math.sin(this.tick * 0.2) * 0.03);
+      txt(ctx, 'YOU ARE LITERALLY HIM RN', 0, 0, '#ffd23a', 40, 'center');
+      ctx.restore();
     }
     // blood moon tint
     if (w.flags.bloodMoon && !w.dayTime) { ctx.fillStyle = 'rgba(120,0,0,0.08)'; ctx.fillRect(0, 0, vw, vh); }

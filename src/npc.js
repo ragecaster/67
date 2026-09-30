@@ -30,8 +30,11 @@ const NPC_TYPES = {
   bombardiro: { name: 'Bombardiro Crocodilo', img: 'gen/bombardiro_0', frames: ['gen/bombardiro_0', 'gen/bombardiro_1'], w: 80, h: 36, life: 120, damage: 30, defense: 10, kb: 0.3, ai: 'bombardiro', value: 400, drops: [['bomb', 1, 3, 8], ['starfury', 0.08, 1, 1]], chatter: 'bombardiro', noGravity: true, noTileCollide: true },
   servant: { name: 'Side-Eye Servant', img: 'npcs/Servant_of_Cthulhu', w: 20, h: 20, life: 8, damage: 12, defense: 0, kb: 1, ai: 'flyer', speed: 5, value: 0, drops: [['heart', 0.5, 1, 1]], rotate: true, noTileCollide: true },
   hungry: { name: 'The Hungry (Big Back)', img: 'npcs/The_Hungry', w: 30, h: 30, life: 240, damage: 30, defense: 10, kb: 0.2, ai: 'hungry', value: 0, drops: [['heart', 0.5, 1, 1]], noGravity: true, noTileCollide: true, lavaImmune: true, rotate: true },
+  // the backrooms
+  smiler: { name: 'Smiler', img: 'gen/smiler_0', frames: ['gen/smiler_0', 'gen/smiler_1'], w: 30, h: 30, life: 120, damage: 34, defense: 10, kb: 0.4, ai: 'smiler', speed: 2.2, value: 800, drops: [['almond_water', 0.5, 1, 2]], noTileCollide: true, glow: [0.35, 0.33, 0.25] },
+  partygoer: { name: 'Partygoer =)', img: 'gen/partygoer_0', frames: ['gen/partygoer_0', 'gen/partygoer_1'], w: 26, h: 50, life: 150, damage: 30, defense: 12, kb: 0.4, ai: 'fighter', speed: 2.6, value: 900, drops: [['almond_water', 0.35, 1, 1], ['liminal_blade', 0.04, 1, 1]], chatter: 'partygoer' },
   // critters
-  bunny: { name: 'Bunny (+1 aura)', img: 'items/Bunny', w: 18, h: 20, life: 5, damage: 0, defense: 0, kb: 1, ai: 'critter', value: 0, drops: [], friendly: true, critter: true },
+  bunny: { name: 'Bunny (+1 aura)', img: 'npcs/Bunny', w: 18, h: 20, life: 5, damage: 0, defense: 0, kb: 1, ai: 'critter', value: 0, drops: [], friendly: true, critter: true },
   bird: { name: 'Bird', img: 'npcs/Bird', w: 16, h: 14, life: 5, damage: 0, defense: 0, kb: 1, ai: 'critter', value: 0, drops: [], friendly: true, critter: true },
   labubu_pet: { name: 'Labubu', img: 'gen/labubu_0', frames: ['gen/labubu_0', 'gen/labubu_1'], w: 20, h: 24, life: 1, damage: 0, defense: 0, kb: 0, ai: 'pet', value: 0, drops: [], friendly: true, pet: true, dontTakeDamage: true },
   // town npcs (key must match MEME.npc)
@@ -67,6 +70,12 @@ class NPC {
     this.takeDamage(dmg, kb, dir, critChance, item && item.fixedDamage, item);
     if (item && item.onHit === 'fire') this.buffs.on_fire = 240;
     if (item && item.onHit === 'tung') { Synth.tung(0.5); combatText(this.cx, this.y - 10, 'TUNG!', '#e8c898', { life: 30 }); }
+    if (item && item.onHit === 'liminal' && !this.boss && !Net.isClient && Math.random() < 0.25 && !this.dead) {
+      spawnDust(this.cx, this.cy, '#ff00ff', 12, 2);
+      const ox = this.x, oy = this.y;
+      for (let k = 0; k < 20; k++) { const nx = this.x + randRange(-300, 300), ny = this.y + randRange(-200, 200); if (!rectHitsSolid(G.world, nx, ny, this.w, this.h)) { this.x = nx; this.y = ny; break; } }
+      if (this.x !== ox || this.y !== oy) combatText(this.cx, this.y - 10, 'noclipped', '#ff66ff', { life: 45 });
+    }
   }
   takeDamage(dmg, kb = 0, dir = 0, critChance = 4, fixed = false, item = null) {
     if (this.dead || this.def.dontTakeDamage) return 0;
@@ -80,6 +89,7 @@ class NPC {
     }
     // multiplayer client: the host owns npc health; show feedback locally and report the hit
     if (Net.isClient && this.netUid != null) {
+      G.player.addAura(this.boss ? 0.25 : 0.6);
       Net.out({ t: 'hit', u: this.netUid, d: final, kb: kb * (crit ? 1.4 : 1), dir });
       this.hitFlash = 8;
       if (final === 67) G.sixSevenHit(this.cx, this.y);
@@ -88,6 +98,7 @@ class NPC {
       spawnDust(this.cx, this.cy, this.def.blood || (this.type.includes('slime') ? '#6ecb5a' : '#b01010'), 4, 2);
       return final;
     }
+    if (!G.suppress67 && G.player) G.player.addAura(this.boss ? 0.25 : 0.6);
     this.life -= final;
     this.hitFlash = 8;
     if (final === 67 && !G.suppress67) G.sixSevenHit(this.cx, this.y);
@@ -422,6 +433,18 @@ const NPC_AI = {
     n.x += (txp - n.cx) * 0.08; n.y += (typ - n.cy) * 0.08;
     n.rot = Math.atan2(n.cy - ay, n.cx - ax) + Math.PI;
     n.anchor = [ax, ay];
+  },
+  // Smilers drift toward you in the dark and back off from bright light
+  smiler(n, world, p) {
+    n.frame += 0.05;
+    const lit = Light.at(Math.floor(n.cx / TS), Math.floor(n.cy / TS));
+    const dx = p.cx - n.cx, dy = p.cy - n.cy, dd = Math.hypot(dx, dy) || 1;
+    const spd = lit > 0.55 ? -1.2 : (n.def.speed || 2.2) * (dd > 300 ? 1.6 : 1);
+    n.vx = lerp(n.vx, dx / dd * spd, 0.05); n.vy = lerp(n.vy, dy / dd * spd, 0.05);
+    n.x += n.vx; n.y += n.vy;
+    n.alpha = lit > 0.55 ? 0.35 : 1;
+    n.dir = dx < 0 ? -1 : 1;
+    if (Math.random() < 0.002) n.say(pick([':)', '...', 'why are you in the light', 'come here :)']));
   },
   critter(n, world, p) {
     n.vy = Math.min(n.vy + 0.3, 8);

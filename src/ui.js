@@ -19,6 +19,7 @@ const UI = {
   beginFrame() {
     // decide mouse-over-ui from last frame's rects
     this.mouseOverUI = this.rects.some(r => inRect(r[0], r[1], r[2], r[3])) || WorldMap.open;
+    if (typeof Bot !== 'undefined' && Bot.active && !this.invOpen && !Bot.uiBusy) this.mouseOverUI = false; // the bot never aims at HUD
     this.rects = [];
     this.hover = null;
   },
@@ -136,6 +137,15 @@ const UI = {
       p.mouseItem = null; this.blockWorldClick = true;
     }
     this.drawChatInput(ctx, vw, vh);
+    if (Bot.active) {
+      const msg = '🤖 BotSigma: ' + Bot.goal + '  ·  ' + Bot.turbo + 'x speed  ·  F8 stop · F9 speed';
+      ctx.font = 'bold 13px ' + UI_FONT;
+      const w = ctx.measureText(msg).width + 20;
+      ctx.fillStyle = 'rgba(20,60,30,0.85)'; roundRect(ctx, vw / 2 - w / 2, vh - 92, w, 24, 8); ctx.fill();
+      txt(ctx, msg, vw / 2, vh - 75, '#9aff9a', 13, 'center');
+      const ms = Object.keys(Bot.milestones);
+      if (ms.length) txt(ctx, 'milestones: ' + ms.slice(-6).join(' → '), vw / 2, vh - 100, '#cfe8ff', 11, 'center', false);
+    }
     this.drawNetInfo(ctx, vw, vh);
   },
   mouseOverUIThisFrame() { return this.rects.some(r => inRect(r[0], r[1], r[2], r[3])); },
@@ -144,6 +154,7 @@ const UI = {
     const x0 = 20, y0 = 22;
     const held = p.held();
     if (!this.invOpen) txt(ctx, held ? ITEMS[held.id].name : 'Items', x0 + 5 * (SLOT + GAP) - 22, y0 - 6, held ? RARE_COLORS[ITEMS[held.id].rare || 0] : '#fff', 14, 'center');
+    if (!this.invOpen) txt(ctx, (SETTINGS.smartCursor ? 'Smart Cursor: ON' : 'Smart Cursor: OFF') + ' (Ctrl) · Shift: auto-select', x0 + 10 * (SLOT + GAP) + 6, y0 + 25, SETTINGS.smartCursor ? '#ffb84a' : 'rgba(255,255,255,0.55)', 11, 'left', false);
     if (this.invOpen) return;
     for (let i = 0; i < 10; i++) {
       const x = x0 + i * (SLOT + GAP);
@@ -175,6 +186,14 @@ const UI = {
       ctx.globalAlpha = 0.25; ctx.drawImage(star, x, y); ctx.globalAlpha = 1;
       if (fill > 0) { const s = 0.5 + 0.5 * fill; ctx.drawImage(star, x + 9 - 9 * s, y + 9 - 9 * s, 18 * s, 18 * s); }
     }
+    // aura meter
+    const ay = y0 + 18 + Math.ceil(hearts / 10) * 22 + 2, aw = 180;
+    const him = p.buffs.him;
+    ctx.fillStyle = 'rgba(0,0,0,0.55)'; roundRect(ctx, x0 + 10, ay, aw, 10, 4); ctx.fill();
+    const af = him ? p.buffs.him / (30 * 60) : p.aura / 100;
+    const ag = ctx.createLinearGradient(x0 + 10, 0, x0 + 10 + aw, 0); ag.addColorStop(0, '#ffb84a'); ag.addColorStop(1, '#fff3a8');
+    ctx.fillStyle = ag; roundRect(ctx, x0 + 10, ay, Math.max(3, aw * af), 10, 4); ctx.fill();
+    txt(ctx, him ? 'HIM MODE' : 'AURA ' + Math.floor(p.aura) + '%', x0 + 10 + aw / 2, ay + 9, him ? '#fff' : '#ffe9a0', 10, 'center');
     // breath bubbles
     if (p.breath < 200) { for (let i = 0; i < 10; i++) { ctx.fillStyle = p.breath / 20 > i ? '#9ad7ff' : 'rgba(255,255,255,0.15)'; ctx.beginPath(); ctx.arc(p.cx - G.camX - 45 + i * 10, p.y - G.camY - 16, 4, 0, Math.PI * 2); ctx.fill(); } }
     this.addRect(x0, y0, 240, 70);
@@ -199,6 +218,7 @@ const UI = {
     const t = G.clockString();
     const depth = Math.floor(p.cy / TS);
     let layer = depth < w.worldSurface ? 'Surface' : depth < w.rockLayer ? 'Underground' : depth < w.hellLayer ? 'Caverns' : 'Ohio';
+    if (G.inBackrooms(p)) layer = 'Level 0 (The Backrooms)';
     const biome = G.biomeAt(Math.floor(p.cx / TS));
     const bname = { forest: 'Forest', desert: 'Desert', snow: 'Snow', brainrot: 'The Brainrot', ocean: 'Ocean' }[biome];
     const x = this.invOpen ? vw - 212 : vw - 212;
@@ -349,11 +369,13 @@ const UI = {
     if (inRect(x0, y0, cols * (SLOT + GAP), rows * (SLOT + GAP)) && Input.wheel) { this.craftScroll = clamp(this.craftScroll + Input.wheel, 0, maxScroll); Input.wheel = 0; }
     this.craftScroll = clamp(this.craftScroll, 0, maxScroll);
     const start = this.craftScroll * cols;
+    this.recipeSlots = []; this.recipeSlots.x0 = x0; this.recipeSlots.y0 = y0;
     if (!this.recipes.length) txt(ctx, 'Nothing craftable yet. Chop some trees, bestie.', x0, y0 + 20, '#aab', 12, 'left', false);
     for (let k = 0; k < per && start + k < this.recipes.length; k++) {
       const r = this.recipes[start + k];
       const x = x0 + (k % cols) * (SLOT + GAP), y = y0 + Math.floor(k / cols) * (SLOT + GAP);
       const hot = this.drawSlot(ctx, x, y, { id: r.out, count: r.n }, { color: 'rgba(60,130,70,0.75)' });
+      this.recipeSlots.push({ out: r.out, x: x + SLOT / 2, y: y + SLOT / 2 });
       if (hot) this.hover = { stack: { id: r.out, count: r.n }, recipe: r };
       if (hot && Input.mClick) this.craft(r);
     }
@@ -429,6 +451,11 @@ const UI = {
     const it = p.heldItem();
     if (!it || p.dead) return;
     if (!(it.pick || it.axe || it.hammer || it.use === 'place' || it.use === 'placeWall')) return;
+    if (SETTINGS.smartCursor) {
+      const st = p.smartTarget(G.world, it);
+      if (st) { ctx.strokeStyle = '#ffa53a'; ctx.lineWidth = 2; ctx.strokeRect(st[0] * TS - G.camX + 1, st[1] * TS - G.camY + 1, 14, 14); }
+      return;
+    }
     const tx = Math.floor(G.mouseWorldX() / TS), ty = Math.floor(G.mouseWorldY() / TS);
     if (!p.inReach(tx, ty)) return;
     ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = 1;

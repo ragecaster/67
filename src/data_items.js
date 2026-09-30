@@ -45,12 +45,16 @@ block('gold_ore', 'Rizzium Ore', 'items/Gold_Ore', T.GOLD, { tooltip: 'Unspoken 
 block('demonite_ore', 'Brainrot Ore', 'items/Demonite_Ore', T.DEMONITE, { rare: 1, tooltip: 'Pulsates with skibidi energy.' });
 block('hellstone', 'Ohiostone', 'items/Hellstone', T.HELLSTONE, { rare: 2, tooltip: 'Hot to the touch. Only in Ohio.' });
 
+block('wallpaper_block', 'Yellow Wallpaper', 'gen/item_wallpaper', T.WALLPAPER, { tooltip: 'Mono-yellow. Smells like old moist carpet.\nThe hum is getting louder.' });
+block('carpet_block', 'Moist Carpet', 'gen/item_carpet', T.CARPET, { tooltip: 'Why is it wet. Why is it always wet.' });
+
 // ===== walls =====
 wallItem('dirt_wall', 'Dirt Wall', 'items/Dirt_Wall', W.DIRT_P);
 wallItem('stone_wall', 'Stone Wall', 'items/Stone_Wall', W.STONE_P);
 wallItem('wood_wall', 'Wood Wall', 'items/Wood_Wall', W.WOOD);
 wallItem('gray_brick_wall', 'Gray Brick Wall', 'items/Gray_Brick_Wall', W.GRAY_BRICK);
 wallItem('hellstone_brick_wall', 'Ohio Brick Wall', 'items/Hellstone_Brick_Wall', W.HELLSTONE_BRICK);
+wallItem('wallpaper_wall', 'Wallpaper Wall', 'gen/item_wallpaper_wall', W.WALLPAPER_P, { tooltip: 'Now your house can feel like Level 0.' });
 
 // ===== furniture =====
 furniture('wood_platform', 'Wood Platform', 'items/Wood_Platform', T.PLATFORM, { stack: 9999 });
@@ -71,6 +75,7 @@ furniture('loom', 'Loom', 'items/Loom', T.LOOM, { tooltip: 'Used for crafting cl
 furniture('bottle', 'Bottle', 'items/Bottle', T.BOTTLE, { tooltip: 'Place it to make potions. Also holds liquid.' });
 furniture('piggy_bank', 'Fanum Tax Bank', 'items/Piggy_Bank', T.PIGGY_BANK, { value: 10000, tooltip: 'Right-click to store items.\nFanum cannot tax what he cannot find.' });
 furniture('sunflower', 'Sunflower', 'items/Sunflower', T.SUNFLOWER, { tooltip: 'Keeps the vibes immaculate nearby.' });
+furniture('fluorescent_light', 'Fluorescent Light', 'gen/item_fluorescent', T.FLUORESCENT, { tooltip: 'Buzzes at exactly 60 hertz. Place it on a ceiling.\nCounts as a light source.' });
 furniture('tombstone', 'Tombstone', 'items/Tombstone', T.TOMBSTONE, { tooltip: 'Here lies someone who got cooked.' });
 
 // ===== materials =====
@@ -116,6 +121,7 @@ defItem('cooked_fish', { name: 'Tralalero Sashimi', img: 'items/Cooked_Fish', st
 defItem('dubai_chocolate', { name: 'Dubai Chocolate', img: 'gen/item_dubai', stack: 30, use: 'consume', useTime: 17, consumable: true, buff: ['well_fed', 1200], heal: 20, value: 2500, rare: 2, tooltip: 'Minor improvements to all stats.\nPistachio kunafa crunch. Viral for a reason.' });
 defItem('sahur_snack', { name: 'Sahur Snack', img: 'gen/item_sahur', stack: 30, use: 'consume', useTime: 17, consumable: true, buff: ['well_fed', 1800], heal: 40, value: 1000, rare: 2, tooltip: 'Minor improvements to all stats.\nEat before dawn or Tung Tung Tung comes knocking.' });
 defItem('cappuccino', { name: 'Ballerina Cappuccino', img: 'gen/item_cappuccino', stack: 30, use: 'consume', useTime: 17, consumable: true, buff: ['swiftness', 300], heal: 30, value: 400, rare: 1, tooltip: '25% increased movement speed.\nMi mi mi, mi mi mi!' });
+defItem('almond_water', { name: 'Almond Water', img: 'gen/item_almond', stack: 30, use: 'consume', useTime: 17, consumable: true, heal: 67, healMana: 67, cureDebuffs: true, potion: true, value: 6700, rare: 3, tooltip: 'Restores 67 life and 67 mana. Cures debuffs.\nThe only safe drink in the Backrooms. Tastes like hope.' });
 defItem('life_crystal', { name: 'Aura Crystal', img: 'items/Life_Crystal', stack: 99, use: 'consume', useTime: 30, consumable: true, lifeCrystal: true, value: 7500, rare: 2, tooltip: 'Permanently increases maximum life by 20.\n+1000 aura.' });
 defItem('mana_crystal', { name: 'Mewing Crystal', img: 'items/Mana_Crystal', stack: 99, use: 'consume', useTime: 30, consumable: true, manaCrystal: true, value: 2500, rare: 2, tooltip: 'Permanently increases maximum mana by 20.' });
 
@@ -189,6 +195,8 @@ defItem('nights_edge', { name: "Sigma's Edge", img: "items/Night's_Edge", use: '
 defItem('the_67', { name: 'The Six Seven', img: 'gen/item_67', use: 'swing', useTime: 20, damage: 67, fixedDamage: true, kb: 6.7, dmgType: 'melee', shoot: 'sixseven', shootSpeed: 9, rare: 7, value: 67670, scale: 1.1, tooltip: 'Always deals exactly 67 damage.\nFires alternating 6s and 7s. 🤲\n"SIX SEVEEEN"' });
 defItem('tung_bat', { name: 'Tung Bat', img: 'gen/item_tung_bat', use: 'swing', useTime: 26, damage: 30, kb: 11, dmgType: 'melee', rare: 3, value: 40000, scale: 1.2, onHit: 'tung', tooltip: 'Massive knockback.\nTung tung tung tung tung tung tung tung tung.' });
 defItem('skibidi_plunger', { name: 'Skibidi Plunger', img: 'gen/item_plunger', use: 'throw', useTime: 20, damage: 13, kb: 6, dmgType: 'thrown', shoot: 'plunger', shootSpeed: 11, rare: 1, value: 5000, autoReuse: true, tooltip: 'Throws a returning plunger.\nDop dop dop yes yes.' });
+
+defItem('liminal_blade', { name: 'Liminal Blade', img: 'gen/item_liminal', use: 'swing', useTime: 19, damage: 27, kb: 5, dmgType: 'melee', rare: 3, value: 45000, scale: 1.15, onHit: 'liminal', tooltip: 'Found somewhere between rooms.\nHits have a chance to make enemies noclip away (they get teleported).' });
 
 // ranged & misc weapons
 defItem('wooden_arrow', { name: 'Wooden Arrow', img: 'items/Wooden_Arrow', stack: 9999, ammoType: 'arrow', damage: 5, proj: 'arrow', consumable: true, value: 5 });

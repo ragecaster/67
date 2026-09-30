@@ -1,7 +1,7 @@
 // ---------- sound effects (wiki wavs), synthesized meme sounds, music ----------
 const SETTINGS = loadSettings();
 function loadSettings() {
-  const def = { music: 0.45, sfx: 0.7, tts: true, zoom: 0, smoothLight: true, showFps: false, autosave: true };
+  const def = { music: 0.45, sfx: 0.7, tts: true, zoom: 0, smoothLight: true, showFps: false, autosave: true, smartCursor: false };
   try { return Object.assign(def, JSON.parse(localStorage.getItem('t67_settings') || '{}')); } catch (e) { return def; }
 }
 function saveSettings() { try { localStorage.setItem('t67_settings', JSON.stringify(SETTINGS)); } catch (e) { } }
@@ -155,4 +155,32 @@ function speak(text, rate = 1.1, pitch = 1.2) {
     u.rate = rate; u.pitch = pitch; u.volume = Math.min(1, SETTINGS.sfx + 0.2);
     speechSynthesis.cancel(); speechSynthesis.speak(u);
   } catch (e) { }
+}
+
+// the backrooms fluorescent hum: a quiet 60Hz buzz with harmonics (starts/stops with Level 0)
+const Hum = {
+  nodes: null,
+  start() {
+    const c = Audio67.ctx; if (!c || this.nodes) return;
+    const g = c.createGain(); g.gain.value = 0; g.connect(Audio67.sfxGain);
+    const oscs = [[60, 0.05, 'sawtooth'], [120, 0.03, 'square'], [180, 0.012, 'sine']].map(([f, v, type]) => {
+      const o = c.createOscillator(), og = c.createGain(); o.type = type; o.frequency.value = f; og.gain.value = v; o.connect(og); og.connect(g); o.start(); return o;
+    });
+    g.gain.linearRampToValueAtTime(0.9, c.currentTime + 2);
+    this.nodes = { g, oscs };
+  },
+  stop() {
+    const c = Audio67.ctx; if (!c || !this.nodes) return;
+    const { g, oscs } = this.nodes; this.nodes = null;
+    g.gain.linearRampToValueAtTime(0, c.currentTime + 1);
+    setTimeout(() => oscs.forEach(o => { try { o.stop(); } catch (e) { } }), 1200);
+  },
+};
+function glitchBurst(p) {
+  for (let i = 0; i < 40; i++) spawnDust(p.cx, p.cy, pick(['#ff00ff', '#000000', '#ffffff', '#00ffff']), 1, 4, { grav: 0, life: 40, size: 4 });
+  const c = Audio67.ctx; if (!c) return;
+  const o = c.createOscillator(), g = c.createGain(); o.type = 'square';
+  o.frequency.setValueAtTime(880, c.currentTime); o.frequency.exponentialRampToValueAtTime(55, c.currentTime + 0.4);
+  g.gain.setValueAtTime(0.15, c.currentTime); g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.5);
+  o.connect(g); g.connect(Audio67.sfxGain); o.start(); o.stop(c.currentTime + 0.5);
 }

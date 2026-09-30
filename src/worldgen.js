@@ -254,6 +254,10 @@ function* generateWorld(name, seedStr, size = 'small') {
     pools++;
   }
 
+  // ---------------- the backrooms (Level 0) ----------------
+  yield ['Noclipping out of reality (Level 0)', 0.74];
+  buildBackrooms(world, rng);
+
   // ---------------- surface grass & plants ----------------
   yield [msg(15), 0.76];
   for (let x = 0; x < w; x++) {
@@ -364,6 +368,12 @@ function* generateWorld(name, seedStr, size = 'small') {
       for (const n of [i - 1, i + 1, i - w, i + w]) if (world.liquid[n] && world.ltype[n] === 0) { world.tiles[i] = T.OBSIDIAN; world.liquid[i] = 0; break; }
     }
   }
+  // the glitch: a missing-texture block floating near the surface that noclips you into Level 0
+  for (let k = 0; k < 400; k++) {
+    const x = world.spawnX + (rng() < 0.5 ? -1 : 1) * R(50, 140);
+    const y = topSolid(world, x);
+    if (y > 5 && world.liq(x, y - 1) === 0 && world.empty(x, y - 2) && world.empty(x, y - 3)) { world.setTile(x, y - 3, T.NOCLIP); world.noclipAt = [x, y - 3]; break; }
+  }
   world.time = 13500; world.dayTime = true;
   yield [msg(26), 1];
   return world;
@@ -414,6 +424,8 @@ function carveRoom(world, x, y, w, h, wall) {
 }
 function tryPlaceOnFloor(world, x, y, id) {
   const t = TILES[id];
+  const b = world.backrooms;
+  if (b && x >= b.x0 - 3 && x < b.x0 + b.w + 3 && y >= b.y0 - 3 && y < b.y0 + b.h + 3) return false; // Level 0 has its own loot
   const [w, h] = t.multi || [1, 1];
   // drop to floor
   let yy = y;
@@ -497,6 +509,55 @@ function buildOhioHouse(world, rng, x, y) {
   const cx = x + randInt(2, w - 4, rng);
   if (world.canPlaceObject(cx, y + h - 3, T.CHEST)) { world.placeObject(cx, y + h - 3, T.CHEST); fillChest(world, cx, y + h - 3, rng, 'ohio'); }
   return true;
+}
+function buildBackrooms(world, rng) {
+  const W_ = 150, LV = 5, LH = 9, H_ = LV * LH + 1;
+  const y0 = world.rockLayer + 25;
+  if (y0 + H_ >= world.hellLayer - 8) return;
+  const x0 = randInt(Math.floor(world.w * 0.2), Math.floor(world.w * 0.8) - W_, rng);
+  const R = (a, b) => randInt(a, b, rng);
+  const set = (x, y, t, fr = 0) => { const i = world.idx(x, y); world.tiles[i] = t; world.frames[i] = fr; world.liquid[i] = 0; };
+  // shell
+  for (let y = y0 - 2; y < y0 + H_ + 2; y++) for (let x = x0 - 2; x < x0 + W_ + 2; x++) { set(x, y, T.WALLPAPER); world.walls[world.idx(x, y)] = W.WALLPAPER; }
+  for (let lv = 0; lv < LV; lv++) {
+    const cy = y0 + lv * LH;
+    for (let x = x0; x < x0 + W_; x++) {
+      set(x, cy, T.WALLPAPER);
+      for (let y = cy + 1; y < cy + LH - 1; y++) set(x, y, 0);
+      set(x, cy + LH - 1, T.CARPET);
+    }
+    // partitions with doorways (a maze of rooms)
+    let x = x0 + R(6, 12);
+    while (x < x0 + W_ - 4) {
+      const door = rng() < 0.75;
+      for (let y = cy + 1; y < cy + LH - 1; y++) if (!(door && y >= cy + LH - 5)) set(x, y, T.WALLPAPER);
+      if (rng() < 0.3) for (let y = cy + 1; y < cy + LH - 1; y++) if (!(door && y >= cy + LH - 5)) set(x + 1, y, T.WALLPAPER);
+      x += R(7, 16);
+    }
+    // holes down to the next level
+    if (lv < LV - 1) for (let k = 0; k < R(3, 5); k++) { const hx = x0 + R(4, W_ - 8); for (let i = 0; i < 3; i++) { set(hx + i, cy + LH - 1, 0); set(hx + i, cy + LH, 0); } }
+    // fluorescent lights (some broken => dark spots where Smilers hide)
+    for (let lx = x0 + 2; lx < x0 + W_ - 2; lx += R(4, 7)) if (world.tile(lx, cy + 1) === 0) set(lx, cy + 1, T.FLUORESCENT, rng() < 0.22 ? 1 : 0);
+  }
+  // loot
+  for (let k = 0; k < 9; k++) {
+    const lv = R(0, LV - 1), cy = y0 + lv * LH, cx = x0 + R(3, W_ - 6);
+    if (world.canPlaceObject(cx, cy + LH - 3, T.CHEST)) {
+      world.placeObject(cx, cy + LH - 3, T.CHEST);
+      const inv = world.chests[cx + ',' + (cy + LH - 3)];
+      let s = 0;
+      inv[s++] = { id: 'almond_water', count: R(2, 5) };
+      if (rng() < 0.35) inv[s++] = { id: 'liminal_blade', count: 1 };
+      if (rng() < 0.5) inv[s++] = { id: 'fluorescent_light', count: R(3, 8) };
+      if (rng() < 0.3) inv[s++] = { id: 'labubu', count: 1 };
+      inv[s++] = { id: 'wallpaper_block', count: R(20, 67) };
+      inv[s++] = { id: 'gold_coin', count: R(1, 3) };
+    }
+  }
+  // the exit (bottom level, far from the entry)
+  const ex = x0 + (rng() < 0.5 ? R(4, 20) : R(W_ - 24, W_ - 6)), ey = y0 + (LV - 1) * LH + LH - 3;
+  set(ex, ey, T.EXIT_SIGN);
+  world.backrooms = { x0: x0 - 2, y0: y0 - 2, w: W_ + 4, h: H_ + 4, entry: [x0 + W_ - ex + x0 > x0 + W_ / 2 ? x0 + W_ - 10 : x0 + 10, y0 + LH - 2] };
 }
 function build67Monument(world, rng, x, withChest, tiny) {
   const s = tiny ? 1 : 2;

@@ -23,12 +23,24 @@ const Menu = {
       }
     }
   },
+  // ?bot: fresh world + BotSigma, then hand control to the bot
+  startBotRun(seed, turbo, size) {
+    Audio67.init();
+    SETTINGS.tts = false;
+    const look = randomLook(); look.hair = '#ffd23a';
+    const player = new Player('BotSigma', look, 0);
+    this.botRun = { turbo };
+    this.gen = { it: generateWorld('Bot World ' + seed, seed, size), msg: 'Starting...', p: 0, player };
+    this.screen = 'gen';
+    G.state = 'gen';
+  },
   async finishGen(world) {
     const g = this.gen; this.gen = null;
     G.world = world; G.npcs = [];
     this.screen = 'loading';
     await Save.saveWorld(world);
     G.start(g.player, world);
+    if (this.botRun) { Bot.start(this.botRun.turbo); this.botRun = null; return; }
     G.save(true);
     if (this.mpMode === 'host') Net.host();
   },
@@ -217,43 +229,111 @@ const Menu = {
   },
   drawCreate(ctx, vw, vh) {
     this.syncTyping();
-    const P = this.newP, w = 600, h = Math.min(vh - 30, 430);
-    this.panel(ctx, vw, vh, w, h);
-    const x0 = vw / 2 - w / 2, y0 = vh / 2 - h / 2;
-    txt(ctx, 'Create Character', vw / 2, y0 + 32, '#ffd23a', 22, 'center');
-    // preview
-    ctx.save(); ctx.translate(x0 + 60, y0 + 70); ctx.scale(3, 3);
-    drawHumanoid(ctx, { look: P.look, dir: 1, w: 20, h: 42, onGround: true, vx: 0, walkFrame: 0, heldItem: () => null, itemAnim: 0 }, 0, 0, { preview: true, armor: [] });
+    const P = this.newP;
+    const W_ = Math.min(820, vw - 20), H_ = Math.min(500, vh - 20);
+    const x0 = vw / 2 - W_ / 2, y0 = vh / 2 - H_ / 2;
+    this.panel(ctx, vw, vh, W_, H_);
+    txt(ctx, 'Create Character', vw / 2, y0 + 30, '#ffd23a', 22, 'center');
+    this.cat = this.cat || 'hair';
+    // --- category tabs (left) ---
+    const cats = [['hair', 'Hair'], ['eyes', 'Eyes'], ['skin', 'Skin'], ['shirt', 'Shirt'], ['under', 'Undershirt'], ['pants', 'Pants'], ['shoes', 'Shoes']];
+    cats.forEach(([k, label], i) => {
+      const bx = x0 + 16, by = y0 + 56 + i * 40;
+      const sel = this.cat === k, hot = inRect(bx, by, 120, 34);
+      ctx.fillStyle = sel ? 'rgba(235,200,70,0.9)' : hot ? 'rgba(90,110,210,0.9)' : 'rgba(55,72,165,0.8)';
+      roundRect(ctx, bx, by, 120, 34, 7); ctx.fill();
+      ctx.fillStyle = P.look[k] || '#fff'; ctx.fillRect(bx + 8, by + 9, 16, 16); ctx.strokeStyle = '#000'; ctx.lineWidth = 1; ctx.strokeRect(bx + 8.5, by + 9.5, 15, 15);
+      txt(ctx, label, bx + 32, by + 22, sel ? '#1a1a2a' : '#fff', 14, 'left');
+      UI.addRect(bx, by, 120, 34);
+      if (hot && Input.mClick) { this.cat = k; playSound('tick'); }
+    });
+    // --- big preview (center) ---
+    const pvx = x0 + 150, pvy = y0 + 56, pvw = 210, pvh = 280;
+    const g = ctx.createLinearGradient(0, pvy, 0, pvy + pvh);
+    g.addColorStop(0, 'rgba(120,170,255,0.35)'); g.addColorStop(1, 'rgba(40,60,140,0.5)');
+    ctx.fillStyle = g; roundRect(ctx, pvx, pvy, pvw, pvh, 10); ctx.fill();
+    ctx.fillStyle = '#4c8f5a'; ctx.fillRect(pvx + 20, pvy + pvh - 40, pvw - 40, 8);
+    ctx.fillStyle = '#6b4a2c'; ctx.fillRect(pvx + 20, pvy + pvh - 32, pvw - 40, 12);
+    const demo = { look: P.look, dir: this.previewDir || 1, w: 20, h: 42, onGround: true, vx: this.t % 240 < 120 ? 0 : 1, walkFrame: this.t * 0.1, heldItem: () => null, itemAnim: 0, emote: 0, hurtFlash: 0 };
+    ctx.save(); ctx.translate(pvx + pvw / 2 - 40, pvy + pvh - 40 - 42 * 4); ctx.scale(4, 4);
+    drawHumanoid(ctx, demo, 0, 0, { preview: true, armor: [] });
     ctx.restore();
-    this.textField(ctx, x0 + 170, y0 + 76, 250, 'Name', P, 'name', 18);
-    const colorsets = {
-      hair: ['#5a3a1e', '#1b1b1b', '#e2c16b', '#b5462c', '#8e5b37', '#ff6ec7', '#6ecbff', '#ffffff', '#7dff6b'],
-      skin: ['#f0c39a', '#d9a066', '#b87945', '#8a5a33', '#5e3a1f', '#ffd8b8'],
-      shirt: ['#3a7bd5', '#d53a3a', '#3ad56a', '#d5a53a', '#7b3ad5', '#222222', '#ffffff', '#ff8ac5'],
-      under: ['#3a7bd5', '#d53a3a', '#3ad56a', '#d5a53a', '#7b3ad5', '#222222', '#ffffff', '#ff8ac5'],
-      pants: ['#3b3b6e', '#5a4632', '#2e2e2e', '#6e3b3b', '#2f5a3a', '#8a8f96'],
-      eyes: ['#3a5ad5', '#3a8a3a', '#6b4020', '#222', '#c83a3a'],
+    UI.addRect(pvx, pvy, pvw, pvh);
+    if (inRect(pvx, pvy, pvw, pvh) && Input.mClick) this.previewDir = -(this.previewDir || 1); // click to turn around
+    // --- right side: color picker (+ hairstyles for hair) ---
+    const rx = x0 + 380, rw = W_ - 400;
+    const hex = P.look[this.cat] || '#ffffff';
+    const [hh, ss, ll] = hexToHsl(hex);
+    const slider = (label, y, val, grad, set) => {
+      txt(ctx, label, rx, y - 4, '#fff', 13);
+      const sx = rx, sw = rw, sh = 16;
+      const gr = ctx.createLinearGradient(sx, 0, sx + sw, 0);
+      grad(gr);
+      ctx.fillStyle = gr; roundRect(ctx, sx, y, sw, sh, 5); ctx.fill(); ctx.strokeStyle = '#0a0f30'; ctx.lineWidth = 2; ctx.stroke();
+      const kx = sx + val * sw;
+      ctx.fillStyle = '#fff'; ctx.fillRect(kx - 3, y - 3, 6, sh + 6); ctx.strokeStyle = '#000'; ctx.strokeRect(kx - 3, y - 3, 6, sh + 6);
+      UI.addRect(sx - 6, y - 6, sw + 12, sh + 12);
+      if (Input.mDown && inRect(sx - 6, y - 6, sw + 12, sh + 12)) set(clamp((Input.mx - sx) / sw, 0, 1));
     };
-    let y = y0 + 124;
-    const names = { hair: 'Hair color', skin: 'Skin', shirt: 'Shirt', under: 'Undershirt', pants: 'Pants', eyes: 'Eyes' };
-    for (const k of Object.keys(colorsets)) {
-      txt(ctx, names[k], x0 + 170, y + 18, '#fff', 13);
-      colorsets[k].forEach((c, i) => {
-        const bx = x0 + 270 + i * 26;
-        ctx.fillStyle = c; ctx.fillRect(bx, y + 4, 22, 20);
-        ctx.strokeStyle = P.look[k] === c ? '#ffd23a' : '#000'; ctx.lineWidth = 2; ctx.strokeRect(bx, y + 4, 22, 20);
-        UI.addRect(bx, y + 4, 22, 20);
-        if (inRect(bx, y + 4, 22, 20) && Input.mClick) { P.look[k] = c; playSound('tick'); }
+    const setHsl = (h2, s2, l2) => { P.look[this.cat] = hslToHex(h2, s2, l2); };
+    slider('Hue', y0 + 76, hh, gr => { for (let i = 0; i <= 6; i++) gr.addColorStop(i / 6, hslToHex(i / 6, 1, 0.5)); }, v => setHsl(v, ss, ll));
+    slider('Saturation', y0 + 116, ss, gr => { gr.addColorStop(0, hslToHex(hh, 0, ll)); gr.addColorStop(1, hslToHex(hh, 1, ll)); }, v => setHsl(hh, v, ll));
+    slider('Lightness', y0 + 156, ll, gr => { gr.addColorStop(0, '#000'); gr.addColorStop(0.5, hslToHex(hh, ss, 0.5)); gr.addColorStop(1, '#fff'); }, v => setHsl(hh, ss, v));
+    if (this.cat === 'hair') {
+      // hairstyle grid, paged
+      const cols = Math.max(4, Math.floor(rw / 48)), rows = 3, per = cols * rows;
+      this.hairPage = clamp(this.hairPage || Math.floor(P.look.hairStyle / per), 0, Math.ceil(HAIR_COUNT / per) - 1);
+      const gy = y0 + 196;
+      txt(ctx, 'Hairstyle ' + (P.look.hairStyle + 1) + ' / ' + HAIR_COUNT, rx, gy - 4, '#fff', 13);
+      for (let k = 0; k < per; k++) {
+        const idx = this.hairPage * per + k;
+        if (idx >= HAIR_COUNT) break;
+        const cx = rx + (k % cols) * 48, cy = gy + Math.floor(k / cols) * 48;
+        const sel = P.look.hairStyle === idx, hot = inRect(cx, cy, 44, 44);
+        ctx.fillStyle = sel ? 'rgba(235,200,70,0.9)' : hot ? 'rgba(90,110,210,0.9)' : 'rgba(55,72,165,0.7)';
+        roundRect(ctx, cx, cy, 44, 44, 6); ctx.fill();
+        if (PlayerSprites.ready) {
+          const [c, Pp] = PlayerSprites.get(Object.assign({}, P.look, { hairStyle: idx }), [null, null, null], 0, false);
+          const top = Math.max(0, Pp.ey - 16);
+          ctx.save(); ctx.beginPath(); ctx.rect(cx + 2, cy + 2, 40, 40); ctx.clip();
+          ctx.drawImage(c, 0, top, c.width, 28, cx + 22 - (Pp.bodyCX + 4), cy + 6, c.width, 28);
+          ctx.restore();
+        } else txt(ctx, String(idx + 1), cx + 22, cy + 28, '#fff', 13, 'center');
+        UI.addRect(cx, cy, 44, 44);
+        if (hot && Input.mClick) { P.look.hairStyle = idx; playSound('tick'); }
+      }
+      const pages = Math.ceil(HAIR_COUNT / per);
+      const py = gy + rows * 48 + 4;
+      if (UI.button(ctx, rx, py, 60, 24, '<')) this.hairPage = (this.hairPage - 1 + pages) % pages;
+      txt(ctx, 'Page ' + (this.hairPage + 1) + '/' + pages, rx + rw / 2, py + 17, '#cfd8ff', 12, 'center');
+      if (UI.button(ctx, rx + rw - 60, py, 60, 24, '>')) this.hairPage = (this.hairPage + 1) % pages;
+    } else {
+      // quick swatches
+      const sw = ['#f0c39a', '#d9a066', '#b87945', '#8a5a33', '#5e3a1f', '#ffd8b8', '#ffffff', '#222222', '#d53a3a', '#3a7bd5', '#3ad56a', '#d5a53a', '#7b3ad5', '#ff8ac5', '#6ecbff', '#ffe066'];
+      sw.forEach((c, i) => {
+        const bx = rx + (i % 8) * 30, by = y0 + 200 + Math.floor(i / 8) * 30;
+        ctx.fillStyle = c; ctx.fillRect(bx, by, 26, 26); ctx.strokeStyle = P.look[this.cat] === c ? '#ffd23a' : '#000'; ctx.lineWidth = 2; ctx.strokeRect(bx, by, 26, 26);
+        UI.addRect(bx, by, 26, 26);
+        if (inRect(bx, by, 26, 26) && Input.mClick) { P.look[this.cat] = c; playSound('tick'); }
       });
-      y += 30;
     }
-    if (UI.button(ctx, x0 + 170, y + 4, 120, 26, 'Hair style ' + (P.look.hairStyle + 1))) P.look.hairStyle = (P.look.hairStyle + 1) % 4;
-    if (UI.button(ctx, x0 + 300, y + 4, 120, 26, 'Randomize')) { const n = P.name; P.look = randomLook(); }
-    y += 36;
-    const diffs = ['Main Character (Softcore)', 'Side Character (Mediumcore)', 'NPC Mode (Hardcore)'];
-    if (UI.button(ctx, x0 + 170, y + 4, 250, 26, diffs[P.difficulty])) P.difficulty = (P.difficulty + 1) % 3;
-    if (UI.button(ctx, x0 + 20, y0 + h - 44, 120, 30, 'Back')) { Input.typing = null; this.screen = 'players'; }
-    if (UI.button(ctx, x0 + w - 160, y0 + h - 44, 140, 30, 'Create')) {
+    // --- name, difficulty, buttons (bottom) ---
+    const by = y0 + H_ - 132;
+    this.textField(ctx, x0 + 150, by + 20, 210, 'Name', P, 'name', 18);
+    const diffs = [['Main Character', 'Softcore: drop some aura on death'], ['Side Character', 'Mediumcore: drop your items'], ['NPC Mode', 'Hardcore: one life. it is so over']];
+    diffs.forEach(([n, d], i) => {
+      const dx = x0 + 380 + i * ((W_ - 400) / 3), dw = (W_ - 400) / 3 - 8;
+      const sel = P.difficulty === i, hot = inRect(dx, by + 6, dw, 44);
+      ctx.fillStyle = sel ? ['rgba(90,200,120,0.9)', 'rgba(230,180,60,0.9)', 'rgba(220,70,70,0.9)'][i] : hot ? 'rgba(90,110,210,0.9)' : 'rgba(55,72,165,0.8)';
+      roundRect(ctx, dx, by + 6, dw, 44, 7); ctx.fill();
+      txt(ctx, n, dx + dw / 2, by + 24, '#fff', 13, 'center');
+      txt(ctx, d, dx + dw / 2, by + 41, '#e8ecff', 9, 'center', false);
+      UI.addRect(dx, by + 6, dw, 44);
+      if (hot && Input.mClick) { P.difficulty = i; playSound('tick'); }
+    });
+    if (UI.button(ctx, x0 + 16, y0 + 56 + 7 * 40 + 6, 120, 30, '🎲 Randomize')) { const keep = P.name; P.look = randomLook(); P.name = keep; }
+    if (UI.button(ctx, x0 + 16, y0 + H_ - 46, 120, 32, 'Back')) { Input.typing = null; this.screen = 'players'; }
+    if (UI.button(ctx, x0 + W_ - 170, y0 + H_ - 46, 150, 32, 'Create')) {
       const name = (P.name || '').trim() || pick(['Sigma', 'Rizzler', 'Skibidi', 'Gyatt', 'SixSeven', 'Unc']);
       if (this.players.some(p => p.name === name)) { this.msg = 'A character with that name already exists.'; return; }
       Input.typing = null;

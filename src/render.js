@@ -232,6 +232,22 @@ const Render = {
       ctx.restore();
       return;
     }
+    if (t === T.FLUORESCENT) {
+      const img = getImg('gen/fluorescent'), broken = f === 1;
+      const on = !broken && !flickerOff(x, y);
+      ctx.drawImage(img, sx, sy);
+      if (!on) { ctx.fillStyle = 'rgba(40,40,40,0.6)'; ctx.fillRect(sx + 2, sy + 2, 12, 2); }
+      return;
+    }
+    if (t === T.NOCLIP) {
+      const img = getImg('gen/noclip');
+      const j = G.tick % 12 < 2 ? randInt(-2, 2) : 0;
+      ctx.globalAlpha = 0.75 + Math.random() * 0.25;
+      ctx.drawImage(img, sx + j, sy); ctx.globalAlpha = 1;
+      if (G.tick % 30 < 15) { ctx.fillStyle = 'rgba(255,0,255,0.25)'; ctx.fillRect(sx - 2, sy - 2, 20, 20); }
+      return;
+    }
+    if (t === T.EXIT_SIGN) { const img = getImg('gen/exit_sign'); ctx.drawImage(img, sx - 8, sy); return; }
     if (t === T.PLANT) {
       ctx.fillStyle = world.tile(x, y + 1) === T.CORRUPT_GRASS ? '#9a7ac0' : '#2fae4f';
       const k = f & 3;
@@ -283,4 +299,10 @@ const Render = {
 };
 function mixColor(a, b, t) { return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)]; }
 function rgb(c) { return `rgb(${c[0] | 0},${c[1] | 0},${c[2] | 0})`; }
-function hexToRgb(h) { const n = parseInt(h.slice(1), 16); return [n >> 16, (n >> 8) & 255, n & 255]; }
+function hexToRgb(h) { const n = parseInt(normHex(h).slice(1), 16); return [n >> 16, (n >> 8) & 255, n & 255]; }
+
+// fluorescent lights flicker on a per-light rhythm (deterministic so lighting + drawing agree)
+function flickerOff(x, y) {
+  const t = (G.tick >> 2) + x * 31 + y * 17;
+  return (t % 97) < 3 || ((t % 211) > 200);
+}

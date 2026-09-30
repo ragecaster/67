@@ -35,6 +35,7 @@ R('candle', 1, [['gold_bar', 1], ['torch', 1]], 'work_bench');
 R('wood_wall', 4, [['wood', 1]], 'work_bench');
 R('stone_wall', 4, [['stone_block', 1]], 'work_bench');
 R('dirt_wall', 4, [['dirt_block', 1]], 'work_bench');
+R('wallpaper_wall', 4, [['wallpaper_block', 1]], 'work_bench');
 R('gray_brick_wall', 4, [['gray_brick', 1]], 'work_bench');
 R('hellstone_brick_wall', 4, [['hellstone_brick', 1]], 'work_bench');
 R('bowl_of_soup', 1, [['mushroom', 2], ['daybloom', 1]], 'work_bench');

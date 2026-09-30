@@ -15,6 +15,7 @@ function loadAssets(onProgress) {
   }))).then(() => {
     generateSprites();
     buildTileAtlases();
+    PlayerSprites.init();
   });
 }
 
@@ -138,6 +139,7 @@ function generateSprites() {
 
   genMemeSprites();
   genItemIcons();
+  genBackrooms();
 }
 
 // ================== meme monsters ==================
@@ -305,6 +307,79 @@ function genItemIcons() {
     rect(ctx, 4, 0, 2, 5, '#8a5a3b'); rect(ctx, 8, 0, 2, 5, '#8a5a3b');
     ellipse(ctx, 7, 10, 3.5, 3, '#8a5a3b'); rect(ctx, 5, 9, 1, 1, '#000'); rect(ctx, 8, 9, 1, 1, '#000'); rect(ctx, 5, 11, 4, 1, '#fff');
   });
+}
+
+// ================== the backrooms ==================
+// 3x3 "placed" sheet: every cell gets the base texture; border cells get outlines on their outer sides
+function blockSheet(base, edge, light) {
+  const c = makeCanvas(48, 48), ctx = c.getContext('2d');
+  for (let ty = 0; ty < 3; ty++) for (let tx = 0; tx < 3; tx++) {
+    const x = tx * 16, y = ty * 16;
+    base(ctx, x, y);
+    ctx.fillStyle = edge;
+    if (ty === 0) { ctx.fillRect(x, y, 16, 2); ctx.fillStyle = light; ctx.fillRect(x, y + 2, 16, 2); ctx.fillStyle = edge; }
+    if (ty === 2) ctx.fillRect(x, y + 14, 16, 2);
+    if (tx === 0) ctx.fillRect(x, y, 2, 16);
+    if (tx === 2) ctx.fillRect(x + 14, y, 2, 16);
+  }
+  return c;
+}
+function genBackrooms() {
+  const rng = makeRng(67);
+  IMG['gen/wallpaper'] = blockSheet((ctx, x, y) => {
+    rect(ctx, x, y, 16, 16, '#d8c36a');
+    for (let i = 0; i < 16; i += 4) rect(ctx, x + i + 1, y, 2, 16, '#cdb65c');
+    for (let k = 0; k < 4; k++) rect(ctx, x + Math.floor(rng() * 14), y + Math.floor(rng() * 14), 2, 2, '#e6d487');
+    if (rng() < 0.3) rect(ctx, x + Math.floor(rng() * 12), y + 10 + Math.floor(rng() * 4), 4, 2, '#b39e4c'); // stains
+  }, '#6e6028', '#eadb95');
+  IMG['gen/carpet'] = blockSheet((ctx, x, y) => {
+    rect(ctx, x, y, 16, 16, '#8f7a3c');
+    for (let k = 0; k < 14; k++) rect(ctx, x + Math.floor(rng() * 16), y + Math.floor(rng() * 16), 2, 2, rng() < 0.5 ? '#7d6a32' : '#a08a48');
+    if (rng() < 0.25) rect(ctx, x + 3, y + 5, 7, 4, '#6f6230'); // damp patch
+  }, '#4a3f1c', '#a8925a');
+  // wall sheet is 64x64 like the wiki's (the center 48x48 gets used)
+  IMG['gen/wallpaper_wall'] = (() => {
+    const c = makeCanvas(64, 64), ctx = c.getContext('2d');
+    rect(ctx, 0, 0, 64, 64, '#a8963e');
+    for (let i = 0; i < 64; i += 6) rect(ctx, i, 0, 2, 64, '#9c8a36');
+    for (let k = 0; k < 40; k++) rect(ctx, Math.floor(rng() * 62), Math.floor(rng() * 62), 2, 2, rng() < 0.5 ? '#b5a24a' : '#8f7e30');
+    rect(ctx, 0, 52, 64, 3, '#8a7a34'); // baseboard line
+    return c;
+  })();
+  IMG['gen/fluorescent'] = pixelArt(8, 3, ctx => { rect(ctx, 0, 0, 8, 3, '#d9d9d9'); rect(ctx, 1, 1, 6, 1, '#fffbe0'); }, { outline: [90, 90, 90] });
+  IMG['gen/item_fluorescent'] = pixelArt(12, 6, ctx => { rect(ctx, 0, 1, 12, 4, '#d9d9d9'); rect(ctx, 1, 2, 10, 2, '#fffbe0'); });
+  IMG['gen/item_wallpaper'] = crop(IMG['gen/wallpaper'], 16, 16, 16, 16);
+  IMG['gen/item_carpet'] = crop(IMG['gen/carpet'], 16, 16, 16, 16);
+  IMG['gen/item_wallpaper_wall'] = crop(IMG['gen/wallpaper_wall'], 20, 20, 16, 16);
+  IMG['gen/item_almond'] = pixelArt(10, 15, ctx => {
+    rect(ctx, 3, 0, 4, 3, '#e8e8e8'); rect(ctx, 2, 3, 6, 11, '#f4efe2'); rect(ctx, 3, 6, 4, 5, '#d8c9a0');
+    rect(ctx, 3, 7, 4, 1, '#8a6a3a'); rect(ctx, 3, 4, 1, 9, '#ffffff');
+  });
+  IMG['gen/item_liminal'] = pixelArt(16, 16, ctx => {
+    ctx.save(); ctx.translate(8, 8); ctx.rotate(-Math.PI / 4); ctx.translate(-8, -8);
+    rect(ctx, 7, 0, 3, 11, '#e6d487'); rect(ctx, 8, 0, 1, 11, '#fffbe0'); rect(ctx, 4, 11, 9, 2, '#6e6028'); rect(ctx, 7, 13, 3, 3, '#8f7a3c');
+    ctx.restore();
+  });
+  // Smiler: only its eyes and grin are visible in the dark
+  for (let f = 0; f < 2; f++) IMG['gen/smiler_' + f] = pixelArt(20, 20, ctx => {
+    ellipse(ctx, 10, 10, 9, 9, 'rgba(10,8,12,0.9)');
+    rect(ctx, 5, 6, 3, 2 + f, '#fffbe0'); rect(ctx, 12, 6, 3, 2 + f, '#fffbe0');
+    ctx.fillStyle = '#fffbe0'; for (let i = 0; i < 9; i++) ctx.fillRect(5 + i, 12 + Math.round(Math.sin(i / 8 * Math.PI) * 2), 1, 2);
+    for (let i = 0; i < 4; i++) rect(ctx, 6 + i * 2, 13 + Math.round(Math.sin(i / 3 * Math.PI) * 2), 1, 1, '#1a1a1a');
+  }, { outline: [0, 0, 0] });
+  // Partygoer: yellow humanoid with a smiley face "=)"
+  for (let f = 0; f < 2; f++) IMG['gen/partygoer_' + f] = pixelArt(16, 26, ctx => {
+    ellipse(ctx, 8, 6, 6, 6, '#f5d33a');
+    rect(ctx, 5, 4, 2, 2, '#111'); rect(ctx, 10, 4, 2, 2, '#111');
+    ctx.strokeStyle = '#111'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(8, 6, 3.5, 0.3, Math.PI - 0.3); ctx.stroke();
+    rect(ctx, 5, 12, 6, 7, '#f5d33a');
+    rect(ctx, 2 + f, 12, 3, 6, '#f5d33a'); rect(ctx, 11 - f, 12, 3, 6, '#f5d33a');
+    rect(ctx, 5 + f, 19, 2, 7, '#f5d33a'); rect(ctx, 9 - f, 19, 2, 7, '#f5d33a');
+    rect(ctx, 4, 0, 8, 2, '#ff4d6d'); rect(ctx, 7, -2, 2, 2, '#ffd23a'); // party hat
+  }, { outline: [60, 40, 0] });
+  // missing-texture noclip block
+  IMG['gen/noclip'] = (() => { const c = makeCanvas(16, 16), x = c.getContext('2d'); rect(x, 0, 0, 16, 16, '#000'); rect(x, 0, 0, 8, 8, '#ff00ff'); rect(x, 8, 8, 8, 8, '#ff00ff'); return c; })();
+  IMG['gen/exit_sign'] = pixelArt(16, 8, ctx => { rect(ctx, 0, 0, 16, 8, '#0a4a1a'); ctx.fillStyle = '#3aff6a'; ctx.font = 'bold 7px monospace'; ctx.fillText('EXIT', 1, 7); });
 }
 
 // ================== block framing ==================

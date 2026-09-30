@@ -59,7 +59,7 @@ const Save = {
       summary: { name: w.name, size: w.w + 'x' + w.h, seed: w.seedStr, hardmode: w.flags.hardmode, played: Date.now(), day: w.day },
       meta: {
         name: w.name, seed: w.seed, seedStr: w.seedStr, w: w.w, h: w.h, worldSurface: w.worldSurface, rockLayer: w.rockLayer, hellLayer: w.hellLayer,
-        spawnX: w.spawnX, spawnY: w.spawnY, time: w.time, dayTime: w.dayTime, day: w.day, flags: w.flags, biomes: w.biomes,
+        spawnX: w.spawnX, spawnY: w.spawnY, time: w.time, dayTime: w.dayTime, day: w.day, flags: w.flags, biomes: w.biomes, backrooms: w.backrooms, noclipAt: w.noclipAt,
       },
       tiles: w.tiles, walls: w.walls, frames: w.frames, liquid: w.liquid, ltype: w.ltype, explored: w.explored, surface: w.surface,
       chests: w.chests, flipMap: w.flipMap || {},
@@ -69,7 +69,7 @@ const Save = {
   loadWorld(d) {
     const m = d.meta;
     const w = new World(m.w, m.h, m.seed, m.name);
-    Object.assign(w, { seedStr: m.seedStr, worldSurface: m.worldSurface, rockLayer: m.rockLayer, hellLayer: m.hellLayer, spawnX: m.spawnX, spawnY: m.spawnY, time: m.time, dayTime: m.dayTime, day: m.day, flags: Object.assign(w.flags, m.flags), biomes: m.biomes });
+    Object.assign(w, { seedStr: m.seedStr, worldSurface: m.worldSurface, rockLayer: m.rockLayer, hellLayer: m.hellLayer, spawnX: m.spawnX, spawnY: m.spawnY, time: m.time, dayTime: m.dayTime, day: m.day, flags: Object.assign(w.flags, m.flags), biomes: m.biomes, backrooms: m.backrooms, noclipAt: m.noclipAt });
     w.tiles = d.tiles; w.walls = d.walls; w.frames = d.frames; w.liquid = d.liquid; w.ltype = d.ltype; w.explored = d.explored; w.surface = d.surface;
     w.chests = d.chests || {}; w.flipMap = d.flipMap || {};
     w.townNPCs = d.townNPCs || [];

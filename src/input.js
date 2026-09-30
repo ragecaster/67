@@ -60,6 +60,7 @@ const Input = {
   hideClicks() { const s = { mClick: this.mClick, rClick: this.rClick, wheel: this.wheel }; this.mClick = false; this.rClick = false; this.wheel = 0; return s; },
   unhideClicks(s) { this.mClick = this.mClick || s.mClick; this.rClick = this.rClick || s.rClick; this.wheel += s.wheel; },
   endFrame() {
+    if (typeof Bot !== 'undefined' && Bot.active) this.shift = false;
     this.pressed = {}; this.released = {}; this.mClick = false; this.rClick = false; this.mRelease = false; this.wheel = 0;
   },
   down(k) { return !!this.keys[k]; },

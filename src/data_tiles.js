@@ -11,6 +11,7 @@ const T = {
   LIFE_CRYSTAL: 45, SHADOW_ORB: 46, TREE: 47, CACTUS: 48, SUNFLOWER: 49, MUSHROOM: 50, PLANT: 51,
   COBWEB: 52, CANDLE: 53, SAWMILL: 54, LOOM: 55, BOTTLE: 56, PIGGY_BANK: 57, DAYBLOOM: 58, BLINKROOT: 59,
   TOMBSTONE: 61, ALCHEMY: 62,
+  WALLPAPER: 63, CARPET: 64, FLUORESCENT: 65, NOCLIP: 66, EXIT_SIGN: 67,
 };
 
 const TILES = [];
@@ -44,6 +45,13 @@ defTile(T.GOLD_BRICK, { name: 'Rizzium Brick', solid: true, block: true, img: 't
 defTile(T.EBONSAND, { name: 'Brainrot Sand', solid: true, block: true, img: 'tiles/Ebonsand_Block_(placed)', hp: 50, drop: 'sand_block', mapColor: '#7d6f8f', sound: 'dig', falls: true });
 defTile(T.SANDSTONE, { name: 'Sandstone', solid: true, block: true, img: 'tiles/Sandstone_Block_(placed)', hp: 100, drop: 'sandstone_block', mapColor: '#bf9954', sound: 'tink' });
 defTile(T.MEME67, { name: '67 Block', solid: true, block: true, img: 'gen/meme67', hp: 67, drop: 'meme67_block', mapColor: '#ffcc33', sound: 'tink', light: [0.3, 0.25, 0.05] });
+
+// the backrooms (Level 0)
+defTile(T.WALLPAPER, { name: 'Yellow Wallpaper', solid: true, block: true, img: 'gen/wallpaper', hp: 120, drop: 'wallpaper_block', mapColor: '#c9b458', sound: 'dig' });
+defTile(T.CARPET, { name: 'Moist Carpet', solid: true, block: true, img: 'gen/carpet', hp: 60, drop: 'carpet_block', mapColor: '#8f7a3c', sound: 'dig' });
+defTile(T.FLUORESCENT, { name: 'Fluorescent Light', sprite: 'gen/fluorescent', hp: 1, drop: 'fluorescent_light', mapColor: '#fffbe0', light: [1, 0.97, 0.78], anyTool: true, housingLight: true, ceiling: true, flicker: true });
+defTile(T.NOCLIP, { name: '??? (missing texture)', hp: 99999, drop: null, mapColor: '#ff00ff', unbreakable: true, noclip: true, light: [0.6, 0, 0.6] });
+defTile(T.EXIT_SIGN, { name: 'EXIT', hp: 99999, drop: null, mapColor: '#3aff6a', unbreakable: true, exit: true, light: [0.2, 0.9, 0.3] });
 
 // furniture / non-block tiles. multi: footprint in tiles, anchor: 'floor' | 'wall' | 'ceiling'
 defTile(T.PLATFORM, { name: 'Wood Platform', platform: true, hp: 30, drop: 'wood_platform', mapColor: '#a97b4f', sound: 'dig', anyTool: false });
@@ -80,7 +88,7 @@ defTile(T.TOMBSTONE, { name: 'Tombstone', multi: [2, 2], sprite: 'items/Tombston
 defTile(T.ALCHEMY, { name: 'Alchemy Table', multi: [3, 2], sprite: 'items/Alchemy_Table', hp: 1, drop: 'alchemy_table', station: 'bottle', mapColor: '#a97b4f', anyTool: true, table: true });
 
 // ---------- walls ----------
-const W = { NONE: 0, DIRT: 1, STONE: 2, WOOD: 3, GRAY_BRICK: 4, EBONSTONE: 5, HELLSTONE_BRICK: 6, DIRT_P: 7, STONE_P: 8 };
+const W = { NONE: 0, DIRT: 1, STONE: 2, WOOD: 3, GRAY_BRICK: 4, EBONSTONE: 5, HELLSTONE_BRICK: 6, DIRT_P: 7, STONE_P: 8, WALLPAPER: 9, WALLPAPER_P: 10 };
 const WALLS = [];
 function defWall(id, o) { WALLS[id] = Object.assign({ id }, o); }
 defWall(W.DIRT, { name: 'Dirt Wall', img: 'walls/Dirt_Wall_(placed)', natural: true, drop: null, mapColor: '#583f2c' });
@@ -91,6 +99,8 @@ defWall(W.EBONSTONE, { name: 'Brainrot Wall', img: 'walls/Ebonstone_Wall_(placed
 defWall(W.HELLSTONE_BRICK, { name: 'Ohio Brick Wall', img: 'walls/Hellstone_Brick_Wall_(placed)', drop: 'hellstone_brick_wall', mapColor: '#4a1c18' });
 defWall(W.DIRT_P, { name: 'Dirt Wall', img: 'walls/Dirt_Wall_(placed)', drop: 'dirt_wall', mapColor: '#583f2c' });
 defWall(W.STONE_P, { name: 'Stone Wall', img: 'walls/Stone_Wall_(placed)', drop: 'stone_wall', mapColor: '#434343' });
+defWall(W.WALLPAPER, { name: 'Level 0 Wall', img: 'gen/wallpaper_wall', natural: true, drop: null, mapColor: '#a8963e' });
+defWall(W.WALLPAPER_P, { name: 'Wallpaper Wall', img: 'gen/wallpaper_wall', drop: 'wallpaper_wall', mapColor: '#a8963e' });
 
 function tileSolid(id) { const t = TILES[id]; return !!(t && t.solid); }
 function tileBlock(id) { const t = TILES[id]; return !!(t && t.block); }

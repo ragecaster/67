@@ -33,7 +33,7 @@ const Light = {
         let lr = amb, lg = amb, lb = amb;
         if (!solid && world.walls[row] === 0 && wy < WS) { lr = sr; lg = sg; lb = sb; }
         else if (!solid && wy < WS + 2 && world.walls[row] !== 0 && wy < world.surface[x + x0] + 2) { lr = sr * 0.7; lg = sg * 0.7; lb = sb * 0.7; } // walls near surface still get a little
-        if (td && td.light) { const L = td.light; if (L[0] > lr) lr = L[0]; if (L[1] > lg) lg = L[1]; if (L[2] > lb) lb = L[2]; }
+        if (td && td.light && !(td.flicker && (world.frames[row] === 1 || flickerOff(x + x0, wy)))) { const L = td.light; if (L[0] > lr) lr = L[0]; if (L[1] > lg) lg = L[1]; if (L[2] > lb) lb = L[2]; }
         const liq = world.liquid[row];
         if (liq && world.ltype[row] === 1) { lr = Math.max(lr, 0.95); lg = Math.max(lg, 0.45); lb = Math.max(lb, 0.15); }
         if (wy >= HL && !solid) { lr = Math.max(lr, 0.32); lg = Math.max(lg, 0.16); lb = Math.max(lb, 0.08); }

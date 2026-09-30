@@ -4,7 +4,7 @@ so the game runs straight from file:// without canvas-taint or fetch restriction
 import os, base64, json
 ROOT=os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 out={}
-for folder in ['tiles','walls','items','npcs','buffs','sfx']:
+for folder in ['tiles','walls','items','npcs','buffs','hair','sfx']:
     d=os.path.join(ROOT,'assets',folder)
     for fn in sorted(os.listdir(d)):
         p=os.path.join(d,fn)

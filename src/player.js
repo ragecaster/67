@@ -16,6 +16,7 @@ const BUFFS = {
   bleeding: { name: 'Bleeding', img: 'buffs/Bleeding', tip: 'Cannot regenerate life', debuff: true },
   aura: { name: 'Aura Farming', img: 'buffs/Happy!', tip: '+6% damage, +7% movement speed. You are him.' },
   labubu: { name: 'Labubu', img: 'gen/item_labubu', tip: 'A Labubu is following you. Secret pull.' },
+  him: { name: 'HIM MODE', img: 'buffs/Happy!', tip: 'You are literally him rn. +20% damage & speed, +10 defense' },
   cozy: { name: 'Cozy Fire', img: 'buffs/Cozy_Fire', tip: 'Life regen is slightly increased' },
   happy: { name: 'Vibing', img: 'buffs/Happy!', tip: 'Sunflower nearby: movement speed up' },
 };
@@ -49,7 +50,7 @@ class Player {
     this.itemAnim = 0; this.itemAnimMax = 0; this.itemTimer = 0; this.useItem = null; this.useAngle = 0; this.swingId = 0;
     this.immune = 0; this.dead = false; this.respawn = 0; this.regenTimer = 0; this.regenAcc = 0; this.manaAcc = 0; this.manaDelay = 0;
     this.fallStart = null; this.walkFrame = 0; this.hurtFlash = 0; this.hook = null; this.emote = 0; this.emoteCd = 0; this.lavaTime = 0;
-    this.breath = 200; this.fireTick = 0; this.stepOffset = 0;
+    this.breath = 200; this.fireTick = 0; this.stepOffset = 0; this.aura = 0; this.auraIdle = 0;
     this.calc = { defense: 0, moveSpeed: 1, meleeSpeed: 1, dmg: 1, meleeDmg: 1, crit: 4, manaMax: 20, fx: {} };
   }
   get cx() { return this.x + this.w / 2; }
@@ -82,6 +83,7 @@ class Player {
     if (b.aura) { c.dmg += 0.06; c.moveSpeed += 0.07; }
     if (b.cozy) c.lifeRegen += 0.5;
     if (b.happy) c.moveSpeed += 0.1;
+    if (b.him) { c.dmg += 0.2; c.moveSpeed += 0.2; c.meleeSpeed += 0.1; c.defense += 10; c.crit += 10; }
     const h = this.heldItem();
     if (h && h.id === 'umbrella') c.fx.slowFall = true;
     this.calc = c;
@@ -207,6 +209,14 @@ class Player {
       if (this.manaAcc >= 1) { const n = Math.floor(this.manaAcc); this.manaAcc -= n; this.mana = Math.min(this.manaMax, this.mana + n); }
     }
 
+    this.autoSelect(world, typing);
+    if (!typing && Input.hit('Control')) { SETTINGS.smartCursor = !SETTINGS.smartCursor; saveSettings(); combatText(this.cx, this.y - 20, 'Smart Cursor ' + (SETTINGS.smartCursor ? 'ON (locked in)' : 'OFF'), '#ffb84a', { life: 60 }); }
+    // ---- aura meter: fills from combat + memes, slowly decays; full = HIM MODE ----
+    if (++this.auraIdle > 600 && this.aura > 0 && !this.buffs.him && G.tick % 30 === 0) this.aura = Math.max(0, this.aura - 1);
+    if (this.buffs.him) {
+      if (G.tick % 2 === 0) spawnDust(this.cx + randRange(-12, 12), this.y + this.h, pick(['#ffd23a', '#fff3a8', '#ffb84a']), 1, 0.4, { vy: -2, grav: -0.03, life: 30, size: 3 });
+      if (this.buffs.him <= 1) { this.aura = 0; G.chat('HIM MODE ended. You are... still kinda him.', '#ffd23a'); }
+    }
     // ---- 6-7 emote ----
     if (this.emoteCd > 0) this.emoteCd--;
     if (this.emote > 0) this.emote--;
@@ -233,8 +243,23 @@ class Player {
   }
   addBuff(name, ticks) { this.buffs[name] = Math.max(this.buffs[name] || 0, ticks); }
 
+  addAura(n) {
+    if (this.dead || this.buffs.him || n <= 0) return;
+    this.auraIdle = 0;
+    this.aura = Math.min(100, this.aura + n);
+    if (this.aura >= 100) this.enterHimMode();
+  }
+  enterHimMode() {
+    this.addBuff('him', 30 * 60);
+    G.himBanner = 180;
+    G.announce(this.name + ' is literally him rn.', '#ffd23a');
+    Synth.vine_boom(); speak('you are literally him right now', 1.05, 0.9);
+    for (let i = 0; i < 60; i++) spawnDust(this.cx, this.cy, pick(['#ffd23a', '#fff3a8', '#ffffff']), 1, 5, { life: 60, size: 4 });
+    G.achieve('him');
+  }
   doSixSeven() {
     if (this.emoteCd > 0) return;
+    this.addAura(5);
     this.emote = 90; this.emoteCd = 60 * 6;
     this.stats.sixSevens++;
     const shout = pick(MEME.sixSevenShouts);
@@ -254,6 +279,76 @@ class Player {
     const px0 = Math.floor(this.x / TS) - reach, px1 = Math.floor((this.x + this.w) / TS) + reach;
     const py0 = Math.floor(this.y / TS) - reach + 1, py1 = Math.floor((this.y + this.h) / TS) + reach - 1;
     return tx >= px0 && tx <= px1 && ty >= py0 && ty <= py1;
+  }
+  // ---------- Terraria "Auto Select" (hold Shift) + "Smart Cursor" (Ctrl toggles) ----------
+  autoSelect(world, typing) {
+    const shift = !typing && Input.down('Shift') && !G.ui.invOpen && !this.dead;
+    if (!shift) { if (this.autoPrev != null) { if (this.itemAnim === 0) { this.sel = this.autoPrev; this.autoPrev = null; } } return; }
+    if (this.itemAnim > 0) return;
+    const tx = Math.floor(G.mouseWorldX() / TS), ty = Math.floor(G.mouseWorldY() / TS);
+    const t = TILES[world.tile(tx, ty)];
+    const best = key => { let bi = -1, bv = 0; this.inv.forEach((s, i) => { const v = s && ITEMS[s.id][key]; if (v && v > bv) { bv = v; bi = i; } }); return bi; };
+    const findId = pred => this.inv.findIndex(s => s && pred(ITEMS[s.id]));
+    let slot = -1;
+    if (t && (t.tree || t.cactus)) slot = best('axe');
+    else if (t && world.tile(tx, ty) && !t.unbreakable) slot = t.needHammer ? best('hammer') : best('pick');
+    else if (world.liq(tx, ty) > 150) slot = findId(it => it.use === 'bucket');
+    else if (world.wall(tx, ty) && !WALLS[world.wall(tx, ty)].natural) slot = best('hammer');
+    else if (world.wall(tx, ty) || world.solid(tx, ty + 1) || world.solid(tx - 1, ty) || world.solid(tx + 1, ty)) slot = findId(it => it.id === 'torch');
+    if (slot >= 0) { if (this.autoPrev == null) this.autoPrev = this.sel; this.sel = slot; }
+  }
+  // which tile an item should act on: the one under the mouse, or the Smart Cursor pick
+  targetTile(world, it) {
+    const mx = G.mouseWorldX(), my = G.mouseWorldY();
+    const mtx = Math.floor(mx / TS), mty = Math.floor(my / TS);
+    if (!SETTINGS.smartCursor || !it) return [mtx, mty];
+    const st = this.smartTarget(world, it);
+    return st || [mtx, mty];
+  }
+  smartTarget(world, it) {
+    const mx = G.mouseWorldX(), my = G.mouseWorldY();
+    const reachOk = (x, y) => this.inReach(x, y);
+    // mining/chopping: walk a ray from the player toward the cursor and take the first thing we can hit
+    if (it.pick || it.axe || it.hammer) {
+      const d = dist(this.cx, this.cy, mx, my) || 1, steps = Math.ceil(Math.min(d, 7 * TS) / 4);
+      for (let i = 1; i <= steps; i++) {
+        const x = Math.floor((this.cx + (mx - this.cx) / d * i * 4) / TS), y = Math.floor((this.cy + (my - this.cy) / d * i * 4) / TS);
+        if (!reachOk(x, y)) break;
+        const t = TILES[world.tile(x, y)];
+        if (it.axe && t && (t.tree || t.cactus)) return [x, y];
+        if (it.pick && t && world.tile(x, y) && !t.unbreakable && !t.tree && !t.cactus && t.minPick <= it.pick && !t.cut) return [x, y];
+      }
+      if (it.axe) { // nearest tree to the cursor within reach
+        let best = null, bd = 1e9;
+        for (let y = Math.floor(this.cy / TS) - 6; y <= Math.floor(this.cy / TS) + 6; y++) for (let x = Math.floor(this.cx / TS) - 6; x <= Math.floor(this.cx / TS) + 6; x++) {
+          const t = TILES[world.tile(x, y)];
+          if (t && (t.tree || t.cactus) && reachOk(x, y)) { const dd = dist(x * TS + 8, y * TS + 8, mx, my); if (dd < bd) { bd = dd; best = [x, y]; } }
+        }
+        if (best) return best;
+      }
+      if (it.hammer) { const x = Math.floor(mx / TS), y = Math.floor(my / TS); if (world.wall(x, y) && reachOk(x, y)) return [x, y]; }
+      return null;
+    }
+    // placing: clamp the cursor into reach, then find the closest valid spot around it
+    if (it.use === 'place' || it.use === 'placeWall') {
+      let cx = Math.floor(mx / TS), cy = Math.floor(my / TS);
+      const px = Math.floor(this.cx / TS), py = Math.floor(this.cy / TS);
+      cx = clamp(cx, px - 5, px + 5); cy = clamp(cy, py - 4, py + 4);
+      let best = null, bd = 1e9;
+      for (let r = 0; r <= 2 && !best; r++) for (let y = cy - r; y <= cy + r; y++) for (let x = cx - r; x <= cx + r; x++) {
+        if (!reachOk(x, y)) continue;
+        let ok;
+        if (it.use === 'placeWall') ok = !world.wall(x, y) && !world.solid(x, y) && (world.wall(x - 1, y) || world.wall(x + 1, y) || world.wall(x, y - 1) || world.wall(x, y + 1) || world.solid(x - 1, y) || world.solid(x + 1, y) || world.solid(x, y + 1));
+        else {
+          const td = TILES[it.place];
+          if (td.multi || td.torch || it.place === T.CANDLE || it.place === T.BOTTLE) { const ox = x - (td.multi ? Math.floor((td.multi[0] - 1) / 2) : 0), oy = y - (td.multi ? td.multi[1] - 1 : 0); ok = world.canPlaceObject(ox, oy, it.place); }
+          else ok = (!world.tile(x, y) || TILES[world.tile(x, y)].cut) && (world.solid(x - 1, y) || world.solid(x + 1, y) || world.solid(x, y + 1) || world.solid(x, y - 1) || world.wall(x, y)) && !(td.solid && this.overlapsTile(x, y));
+        }
+        if (ok) { const dd = Math.abs(x - Math.floor(mx / TS)) + Math.abs(y - Math.floor(my / TS)); if (dd < bd) { bd = dd; best = [x, y]; } }
+      }
+      return best;
+    }
+    return null;
   }
   updateItemUse(world) {
     const ui = G.ui;
@@ -283,7 +378,7 @@ class Player {
   startUse(world, s, it) {
     if (!it.use && !it.pick && !it.axe && !it.hammer) return;
     const mx = G.mouseWorldX(), my = G.mouseWorldY();
-    const tx = Math.floor(mx / TS), ty = Math.floor(my / TS);
+    const [tx, ty] = this.targetTile(world, it);
     let spd = it.dmgType === 'melee' ? this.calc.meleeSpeed : 1;
     const useTime = Math.max(2, Math.round(it.useTime / spd)), useAnim = Math.max(2, Math.round(it.useAnim / spd));
     let ok = true;
@@ -361,6 +456,7 @@ class Player {
     if (it.lifeCrystal) { if (this.lifeMax >= 400) return false; this.lifeMax += 20; this.life += 20; combatText(this.cx, this.y, '+1000 aura', '#ff6fa8', { big: true }); playSound('crystal'); G.achieve('heart_breaker'); }
     if (it.manaCrystal) { if (this.manaMaxBase >= 200) return false; this.manaMaxBase += 20; this.mana += 20; playSound('crystal'); }
     if (it.heal) { this.heal(it.heal); if (it.potion) this.addBuff('potion_sickness', 60 * 60); }
+    if (it.cureDebuffs) for (const k in this.buffs) if (BUFFS[k] && BUFFS[k].debuff && k !== 'potion_sickness') delete this.buffs[k];
     if (it.healMana) { this.mana = Math.min(this.manaMax, this.mana + it.healMana); combatText(this.cx, this.y, it.healMana, '#5a8cff'); this.addBuff('mana_sickness', 5 * 60); }
     if (it.buff) { this.addBuff(it.buff[0], it.buff[1] * 60); }
     if (it.recall) { this.teleportHome(world); }
@@ -410,8 +506,7 @@ class Player {
     return base * m;
   }
   useTool(world, it) {
-    const mx = G.mouseWorldX(), my = G.mouseWorldY();
-    let tx = Math.floor(mx / TS), ty = Math.floor(my / TS);
+    let [tx, ty] = this.targetTile(world, it);
     if (!this.inReach(tx, ty)) return;
     const t = world.tile(tx, ty), td = TILES[t];
     if (it.axe && td && (td.tree || td.cactus)) { world.hitTile(tx, ty, it.axe, 'axe'); return; }
@@ -479,6 +574,7 @@ class Player {
     if (!ignoreDefense) d = Math.max(1, Math.round(d * randRange(0.85, 1.15)));
     this.life -= d;
     this.regenTimer = 0;
+    if (!this.buffs.him) { this.aura = Math.max(0, this.aura - d * 0.15); if (d >= 20 && Math.random() < 0.35) combatText(this.cx, this.y - 24, '-' + d * 10 + ' aura', '#b0b0b0', { life: 50 }); }
     this.immune = 40; this.hurtFlash = 10;
     combatText(this.cx, this.y, d, '#ff5a5a');
     playSound('player_hit', 0.8);
@@ -490,7 +586,7 @@ class Player {
   }
   kill(cause, source) {
     if (this.dead) return;
-    this.life = 0; this.dead = true;
+    this.life = 0; this.dead = true; this.aura = 0;
     this.stats.deaths++;
     playSound('player_killed');
     for (let i = 0; i < 40; i++) spawnDust(this.cx, this.cy, '#b01010', 1, 4, { life: 60 });
@@ -634,11 +730,12 @@ function randomLook() {
   const skins = ['#f0c39a', '#d9a066', '#b87945', '#8a5a33', '#5e3a1f', '#ffd8b8'];
   const shirts = ['#3a7bd5', '#d53a3a', '#3ad56a', '#d5a53a', '#7b3ad5', '#222222', '#ffffff', '#ff8ac5'];
   const pants = ['#3b3b6e', '#5a4632', '#2e2e2e', '#6e3b3b', '#2f5a3a'];
-  return { hair: pick(hairs), hairStyle: randInt(0, 3), skin: pick(skins), eyes: pick(['#3a5ad5', '#3a8a3a', '#6b4020', '#222']), shirt: pick(shirts), under: pick(shirts), pants: pick(pants), shoes: '#3a2a1a' };
+  return { hair: pick(hairs), hairStyle: randInt(0, HAIR_COUNT - 1), skin: pick(skins), eyes: pick(['#3a5ad5', '#3a8a3a', '#6b4020', '#222']), shirt: pick(shirts), under: pick(shirts), pants: pick(pants), shoes: pick(['#5a3a22', '#2a2a2a', '#8a5a33', '#ffffff']) };
 }
 
 // Terraria-proportioned humanoid drawn from rects (2px art pixels). Used by the player & previews.
 function drawHumanoid(ctx, p, sx, sy, opts = {}) {
+  if (drawPlayerSprite(ctx, p, sx, sy, opts)) return;
   const look = p.look, S = 2, dir = p.dir || 1;
   const armor = opts.armor || p.armor || [];
   const head = armor[0] && ITEMS[armor[0].id], body = armor[1] && ITEMS[armor[1].id], legs = armor[2] && ITEMS[armor[2].id];
@@ -689,10 +786,10 @@ function shade(hex, amt) {
   const r = clamp((n >> 16) + amt, 0, 255), g = clamp(((n >> 8) & 255) + amt, 0, 255), b = clamp((n & 255) + amt, 0, 255);
   return '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
 }
-function drawFrontArm(ctx, p, sx, sy, bc, walking, f, airborne, flash) {
+function drawFrontArm(ctx, p, sx, sy, bc, walking, f, airborne, flash, sprite) {
   const dir = p.dir || 1;
   const sleeve = flash ? '#ff7070' : (bc ? bc[0] : p.look.shirt), skin = flash ? '#ff7070' : p.look.skin;
-  const shoulderX = sx + p.w / 2 + dir * 1, shoulderY = sy + 18;
+  const shoulderX = sx + p.w / 2 + dir * (sprite ? 4 : 1), shoulderY = sy + (sprite ? 15 : 18);
   let armAng = Math.PI / 2 + (walking ? f * 0.5 : 0) * dir;
   if (airborne) armAng = Math.PI / 2 - 0.9 * dir;
   const it = p.useItem;
