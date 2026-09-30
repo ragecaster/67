@@ -1,0 +1,6 @@
+{
+  "name": "terrari67-tests",
+  "private": true,
+  "description": "Headless playtests. Run `npm install` here, `npx playwright install chromium`, then e.g. `node botrun.js 60000 bot67 6000`.",
+  "devDependencies": { "playwright": "^1.55.0" }
+}

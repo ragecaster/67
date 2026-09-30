@@ -38,7 +38,7 @@ const Bot = {
 
   // ================= helpers: inventory / world knowledge =================
   p() { return G.player; },
-  count(id) { return invCount(this.p().inv, id); },
+  count(id) { const p = this.p(); return invCount(p.inv, id) + (p.mouseItem && p.mouseItem.id === id ? p.mouseItem.count : 0); },
   has(id, n = 1) { return this.count(id) >= n; },
   slotOf(pred) { return this.p().inv.findIndex(s => s && pred(ITEMS[s.id], s)); },
   bestSlot(key) { let bi = -1, bv = 0; this.p().inv.forEach((s, i) => { const v = s && ITEMS[s.id][key]; if (v && v > bv) { bv = v; bi = i; } }); return bi; },
@@ -65,6 +65,10 @@ const Bot = {
     }
     return best;
   },
+  isProtected(x, y) {
+    const h = this.houseSpot;
+    return !!(h && this.milestones.house && x >= h[0] && x <= h[0] + 10 && y >= h[1] - 6 && y <= h[1]);
+  },
   nearLava(x, y) { const w = G.world; for (let j = -2; j <= 1; j++) for (let i = -1; i <= 1; i++) if (w.liq(x + i, y + j) > 20 && w.ltype[w.idx(x + i, y + j)] === 1) return true; return false; },
 
   // ================= main tick =================
@@ -75,7 +79,8 @@ const Bot = {
     this.wasDown = Input.mDown;
     this.resetInputs();
     if (Input.typing) Input.typing = null;
-    if (p.dead) { this.task = null; this.plan = []; if (!this.deadLogged) { this.deaths++; this.log('died (' + (G.deathMessage || '') + ')'); this.deadLogged = true; } return; }
+    this.why = '';
+    if (p.dead) { this.task = null; this.nav = null; this.plan = []; if (!this.deadLogged) { this.deaths++; this.log('died (' + (G.deathMessage || '') + ')'); this.deadLogged = true; } return; }
     this.deadLogged = false;
     // close menus the bot didn't open
     if (UI.talk) UI.closeTalk();
@@ -88,18 +93,42 @@ const Bot = {
     if (p.life < p.lifeMax * 0.45 && !p.buffs.potion_sickness && p.inv.some(s => s && ITEMS[s.id].heal && ITEMS[s.id].potion)) this.press('h');
     if (p.lavaWet || p.buffs.on_fire) { this.hold(' '); }
     if (p.breath < 80) this.hold(' ');
+    // finish an in-progress hotbar move before doing anything else (it's a multi-click UI action)
+    if (this.hb) { this.why = 'hotbar'; this.ensureHotbar(this.hb.from, this.hb.to); return; }
     // never leave the inventory open with something on the cursor (clicking the world would throw it)
     if (UI.invOpen && !this.uiBusy) {
+      this.why = 'close-inventory';
       if (p.mouseItem) { const e = p.inv.findIndex((s, k) => k >= 10 && !s); const [x, y] = this.slotPos(e >= 0 ? e : 49); this.uiClick(x, y); return; }
       this.press('Escape'); return;
+    }
+    // lost in Level 0? head for the EXIT sign
+    if (G.inBackrooms(p) && !this.uiBusy) {
+      const ex = this.nearestTile(t => t === T.EXIT_SIGN, 200, 60);
+      const enemy = this.findEnemy();
+      if (enemy && dist(enemy.cx, enemy.cy, p.cx, p.cy) < 120) { this.fight(enemy); return; }
+      if (ex) { this.goal = 'escaping the Backrooms (EXIT sign)'; if (this.moveTo(ex[0], ex[1], 0) === 'fail') this.stuck = 0; return; }
     }
     // pick what to do
     if (!this.uiBusy) {
       const enemy = this.findEnemy();
-      if (enemy) { this.fight(enemy); return; }
-      if (this.shouldShelter()) { this.goal = 'hiding in the house (night)'; const r = this.moveTo(this.base[0], this.base[1], 1); if (r === true) { this.aimWorld(p.cx + 200, p.cy); } return; }
+      if (enemy) { this.why = 'fight'; this.fight(enemy); return; }
+      if (this.shouldShelter()) { this.why = 'shelter'; this.goal = 'hiding in the house (night)'; const r = this.moveTo(this.base[0], this.base[1], 1); if (r === true) { this.aimWorld(p.cx + 200, p.cy); } return; }
     }
-    if (!this.task || this.task.done) this.task = this.nextTask();
+    // watchdog: abandon tasks that make no progress (no movement, no inventory change)
+    const sig = Math.round(p.x / 48) + ',' + Math.round(p.y / 48) + '|' + p.inv.reduce((n, s) => n + (s ? s.count : 0), 0);
+    if (sig !== this.progSig) { this.progSig = sig; this.progAt = G.tick; }
+    if (this.task && G.tick - this.progAt > 2400) {
+      this.log('watchdog: abandoning "' + this.goal + '" (no progress)');
+      this.cooldowns = this.cooldowns || {}; this.cooldowns[this.goal.split(' ').slice(0, 2).join(' ')] = G.tick + 3600;
+      this.task = null; this.nav = null; this.progAt = G.tick; this.watchdogs = (this.watchdogs || 0) + 1;
+      this.task = this.taskExplore();
+    }
+    if (!this.task || this.task.done) {
+      this.task = this.nextTask(); this.nav = null;
+      const key = this.goal.split(' ').slice(0, 2).join(' ');
+      if (this.cooldowns && this.cooldowns[key] > G.tick) { this.log('skipping "' + key + '" (cooling down)'); this.task = this.taskExplore(); }
+    }
+    this.why = 'task:' + this.goal;
     if (this.task) {
       try { this.task.step(); } catch (e) { this.errors++; this.log('task error ' + e.message); this.task = null; }
     }
@@ -126,9 +155,11 @@ const Bot = {
   fight(n) {
     const p = this.p();
     // give up on enemies we can't actually reach/hurt (stuck behind walls, hopping away forever)
-    if (this.fightTarget !== n.uid) { this.fightTarget = n.uid; this.fightSince = G.tick; this.fightLife = n.life; }
-    if (n.life < this.fightLife) { this.fightLife = n.life; this.fightSince = G.tick; }
-    if (G.tick - this.fightSince > (n.boss ? 3600 : 480)) { this.ignore[n.uid] = G.tick + 1800; this.fightTarget = null; this.log('ignoring ' + n.name + ' (unreachable)'); return; }
+    this.fights = this.fights || {};
+    const f = this.fights[n.uid] || (this.fights[n.uid] = { since: G.tick, life: n.life });
+    if (n.life < f.life) { f.life = n.life; f.since = G.tick; }
+    if (G.tick - f.since > (n.boss ? 3600 : 480)) { this.ignore[n.uid] = G.tick + 3600; delete this.fights[n.uid]; this.log('ignoring ' + n.name + ' (unreachable)'); return; }
+    if (G.tick % 600 === 0) for (const k in this.fights) if (!G.npcs.some(m => m.uid == k)) delete this.fights[k];
     const ws = this.bestWeaponSlot();
     if (ws < 0) return;
     if (ws > 9) { this.ensureHotbar(ws); return; }
@@ -229,54 +260,14 @@ const Bot = {
   },
 
   // ================= movement =================
-  // walk/jump/dig toward a target tile (feet position). returns true when arrived
-  moveTo(tx, ty, tol = 1) {
-    const p = this.p(), w = G.world;
-    const [px, py] = this.feet();
-    if (Math.abs(px - tx) <= tol && Math.abs(py - ty) <= Math.max(1, tol)) return true;
-    let dir = sign(tx - px);
-    if (dir === 0) dir = p.dir || 1;
-    // stuck escape
-    if (this.stuck > 240) { this.hold(' '); if (this.stuck > 600) { this.stuck = 0; return 'fail'; } }
-    // open doors in the way
-    for (let j = 0; j < 3; j++) if (w.tile(px + dir, py - j) === T.DOOR_CLOSED) { this.rightClickWorld(px + dir, py - j); this.hold(dir > 0 ? 'd' : 'a'); return false; }
-    // choose the tiles that must be clear
-    const needDig = [];
-    if (ty > py + 1 && Math.abs(tx - px) <= Math.abs(ty - py)) {
-      // descend a staircase: next column, one row lower
-      for (const [x, y] of [[px + dir, py - 1], [px + dir, py], [px + dir, py + 1]]) if (w.solid(x, y)) needDig.push([x, y]);
-      if (!needDig.length && !w.solid(px + dir, py + 2) && !w.solid(px, py + 1)) { /* falling is fine */ }
-      if (!needDig.length && w.solid(px, py + 1) && !w.solid(px + dir, py + 1)) { this.hold(dir > 0 ? 'd' : 'a'); return false; }
-      if (!needDig.length && Math.abs(tx - px) === 0) { if (w.solid(px, py + 1)) needDig.push([px, py + 1]); }
-    } else if (ty < py - 1 && Math.abs(tx - px) <= Math.abs(ty - py) + 2) {
-      // climb: clear head room above next column and above us
-      for (const [x, y] of [[px + dir, py - 1], [px + dir, py - 2], [px + dir, py - 3], [px, py - 3]]) if (w.solid(x, y)) needDig.push([x, y]);
-      if (!needDig.length) {
-        // pillar up if there's nothing to climb on
-        if (!w.solid(px + dir, py) && !w.solid(px + dir, py + 1) && this.has('dirt_block', 1) && p.onGround) { this.hold(' '); this.pillarTile = [px, py]; }
-        if (this.pillarTile && p.vy > 0 && !p.onGround) { const s = this.slotOf(it => it.id === 'dirt_block' || it.id === 'wood'); if (s >= 0 && s < 10) { this.selectSlot(s); this.aimTile(this.pillarTile[0], this.pillarTile[1]); this.clickOnce(); } else if (s >= 10) this.ensureHotbar(s); }
-        if (p.onGround) this.pillarTile = null;
-        this.hold(dir > 0 ? 'd' : 'a'); this.hold(' ');
-        return false;
-      }
-    } else {
-      // horizontal walk; dig through walls taller than a step
-      const blockedLow = w.solid(px + dir, py), blockedMid = w.solid(px + dir, py - 1), blockedHigh = w.solid(px + dir, py - 2);
-      if (blockedMid || blockedHigh) { if (blockedHigh) needDig.push([px + dir, py - 2]); if (blockedMid) needDig.push([px + dir, py - 1]); if (blockedLow && w.solid(px + dir, py - 1)) needDig.push([px + dir, py]); }
-      else if (blockedLow && w.solid(px, py - 3)) needDig.push([px, py - 3]); // no head room to step up
-      // gaps: jump over small holes when heading sideways on the surface
-      if (!w.solid(px + dir, py + 1) && !w.solid(px + dir, py + 2) && ty <= py && p.onGround) this.hold(' ');
-    }
-    const lavaStep = needDig.find(([x, y]) => this.nearLava(x, y));
-    if (lavaStep) { this.avoidLava = (this.avoidLava || 0) + 1; if (this.avoidLava > 60) { this.avoidLava = 0; return 'fail'; } this.hold(dir > 0 ? 'a' : 'd'); return false; }
-    if (needDig.length) { this.dig(needDig[0][0], needDig[0][1]); return false; }
-    this.hold(dir > 0 ? 'd' : 'a');
-    if ((p.collidedX && p.onGround) || (p.wet && ty <= py)) this.hold(' ');
-    return false;
-  },
+  // moveTo / followPath live in botnav.js (A* pathfinding)
   dig(tx, ty) {
     const w = G.world, t = TILES[w.tile(tx, ty)];
     if (!t) return;
+    // detect tiles that never break (protected by an object on top, unbreakable, ...)
+    const key = tx + ',' + ty;
+    if (this.digKey !== key) { this.digKey = key; this.digTicks = 0; }
+    if (++this.digTicks > 300) { this.badTiles = this.badTiles || new Set(); this.badTiles.add(key); this.log('cannot dig ' + t.name + ' at ' + key + ', skipping'); this.digTicks = 0; return 'fail'; }
     const kind = t.tree || t.cactus ? 'axe' : 'pick';
     const s = this.bestSlot(kind);
     if (s < 0) return;
@@ -437,11 +428,12 @@ const Bot = {
           if (s < 0) { this.done = true; return; }
           if (s > 9) { self.ensureHotbar(s); return; }
           self.selectSlot(s);
-          // find a spot next to the base on the floor
-          const spot = self.findPlacementNear(id);
+          // find a spot next to us, else anywhere around the base
+          const spot = self.findPlacementNear(id) || self.findSpotAroundBase(id);
           if (!spot) { this.done = true; self.log('no room to place ' + id); return; }
+          if (!p.inReach(spot[0], spot[1])) { if (self.moveTo(spot[0], spot[1], 2) === 'fail') waited += 100; if (++waited > 600) this.done = true; return; }
           self.aimTile(spot[0], spot[1]); self.clickOnce();
-          if (++waited > 40) this.done = true;
+          if (++waited > 600) this.done = true;
           if (!self.has(id)) { self.log('placed ' + ITEMS[id].name); this.done = true; }
           return;
         }
@@ -465,11 +457,26 @@ const Bot = {
         const s = self.slotOf(it => it.id === id);
         if (s > 9) { self.ensureHotbar(s); return; }
         self.selectSlot(s);
-        const spot = self.findPlacementNear(id);
-        if (!spot || ++tries > 60) { this.done = true; self.fail('place_' + id); self.log('no room to place ' + id); return; }
+        const spot = self.findPlacementNear(id) || self.findSpotAroundBase(id);
+        if (!spot || ++tries > 400) { this.done = true; self.fail('place_' + id); self.log('no room to place ' + id); return; }
+        if (!self.p().inReach(spot[0], spot[1])) { if (self.moveTo(spot[0], spot[1], 2) === 'fail') tries += 100; return; }
         self.aimTile(spot[0], spot[1]); self.clickOnce();
       },
     };
+  },
+  // best spot around the base (outside the house) where an object fits
+  findSpotAroundBase(id) {
+    const w = G.world, t = ITEMS[id].place, td = TILES[t];
+    const [bx, by] = this.base;
+    let best = null, bd = 1e9;
+    for (let y = by - 10; y <= by + 6; y++) for (let x = bx - 16; x <= bx + 16; x++) {
+      const ox = x - (td.multi ? Math.floor((td.multi[0] - 1) / 2) : 0), oy = y - (td.multi ? td.multi[1] - 1 : 0);
+      if (!w.canPlaceObject(ox, oy, t)) continue;
+      if (this.houseSpot && x >= this.houseSpot[0] - 3 && x <= this.houseSpot[0] + 1 && y >= this.houseSpot[1] - 4) continue; // keep the doorstep free
+      const d = Math.abs(x - bx) + Math.abs(y - by) * 2;
+      if (d < bd) { bd = d; best = [x, y]; }
+    }
+    return best;
   },
   findPlacementNear(id) {
     const p = this.p(), w = G.world, t = ITEMS[id].place;
@@ -482,29 +489,38 @@ const Bot = {
     }
     return null;
   },
-  // mine: dig a staircase down, then tunnel sideways, grabbing ore / stone in reach
+  // mine: go to the nearest reachable stone/ore (pathfinding digs the tunnel), grab anything useful in reach
   taskMine(what, doneFn) {
     const self = this;
     this.goal = 'mining ' + what;
-    let target = null, stale = 0;
+    let target = null, since = 0, bestD = Infinity;
+    const bad = (x, y) => self.badTiles && self.badTiles.has(x + ',' + y);
+    const markBad = (t) => { self.badTiles = self.badTiles || new Set(); for (let j = -2; j <= 2; j++) for (let i = -2; i <= 2; i++) self.badTiles.add((t[0] + i) + ',' + (t[1] + j)); };
     return {
       step() {
         if (doneFn()) { this.done = true; return; }
         const w = G.world, p = self.p();
         const [fx, fy] = self.feet();
-        // grab visible ore in reach
         const pick = self.bestSlot('pick'), power = pick >= 0 ? ITEMS[p.inv[pick].id].pick : 0;
-        const want = what === 'stone' ? (t => t === T.STONE) : (t => TILES[t] && TILES[t].ore && TILES[t].minPick <= power && t !== T.HELLSTONE || t === T.LIFE_CRYSTAL);
-        const near = self.nearestTile((t, x, y) => want(t) && p.inReach(x, y) && !self.nearLava(x, y), 7, 6);
-        if (near) { self.dig(near[0], near[1]); self.goal = 'mining ' + TILES[w.tile(near[0], near[1])].name; return; }
-        if (!target || ++stale > 3000) {
-          stale = 0;
-          const depth = what === 'stone' ? w.worldSurface + 10 : w.rockLayer + 10;
-          target = self.nearestTile((t, x, y) => want(t) && !self.nearLava(x, y), 80, 70) || [fx + (Math.random() < 0.5 ? -40 : 40), Math.max(fy + 20, depth)];
+        const want = what === 'stone' ? (t => t === T.STONE) : (t => (TILES[t] && TILES[t].ore && TILES[t].minPick <= power && t !== T.HELLSTONE) || t === T.LIFE_CRYSTAL);
+        const ok = (t, x, y) => want(t) && !self.nearLava(x, y) && !self.isProtected(x, y) && !bad(x, y) && Nav.cellCost(x, y) < Infinity;
+        const near = self.nearestTile((t, x, y) => ok(t, x, y) && p.inReach(x, y), 7, 6);
+        if (near) { if (self.dig(near[0], near[1]) === 'fail') markBad(near); self.goal = 'mining ' + TILES[w.tile(near[0], near[1])].name; since = G.tick; return; }
+        if (!target || !want(w.tile(target[0], target[1]))) {
+          target = self.nearestTile(ok, 90, 70);
+          if (!target) { // nothing known nearby: head deeper, away from the house
+            const depth = what === 'stone' ? w.worldSurface + 12 : w.rockLayer + 15;
+            const side = self.houseSpot && Math.abs(fx - self.houseSpot[0]) < 20 ? (fx < self.houseSpot[0] + 5 ? -25 : 25) : (Math.random() < 0.5 ? -30 : 30);
+            target = [fx + side, Math.max(fy + 15, depth)];
+          }
+          since = G.tick; bestD = Infinity;
           self.log('mining toward ' + target);
         }
+        const d = Math.abs(fx - target[0]) + Math.abs(fy - target[1]);
+        if (d < bestD - 1) { bestD = d; since = G.tick; }
         const r = self.moveTo(target[0], target[1] + 1, 3);
-        if (r === true || r === 'fail') target = null;
+        if (r === 'fail' || G.tick - since > 1500) { self.log('giving up on target ' + target); markBad(target); target = null; }
+        else if (r === true) target = null;
       },
     };
   },
@@ -528,6 +544,8 @@ const Bot = {
     // plan: [op, x, y, item]
     const plan = [];
     for (let y = fy - 7; y <= fy - 1; y++) for (let x = hx; x <= hx + 10; x++) plan.push(['clear', x, y]);
+    // a doorstep: clear two columns outside the door so the house can actually be left
+    for (let y = fy - 4; y <= fy - 1; y++) for (let x = hx - 3; x <= hx - 1; x++) plan.push(['clear', x, y]);
     for (let x = hx; x <= hx + 10; x++) plan.push(['block', x, fy]);
     for (let y = fy - 1; y >= fy - 6; y--) { if (!(y >= fy - 3)) plan.push(['block', hx, y]); plan.push(['block', hx + 10, y]); }
     for (let x = hx; x <= hx + 10; x++) plan.push(['block', x, fy - 6]);
@@ -558,6 +576,7 @@ const Bot = {
         while (i < plan.length && self.planStepDone(plan[i])) i++;
         if (i >= plan.length) { this.done = true; self.log('house finished'); return; }
         const [op, x, y, item] = plan[i];
+        self.goal = 'building a house (' + i + '/' + plan.length + ': ' + op + ' ' + (item || '') + ' @' + x + ',' + y + ' ' + (TILES[w.tile(x, y)]?.name || 'air') + ')';
         // stand inside the house footprint near the target
         const standX = clamp(x, hx + 2, hx + 8);
         if (!p.inReach(x, y) || Math.abs(self.feet()[0] - standX) > 4) { const r = self.moveTo(standX, fy - 1, 1); if (r === 'fail') i++; return; }
@@ -575,6 +594,7 @@ const Bot = {
   },
   planStepDone([op, x, y, item]) {
     const w = G.world, t = w.tile(x, y), td = TILES[t];
+    if (this.badTiles && this.badTiles.has(x + ',' + y)) return true;
     if (op === 'clear') return !t || (td && (td.cut || td.door || td.torch || td.chair || t === T.WORKBENCH || t === T.WOOD));
     if (op === 'block') return td && td.solid && !td.door ? true : (td && td.door);
     if (op === 'wall') return w.wall(x, y) !== 0 || (td && td.door);

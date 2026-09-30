@@ -372,7 +372,8 @@ function* generateWorld(name, seedStr, size = 'small') {
   for (let k = 0; k < 400; k++) {
     const x = world.spawnX + (rng() < 0.5 ? -1 : 1) * R(50, 140);
     const y = topSolid(world, x);
-    if (y > 5 && world.liq(x, y - 1) === 0 && world.empty(x, y - 2) && world.empty(x, y - 3)) { world.setTile(x, y - 3, T.NOCLIP); world.noclipAt = [x, y - 3]; break; }
+    // float it at jump height so you only noclip on purpose (walking past used to teleport you)
+    if (y > 5 && world.liq(x, y - 1) === 0 && [2, 3, 4, 5, 6].every(k => world.empty(x, y - k)) && world.empty(x - 1, y - 5) && world.empty(x + 1, y - 5)) { world.setTile(x, y - 5, T.NOCLIP); world.noclipAt = [x, y - 5]; break; }
   }
   world.time = 13500; world.dayTime = true;
   yield [msg(26), 1];
