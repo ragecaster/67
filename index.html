@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Terrari67</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0f24; overflow: hidden; }
+  #game { position: fixed; inset: 0; width: 100vw; height: 100vh; image-rendering: pixelated; image-rendering: crisp-edges; cursor: none; }
+  #loading { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #fff; font: bold 22px "Trebuchet MS", Arial, sans-serif; gap: 16px; }
+  #loading .bar { width: 320px; height: 14px; background: #223; border-radius: 7px; overflow: hidden; }
+  #loadbar { height: 100%; width: 0; background: #ffd23a; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="loading">
+  <div>TERRARI67 — loading brainrot...</div>
+  <div class="bar"><div id="loadbar"></div></div>
+</div>
+<script src="vendor/peerjs.min.js"></script>
+<script src="src/assets_data.js"></script>
+<script src="src/util.js"></script>
+<script src="src/data_tiles.js"></script>
+<script src="src/data_items.js"></script>
+<script src="src/data_recipes.js"></script>
+<script src="src/data_memes.js"></script>
+<script src="src/art.js"></script>
+<script src="src/audio.js"></script>
+<script src="src/input.js"></script>
+<script src="src/world.js"></script>
+<script src="src/physics.js"></script>
+<script src="src/entities.js"></script>
+<script src="src/lighting.js"></script>
+<script src="src/worldgen.js"></script>
+<script src="src/player.js"></script>
+<script src="src/npc.js"></script>
+<script src="src/bosses.js"></script>
+<script src="src/projectiles.js"></script>
+<script src="src/town.js"></script>
+<script src="src/render.js"></script>
+<script src="src/map.js"></script>
+<script src="src/ui.js"></script>
+<script src="src/save.js"></script>
+<script src="src/net.js"></script>
+<script src="src/menu.js"></script>
+<script src="src/game.js"></script>
+</body>
+</html>

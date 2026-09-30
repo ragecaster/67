@@ -1,0 +1,5 @@
+# Terraria assets are downloaded locally by `python3 tools/setup.py` (not redistributed in the repo)
+assets/
+src/assets_data.js
+node_modules/
+.DS_Store
