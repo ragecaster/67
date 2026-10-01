@@ -33,7 +33,9 @@ const Bot = {
   },
   // the game only jumps on a fresh key press (jumpHeld): after landing the key must be up for one tick or a held ' ' never jumps again
   jump() { const p = G.player; if (p.onGround && p.jumpHeld) return; Input.keys[' '] = true; },
-  press(k) { if (!Input.keys[k]) { Input.pressed[k] = true; Input.lastKeyTime[k] = performance.now(); } },
+  // key times in game time (ms at 60 fps), not wall-clock: the 6-7 emote checks how close two presses were, and at turbo speed
+  // real time would make the game depend on how fast the machine is (non-reproducible runs)
+  press(k) { if (!Input.keys[k]) { Input.pressed[k] = true; Input.lastKeyTime[k] = G.tick * 1000 / 60; } },
   aimWorld(x, y) { Input.mx = x - G.camX; Input.my = y - G.camY; },
   aimTile(tx, ty) { this.aimWorld(tx * TS + 8, ty * TS + 8); },
   clickHold() { Input.mDown = true; if (!this.wasDown) Input.mClick = true; },
