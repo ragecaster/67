@@ -154,6 +154,18 @@ const Bot = {
     const pos = Math.round(p.x) + ',' + Math.round(p.y);
     if (pos === this.lastPos && !UI.invOpen && !(p.itemAnim > 0)) this.stuck++; else this.stuck = Math.max(0, this.stuck - 2);
     this.lastPos = pos;
+    // stall detector: hardly moved for 3000 ticks (and not deliberately waiting) = something the planner doesn't understand; brute-force out of it
+    const an = this.anchor;
+    if (!an || Math.abs(p.x - an.x) > 48 || Math.abs(p.y - an.y) > 48) this.anchor = { x: p.x, y: p.y, t: G.tick };
+    else if (G.tick - an.t > 3000 && !/^(hiding|resting|waiting)/.test(this.goal || '') && !(this.unstick && this.unstick.until > G.tick)) {
+      const [sx, sy] = this.feet();
+      this.log('stalled 3000 ticks at ' + sx + ',' + sy + ' (' + this.goal + '): brute-force unstick, clearing bans/cooldowns');
+      this.unstick = { until: G.tick + 500, dir: Math.random() < 0.5 ? -1 : 1 };
+      this.cooldowns = {}; Nav.bans.clear(); this.badTiles = new Set(); this.avoidZone = null; this.task = null; this.nav = null; this.hb = null; this.uiBusy = false;
+      this.anchor = { x: p.x, y: p.y, t: G.tick };
+      this.stalls = (this.stalls || 0) + 1;
+    }
+    if (this.unstick && this.unstick.until > G.tick && !UI.invOpen) { this.bruteForce(); return; }
     // survival reflexes
     if (p.life < p.lifeMax * 0.45 && !p.buffs.potion_sickness && p.inv.some(s => s && ITEMS[s.id].heal && ITEMS[s.id].potion)) this.press('h');
     if (p.lavaWet || p.buffs.on_fire) { this.jump(); }
@@ -246,6 +258,22 @@ const Bot = {
       this.log('death loop (' + near.length + 'x ' + hist[hist.length - 1].cause + ' near ' + fx + ',' + fy + '): avoiding the area, cooling down "' + key + '"');
       this.deathHist = [];
     }
+  },
+
+  // blunt escape: run one way, hop, and chew through whatever is in front of us (ore, dirt, stone) with the best pickaxe
+  bruteForce() {
+    const p = this.p(), w = G.world, u = this.unstick, [fx, fy] = this.feet();
+    this.goal = 'unsticking';
+    if ((u.until - G.tick) % 140 === 0 && Math.random() < 0.4) u.dir = -u.dir;
+    const ahead = fx + u.dir * 2;
+    const s = this.bestSlot('pick');
+    if (s >= 0 && s <= 9) this.selectSlot(s);
+    // dig the column ahead at head and feet height (and above, to open a way up)
+    const targets = [[ahead, fy], [ahead, fy - 1], [fx + u.dir, fy - 1], [fx + u.dir, fy - 3], [fx, fy - 3]];
+    const t = targets.find(([x, y]) => { const q = w.tile(x, y); return q && TILES[q].solid && !TILES[q].unbreakable && !Bot.isProtected(x, y); });
+    if (t && s >= 0 && s <= 9) { this.aimTile(t[0], t[1]); this.clickHold(); }
+    this.hold(u.dir > 0 ? 'd' : 'a');
+    if (G.tick % 24 < 3 || p.collidedX) this.jump();
   },
 
   // ================= combat =================
@@ -569,7 +597,7 @@ const Bot = {
           if (id === 'work_bench') self.milestone('work bench');
           if (id === 'furnace') self.milestone('furnace');
           if (id === 'iron_anvil') self.milestone('anvil');
-          if (id.endsWith('_pickaxe')) self.milestone(id);
+          if (id.endsWith('_pickaxe') || id === 'the_67' || id.endsWith('_bow') || id.endsWith('_chainmail') || id.endsWith('_greaves') || id.endsWith('_helmet') || id === 'nightmare_pickaxe' || id === 'hellforge') self.milestone(id);
           if (id === 'suspicious_looking_eye') self.milestone('suspicious eye');
           return;
         }
@@ -782,7 +810,10 @@ const Bot = {
         const p = self.p();
         if (w.flags.eye_of_cthulhu) { this.done = true; return; }
         if (self.has('suspicious_looking_eye')) {
-          if (G.isNight() && !G.npcs.some(n => n.boss)) {
+          const [fx0, fy0] = self.feet();
+          // summon it at home, on the surface, healthy: not wherever we happen to be standing
+          if (G.isNight() && !G.npcs.some(n => n.boss) && (Math.abs(fx0 - self.base[0]) > 25 || Math.abs(fy0 - self.base[1]) > 12)) { self.goal = 'heading home to summon the Eye'; self.moveTo(self.base[0] - 6, self.base[1], 3); return; }
+          if (G.isNight() && !G.npcs.some(n => n.boss) && p.life >= p.lifeMax * 0.85) {
             const s = self.slotOf(it => it.id === 'suspicious_looking_eye');
             if (s > 9) { self.ensureHotbar(s); return; }
             if (this.summonedAt && G.tick - this.summonedAt < 300) return; // the item takes a moment to be used up and the boss to appear
@@ -793,7 +824,11 @@ const Bot = {
         if (self.count('lens') >= 6) { self.task = self.taskCraftAtBase(['suspicious_looking_eye', 1, 'altar']); return; }
         // hunt demon eyes on the surface at night; otherwise mine
         if (G.isNight()) { if (self.feet()[1] > w.worldSurface) self.moveTo(self.base[0], self.base[1], 3); else self.hold(Math.floor(self.t / 600) % 2 ? 'a' : 'd'); }
-        else { if (!this.sub || this.sub.done) this.sub = self.taskMine('ore', () => G.isNight()); this.sub.step(); }
+        else {
+          // daytime: nothing useful to mine for this goal; wait at the house for dusk (the lens-droppers only spawn at night)
+          self.goal = 'waiting for night at the house (' + self.count('lens') + '/6 lenses)';
+          self.moveTo(self.base[0] - 6, self.base[1], 3);
+        }
       },
     };
   },
