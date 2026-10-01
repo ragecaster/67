@@ -67,7 +67,13 @@ const Bot = {
   },
   isProtected(x, y) {
     const h = this.houseSpot;
-    return !!(h && this.milestones.house && x >= h[0] && x <= h[0] + 10 && y >= h[1] - 6 && y <= h[1]);
+    if (!(h && this.milestones.house)) return false;
+    return x >= h[0] && x <= h[0] + 10 && y >= h[1] - 6 && y <= h[1];
+  },
+  // the yard around the house: digging shafts/pits right beside the walls cuts the house off, so A* pays extra to dig there
+  inYard(x, y) {
+    const h = this.houseSpot;
+    return !!(h && this.milestones.house && x >= h[0] - 12 && x <= h[0] + 22 && y >= h[1] - 12 && y <= h[1] + 10);
   },
   nearLava(x, y) { const w = G.world; for (let j = -2; j <= 1; j++) for (let i = -1; i <= 1; i++) if (w.liq(x + i, y + j) > 20 && w.ltype[w.idx(x + i, y + j)] === 1) return true; return false; },
 
@@ -138,6 +144,8 @@ const Bot = {
   // ================= combat =================
   shouldShelter() {
     const p = this.p();
+    // mining happens underground where night makes little difference: don't idle in the house all night for it
+    if (/^(mining|crafting|farming)/.test(this.goal || '')) return false;
     return G.isNight() && this.houseValid() && !p.armor.some(a => a) && p.lifeMax < 200 && this.feet()[1] < G.world.worldSurface + 5 && !G.npcs.some(n => n.boss);
   },
   findEnemy() {
@@ -192,10 +200,11 @@ const Bot = {
     const houseOk = this.houseValid();
     if (!this.milestones.wood && this.count('wood') < 90 && !houseOk) return this.taskChop(90);
     if (this.count('wood') >= 90) this.milestone('wood');
-    if (!houseOk) return this.taskBuildHouse();
+    // a valid room isn't a finished house: the door, bench, chair and a walkable doorstep come after the walls
+    if (!houseOk || !this.houseFinished) return this.taskBuildHouse();
     this.milestone('house');
     // crafting ladder (at base)
-    const craftList = this.wantedCrafts();
+    const craftList = this.wantedCrafts().filter(o => !this.blocked(o[0]));
     if (craftList.length) return this.taskCraftAtBase(craftList[0]);
     // gather materials for the next upgrade
     if (this.count('stone_block') < 25 && !this.hasStation('furnace')) return this.taskMine('stone', () => this.count('stone_block') >= 25);
@@ -383,7 +392,7 @@ const Bot = {
           if (r.station === 'altar') { const a = self.nearestTile(t => t === T.ALTAR, 300, 250); if (!a) { this.done = true; self.log('no altar found'); return; } target = [a[0] + 1, a[1] + 1]; }
           else if (r.station) { const st = self.nearestTile(t => TILES[t] && (TILES[t].station === r.station || (r.station === 'furnace' && t === T.HELLFORGE)), 14, 8, self.base); if (st) target = [st[0], st[1] + (TILES[G.world.tile(st[0], st[1])].multi[1] - 1 - (G.world.frame(st[0], st[1]) >> 4))]; }
           const res = self.moveTo(target[0], target[1], 2);
-          if (res === 'fail') { this.done = true; self.log('could not reach crafting station for ' + id); return; }
+          if (res === 'fail') { this.done = true; self.log('could not reach crafting station for ' + id); self.fail(id); return; }
           if (res) phase = 'open';
           return;
         }
@@ -466,6 +475,11 @@ const Bot = {
     };
   },
   // best spot around the base (outside the house) where an object fits
+  onDoorstep(ox, oy, td) {
+    const h = this.houseSpot; if (!h) return false;
+    const mw = td.multi ? td.multi[0] : 1, mh = td.multi ? td.multi[1] : 1;
+    return ox + mw - 1 >= h[0] - 5 && ox <= h[0] + 1 && oy + mh - 1 >= h[1] - 5;
+  },
   findSpotAroundBase(id) {
     const w = G.world, t = ITEMS[id].place, td = TILES[t];
     const [bx, by] = this.base;
@@ -473,7 +487,8 @@ const Bot = {
     for (let y = by - 10; y <= by + 6; y++) for (let x = bx - 16; x <= bx + 16; x++) {
       const ox = x - (td.multi ? Math.floor((td.multi[0] - 1) / 2) : 0), oy = y - (td.multi ? td.multi[1] - 1 : 0);
       if (!w.canPlaceObject(ox, oy, t)) continue;
-      if (this.houseSpot && x >= this.houseSpot[0] - 3 && x <= this.houseSpot[0] + 1 && y >= this.houseSpot[1] - 4) continue; // keep the doorstep free
+      // keep the doorstep free: the whole footprint, not just the click point
+      if (this.onDoorstep(ox, oy, td)) continue;
       const d = Math.abs(x - bx) + Math.abs(y - by) * 2;
       if (d < bd) { bd = d; best = [x, y]; }
     }
@@ -486,7 +501,7 @@ const Bot = {
       const x = fx + dx, y = fy;
       const td = TILES[t];
       const ox = x - (td.multi ? Math.floor((td.multi[0] - 1) / 2) : 0), oy = y - (td.multi ? td.multi[1] - 1 : 0);
-      if (p.inReach(x, y) && w.canPlaceObject(ox, oy, t)) return [x, y];
+      if (p.inReach(x, y) && w.canPlaceObject(ox, oy, t) && !this.onDoorstep(ox, oy, td)) return [x, y];
     }
     return null;
   },
@@ -555,13 +570,16 @@ const Bot = {
     for (let y = fy - 5; y <= fy - 1; y++) for (let x = hx + 1; x <= hx + 9; x++) plan.push(['wall', x, y]);
     for (let y = fy - 3; y <= fy - 1; y++) plan.push(['wall', hx, y]);
     plan.push(['furn', hx, fy - 1, 'wooden_door'], ['furn', hx + 3, fy - 1, 'work_bench'], ['furn', hx + 7, fy - 1, 'wooden_chair'], ['furn', hx + 5, fy - 4, 'torch']);
+    // the doorstep must be walkable: floor in front of the door and nothing solid at body height (the terrain bump the first clear pass missed)
+    for (let x = hx - 1; x >= hx - 3; x--) plan.push(['block', x, fy]);
+    for (let x = hx - 1; x >= hx - 3; x--) for (let y = fy - 1; y >= fy - 4; y--) plan.push(['dig', x, y]);
     const needs = { wood_wall: 50, wooden_door: 1, work_bench: 1, wooden_chair: 1 };
     let i = 0;
     return {
       step() {
         const p = self.p();
         while (i < plan.length && self.planStepDone(plan[i])) i++;
-        if (i >= plan.length) { this.done = true; self.log('house finished'); return; }
+        if (i >= plan.length) { this.done = true; self.houseFinished = true; self.log('house finished'); return; }
         // clearing needs no tools; everything after it needs a work bench standing at the base
         if (plan[i][0] !== 'clear') {
           if (!self.nearestTile(t => t === T.WORKBENCH, 10, 6, self.base)) {

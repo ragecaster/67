@@ -5,7 +5,7 @@ run(async (page) => {
   const r = await page.evaluate(() => {
     const out = []; let n = 0;
     for (let i = 0; i < 30000 && n < 14; i++) {
-      Bot.wantsDraw = false; G.update(); if (Bot.wantsDraw || i % 60 === 0) G.draw(); Input.endFrame();
+      Bot.wantsDraw = false; G.update(); if (Bot.wantsDraw || G.tick % 1200 === 0) G.draw(); Input.endFrame();
       if (/@1059,168/.test(Bot.goal) && i % 15 === 0) {
         const p = G.player, it = p.inv[p.sel];
         const m = /@(\d+),(\d+)/.exec(Bot.goal), x = +m[1], y = +m[2];

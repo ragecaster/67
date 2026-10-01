@@ -6,7 +6,7 @@ run(async (page) => {
   for (let k = 0; k < (+process.argv[2] || 15); k++) {
     const t0 = Date.now();
     const r = await page.evaluate(() => {
-      for (let i = 0; i < 2000; i++) { Bot.wantsDraw = false; G.update(); if (Bot.wantsDraw || i % 1200 === 0) G.draw(); Input.endFrame(); }
+      for (let i = 0; i < 2000; i++) { Bot.wantsDraw = false; G.update(); if (Bot.wantsDraw || G.tick % 1200 === 0) G.draw(); Input.endFrame(); }
       return [Bot.goal.slice(0, 40), Math.round(Bot.planMs || 0), Bot.planCount, G.npcs.length, G.projectiles.length];
     });
     console.log(k * 2000 + 2000, Date.now() - t0, 'ms', JSON.stringify(r));

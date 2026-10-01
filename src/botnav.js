@@ -2,6 +2,7 @@
 // Node (x, y): the player's two columns are x and x+1, feet row is y (body rows y-2..y).
 // Moves: walk, step up, jump up (<=4), drop (safe heights), dig through, dig down, pillar up, swim, doors.
 const NO_SPACE = [Infinity, null], FREE_SPACE = [0, null];
+const c0free = (nav, x, y) => nav.space(x, y)[0] === 0;
 const Nav = {
   // ----- cell queries -----
   pickPower() { const p = G.player; return Math.max(0, ...p.inv.map(s => s ? ITEMS[s.id].pick || 0 : 0)); },
@@ -36,7 +37,7 @@ const Nav = {
     const above = TILES[w.tile(x, y - 1)];
     if (above && ((above.multi && !above.door) || above.tree || above.cactus)) return Infinity;
     if (this.nearLava(x, y)) return Infinity;
-    return 3 + td.hp / Math.max(20, this.power) * 1.5;
+    return 3 + td.hp / Math.max(20, this.power) * 1.5 + (Bot.inYard(x, y) ? 40 : 0);
   },
   standable(x, y) {
     const w = G.world;
@@ -64,14 +65,14 @@ const Nav = {
     const w = G.world, WW = w.w, N = WW * w.h;
     if (!this.gA || this.gA.length !== N) { this.gA = new Float64Array(N); this.gS = new Uint32Array(N); this.fromA = new Int32Array(N); this.mvA = new Uint8Array(N); }
     const gA = this.gA, gS = this.gS, fromA = this.fromA, mvA = this.mvA, stamp = this.stamp;
-    const MV = ['walk', 'up', 'drop', 'jump', 'down', 'fall', 'swim', 'pillar'];
+    const MV = ['walk', 'up', 'drop', 'jump', 'down', 'fall', 'swim', 'pillar', 'leap'], PILLAR = 7;
     const digMap = new Map();
     const key = (x, y) => y * WW + x;
     // binary min-heap of [f, cost, x, y]
     const heap = [];
     const hpush = (e) => { heap.push(e); let i = heap.length - 1; while (i > 0) { const pi = (i - 1) >> 1; if (heap[pi][0] <= e[0]) break; heap[i] = heap[pi]; i = pi; } heap[i] = e; };
     const hpop = () => { const top = heap[0], last = heap.pop(); if (heap.length) { let i = 0; const n = heap.length; for (;;) { let c = 2 * i + 1; if (c >= n) break; if (c + 1 < n && heap[c + 1][0] < heap[c][0]) c++; if (heap[c][0] >= last[0]) break; heap[i] = heap[c]; i = c; } heap[i] = last; } return top; };
-    const W = this.W || 4; // weighted A*: greedy toward the goal (dig costs make the plain heuristic far too optimistic)
+    const W = this.W || 2.5; // weighted A*: greedy toward the goal (dig costs make the plain heuristic far too optimistic)
     hpush([heur(sx, sy) * W, 0, sx, sy]);
     const open = heap;
     gA[key(sx, sy)] = 0; gS[key(sx, sy)] = stamp; fromA[key(sx, sy)] = -1;
@@ -117,6 +118,17 @@ const Nav = {
           if (tc === 0 && this.standable(x + dx, y - j)) { push(x + dx, y - j, cost + 1 + j * 1.2, k, { t: 'jump', digs: [] }); break; }
         }
       }
+      // leap across a 1-3 tile gap at the same height (run + jump): the intermediate cells must be free air
+      for (const dx of [-1, 1]) {
+        if (!this.standable(x, y) || (c0free(this, x + dx, y) && this.standable(x + dx, y))) continue;
+        for (let L = 2; L <= 4; L++) {
+          const [cl] = this.space(x + dx * L, y);
+          if (cl !== 0) break;
+          // the arc needs headroom above the gap
+          if (this.space(x + dx * Math.max(1, L - 1), y - 3, 1, 0)[0] !== 0) break;
+          if (this.standable(x + dx * L, y)) { push(x + dx * L, y, cost + 2 + L * 0.8, k, { t: 'leap', digs: null }); break; }
+        }
+      }
       // dig straight down one row
       {
         const [c, d] = this.space(x, y + 1, 0, 0);
@@ -127,7 +139,8 @@ const Nav = {
       {
         const [c, d] = this.space(x, y - 3, 0, 0);
         if (c < Infinity && inWater) push(x, y - 1, cost + 1.5 + c, k, { t: 'swim', digs: d });
-        else if (c < Infinity && this.blocks > 3 && this.standable(x, y)) push(x, y - 1, cost + 4 + c, k, { t: 'pillar', digs: d });
+        // a pillar can chain in open air: the block we placed for the previous step is what we stand on now
+        else if (c < Infinity && this.blocks > 3 && (this.standable(x, y) || mvA[k] === PILLAR)) push(x, y - 1, cost + 4 + c, k, { t: 'pillar', digs: d });
       }
     }
     if (best == null) return null;
@@ -139,6 +152,27 @@ const Nav = {
     return { path, reached: goalFn(best % WW, Math.floor(best / WW)), expanded };
   },
 
+  // height of the ground in column x (cached per plan stamp); columns we can't read (water) count as the world surface
+  surfAt(x) {
+    if (!this.surfC || this.surfStamp !== this.stamp) { this.surfC = new Map(); this.surfRaw = new Map(); this.surfStamp = this.stamp; }
+    let v = this.surfC.get(x);
+    if (v === undefined) {
+      // highest ground within a few columns: a vertical shaft we dug (open to the sky, bottom deep down) is not 'the surface'
+      v = 1e9; for (let i = x - 4; i <= x + 5; i++) v = Math.min(v, this.rawSurf(i));
+      this.surfC.set(x, v);
+    }
+    return v;
+  },
+  // first solid tile from the sky (liquids are ignored: a puddle must not turn a column into 'surface = the cave layer')
+  rawSurf(x) {
+    let v = this.surfRaw.get(x);
+    if (v === undefined) {
+      const w = G.world; v = w.h - 2;
+      for (let y = 5; y < w.h - 1; y++) { const t = w.tile(x, y); if (t && TILES[t].solid) { v = y; break; } }
+      this.surfRaw.set(x, v);
+    }
+    return v;
+  },
   // ----- player <-> node -----
   nodeOf(p) { return [Math.round((p.cx - 16) / TS), Math.floor((p.y + p.h - 1) / TS)]; },
 };
@@ -158,15 +192,33 @@ Object.assign(Bot, {
     if (needPlan) {
       if (ng && ng.cooldown > G.tick && Math.abs(ng.tx - tx) <= 2 && Math.abs(ng.ty - ty) <= 2) { this.nav.replan = false; }
       else {
-        const heur = (x, y) => Math.abs(x + 0.5 - tx) + Math.abs(y - ty) * 1.3;
-        const t0 = performance.now();
         // far goals (the way home from deep caves) need far more than 16k nodes: dig-through-rock detours are expensive to prove
         const far = Math.abs(nx - tx) + Math.abs(ny - ty) * 1.3;
-        const res = Nav.plan(nx, ny, goalFn, heur, Math.min(220000, Math.max(16000, Math.round(far * 1100))));
-        this.planMs = (this.planMs || 0) + performance.now() - t0; this.planCount = (this.planCount || 0) + 1;
+        // dig-aware: climbing through rock costs ~6/row, dropping ~2/row (a plain 1.3/row heuristic makes A* flood every cavern first)
+        let heur = (x, y) => Math.abs(x + 0.5 - tx) + (y > ty ? (y - ty) * 6 : (ty - y) * 2), gf = goalFn, budget = Math.min(220000, Math.max(16000, Math.round(far * 1100))), stage = 'direct';
+        // hierarchical: from deep underground to a near-surface goal, first just get UP to the surface (a vertical-only heuristic
+        // is far less misleading than the straight-line one), then walk the rest on open ground
+        const sa = Nav.surfAt(nx), st = Nav.surfAt(Math.round(tx));
+        if (ny - sa > 22 && ty - st < 14 && far > 45) {
+          // reach open sky at roughly the target's ground level (not the bottom of some shaft we dug)
+          const ref = Nav.rawSurf(Math.round(tx));
+          gf = (x, y) => y <= ref + 6 && Nav.rawSurf(x) > y && Nav.rawSurf(x + 1) > y;
+          heur = (x, y) => Math.max(0, y - ref) * 6 + Math.abs(x + 0.5 - tx) * 0.5;
+          budget = 120000; stage = 'ascend';
+        }
+        // deep below the surface the true route is far longer than the straight line; and a plan that ran out of budget last time must get more
+        if (ny - sa > 12) budget = Math.max(budget, 90000);
+        const gkey = tx + ',' + ty, lastB = this.lastBudget && this.lastBudget.key === gkey && this.lastBudget.partial ? this.lastBudget.n * 2 : 0;
+        budget = Math.min(300000, Math.max(budget, lastB));
+        const t0 = performance.now();
+        const res = Nav.plan(nx, ny, gf, heur, budget);
+        this.lastBudget = { key: gkey, n: budget, partial: !res || !res.reached };
+        const dt = performance.now() - t0; this.planMs = (this.planMs || 0) + dt; this.planCount = (this.planCount || 0) + 1;
+        const gk = (this.goal || '').split(' ').slice(0, 2).join(' '), pb = this.planBy || (this.planBy = {}); (pb[gk] || (pb[gk] = [0, 0]))[0] += dt; pb[gk][1]++;
+        (this.planLog || (this.planLog = [])).push(G.tick + ' ' + (this.goal || '').slice(0, 24) + ' from ' + nx + ',' + ny + ' to ' + tx + ',' + ty + ' tol' + tol + ' ' + stage + ' len' + (res ? res.path.length : -1) + (res && !res.reached ? ' PARTIAL' : '') + ' why=' + this.replanWhy + ' exp' + (res ? res.expanded : 0) + ' ' + Math.round(dt) + 'ms'); if (this.planLog.length > 60) this.planLog.shift();
         this.navFails = res && res.path.length ? 0 : (this.navFails || 0) + 1;
         if (!res || !res.path.length) { this.nav = { tx, ty, tol, at: G.tick, path: [], i: 0, cooldown: G.tick + 60 }; if (this.navFails > 3) { this.navFails = 0; return 'fail'; } return false; }
-        this.nav = { tx, ty, tol, at: G.tick, path: res.path, i: 0, partial: !res.reached, lastProgress: G.tick, cooldown: G.tick + 30 };
+        this.nav = { tx, ty, tol, at: G.tick, stage, path: res.path, i: 0, partial: !res.reached, lastProgress: G.tick, cooldown: G.tick + 30 };
       }
     }
     return this.followPath();
@@ -177,7 +229,7 @@ Object.assign(Bot, {
     const [nx, ny] = Nav.nodeOf(p);
     const settled = p.onGround || p.wet;
     // a path that doesn't start next to us is stale (respawned, knocked back, fell): plan again
-    if (nav.i === 0 && settled && (Math.abs(nav.path[0].x - nx) > 2 || Math.abs(nav.path[0].y - ny) > 5)) { nav.replan = true; nav.cooldown = 0; return false; }
+    if (nav.i === 0 && settled && (Math.abs(nav.path[0].x - nx) > 2 || nav.path[0].y - ny > 20 || ny - nav.path[0].y > 5)) { nav.replan = true; nav.cooldown = 0; this.replanWhy = 'stale-start'; return false; }
     // resync: find where we are on the path (we may have skipped ahead or fallen off)
     let found = -1;
     for (let j = Math.max(0, nav.i - 2); j < Math.min(nav.path.length, nav.i + 8); j++) {
@@ -187,10 +239,10 @@ Object.assign(Bot, {
     if (found >= nav.i - 1 && found >= 0 && settled) { if (found + 1 > nav.i) nav.lastProgress = G.tick; nav.i = found + 1; }
     else if (found < 0 && settled && nav.i > 0) {
       const prev = nav.path[nav.i - 1];
-      if (!prev || Math.abs(p.cx - (prev.x * TS + 16)) > 20 || prev.y !== ny) { nav.offPath = (nav.offPath || 0) + 1; if (nav.offPath > 20) { nav.replan = true; nav.cooldown = 0; return false; } }
+      if (!prev || Math.abs(p.cx - (prev.x * TS + 16)) > 20 || prev.y !== ny) { nav.offPath = (nav.offPath || 0) + 1; if (nav.offPath > 20) { nav.replan = true; nav.cooldown = 0; this.replanWhy = 'offpath'; return false; } }
     }
-    if (nav.i >= nav.path.length) { nav.replan = true; nav.cooldown = 0; return nav.partial ? false : false; }
-    if (G.tick - nav.lastProgress > 300) { nav.replan = true; nav.cooldown = 0; this.stuckReplans = (this.stuckReplans || 0) + 1; if (this.stuckReplans > 5) { this.stuckReplans = 0; return 'fail'; } return false; }
+    if (nav.i >= nav.path.length) { nav.replan = true; nav.cooldown = 0; this.replanWhy = 'path-end'; return false; }
+    if (G.tick - nav.lastProgress > 300) { nav.replan = true; nav.cooldown = 0; this.replanWhy = 'no-progress'; this.stuckReplans = (this.stuckReplans || 0) + 1; if (this.stuckReplans > 5) { this.stuckReplans = 0; return 'fail'; } return false; }
     const n = nav.path[nav.i], m = n.move;
     // 1) dig whatever blocks the next step
     for (const [dx, dy] of m.digs || []) {
@@ -198,7 +250,7 @@ Object.assign(Bot, {
       if (t && TILES[t].solid) {
         if (TILES[t].door) { if (t === T.DOOR_CLOSED) this.rightClickWorld(dx, dy); continue; }
         if (!p.inReach(dx, dy)) break;
-        if (this.dig(dx, dy) === 'fail') { nav.replan = true; nav.cooldown = 0; }
+        if (this.dig(dx, dy) === 'fail') { nav.replan = true; nav.cooldown = 0; this.replanWhy = 'dig-fail'; }
         return false;
       }
     }
@@ -207,8 +259,9 @@ Object.assign(Bot, {
     const targetCx = n.x * TS + 16, dxp = targetCx - p.cx;
     if (m.t === 'pillar') {
       if (Math.abs(dxp) > 5) { this.hold(dxp > 0 ? 'd' : 'a'); return false; }
-      const bs = this.slotOf(it => ['dirt_block', 'stone_block', 'wood', 'mud_block', 'clay_block', 'sand_block', 'ash_block'].includes(it.id));
-      if (bs < 0) { nav.replan = true; return false; }
+      const PB = ['dirt_block', 'stone_block', 'mud_block', 'clay_block', 'sand_block', 'ash_block', 'wood'];
+      let bs = -1; for (const id of PB) { bs = this.slotOf(it => it.id === id); if (bs >= 0) break; } // wood last: it's for the house
+      if (bs < 0) { nav.replan = true; this.replanWhy = 'no-blocks'; return false; }
       if (bs > 9) { this.ensureHotbar(bs); return false; }
       this.selectSlot(bs);
       if (p.onGround) this.hold(' ');
@@ -217,7 +270,7 @@ Object.assign(Bot, {
       return false;
     }
     if (Math.abs(dxp) > 2) this.hold(dxp > 0 ? 'd' : 'a');
-    if (n.y < ny || m.t === 'jump' || m.t === 'swim') {
+    if (n.y < ny || m.t === 'jump' || m.t === 'swim' || m.t === 'leap') {
       if (p.onGround || p.wet || p.vy < 0) this.hold(' ');
     }
     // walking into a wall we expected to step up: hop

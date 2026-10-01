@@ -5,7 +5,7 @@ run(async (page) => {
   const r = await page.evaluate((pat) => {
     let info = null, n = 0;
     for (let i = 0; i < 60000 && !info; i++) {
-      Bot.wantsDraw = false; G.update(); if (Bot.wantsDraw || i % 1200 === 0) G.draw(); Input.endFrame();
+      Bot.wantsDraw = false; G.update(); if (Bot.wantsDraw || G.tick % 1200 === 0) G.draw(); Input.endFrame();
       if (Bot.logLines.some(l => l.includes(pat))) {
         const [fx, fy] = Bot.feet(), w = G.world, rows = [];
         for (let y = fy - 12; y <= fy + 3; y++) { let s = ''; for (let x = fx - 14; x <= fx + 16; x++) { const t = w.tile(x, y), d = TILES[t]; const me = x >= fx && x <= fx + 1 && y > fy - 3 && y <= fy; s += me ? '@' : !t ? (w.wall(x, y) ? 'w' : '.') : d.door ? 'D' : d.station ? 'S' : d.solid ? '#' : 'o'; } rows.push(s + ' ' + y); }

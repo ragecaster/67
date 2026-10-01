@@ -5,7 +5,7 @@ run(async (page) => {
   const out = await page.evaluate(([a, b, step]) => {
     const out = [];
     for (let i = 0; i < b; i++) {
-      Bot.wantsDraw = false; G.update(); if (Bot.wantsDraw || i % 1200 === 0) G.draw(); Input.endFrame();
+      Bot.wantsDraw = false; G.update(); if (Bot.wantsDraw || G.tick % 1200 === 0) G.draw(); Input.endFrame();
       if (i >= a && (i - a) % step === 0) {
         const p = G.player, m = /@(\d+),(\d+)/.exec(Bot.goal);
         const x = m ? +m[1] : 0, y = m ? +m[2] : 0, it = p.inv[p.sel];
