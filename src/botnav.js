@@ -32,6 +32,7 @@ const Nav = {
     if (td.door) return 1; // we open doors
     if (td.unbreakable || td.multi || td.chest) return Infinity;
     if (Bot.isProtected(x, y)) return Infinity; // never dig through our own house
+    if (Bot.badTiles && Bot.badTiles.has(x + ',' + y)) return Infinity; // a tile we already failed to break
     if (td.minPick > this.power) return Infinity;
     // blocks holding up objects/trees can't be mined
     const above = TILES[w.tile(x, y - 1)];
@@ -266,6 +267,8 @@ Object.assign(Bot, {
     for (let j = 0; j < 3; j++) for (const xx of [n.x, n.x + 1]) if (w.tile(xx, n.y - j) === T.DOOR_CLOSED) { this.rightClickWorld(xx, n.y - j); return false; }
     // 2) move the body there
     const targetCx = n.x * TS + 16, dxp = targetCx - p.cx;
+    // moves that deliberately leave the ground (drop/fall/leap/jump) may walk off an edge; plain walks may not
+    this.allowDrop = m.t === 'drop' || m.t === 'fall' || m.t === 'leap' || m.t === 'jump' || m.t === 'swim' || m.t === 'down';
     if (m.t === 'pillar') {
       if (Math.abs(dxp) > 5) { this.hold(dxp > 0 ? 'd' : 'a'); return false; }
       const PB = ['dirt_block', 'stone_block', 'mud_block', 'clay_block', 'sand_block', 'ash_block', 'wood'];
@@ -273,8 +276,20 @@ Object.assign(Bot, {
       if (bs < 0) { nav.replan = true; this.replanWhy = 'no-blocks'; return false; }
       if (bs > 9) { this.ensureHotbar(bs); return false; }
       this.selectSlot(bs);
+      // jump, then drop the block under us as soon as our feet clear the target cell (a held jump rises ~6 tiles: out of build reach)
       if (p.onGround) this.jump();
-      else if (p.vy > -1 && p.y + p.h < (n.y + 1) * TS - 1) { this.aimTile(Math.floor(p.cx / TS), n.y + 1); this.clickOnce(); }
+      else if (p.y + p.h < (n.y + 1) * TS - 2) {
+        // the game only lets a block attach to a neighbour: use the body column that has something solid right below the target cell
+        const row = n.y + 1, cands = [Math.floor(p.cx / TS), Math.floor((p.x + 1) / TS), Math.floor((p.x + p.w - 1) / TS)];
+        let col = this.pillarCol;
+        if (col === undefined || !(cands.includes(col) && (w.solid(col, row + 1) || w.tile(col, row + 1) === T.PLATFORM))) {
+          col = cands.find(c => w.solid(c, row + 1) || w.tile(c, row + 1) === T.PLATFORM);
+          if (col === undefined) col = cands.find(c => w.solid(c - 1, row) || w.solid(c + 1, row)); // or a wall beside it
+          if (col === undefined) col = cands[0];
+        }
+        this.pillarCol = col;
+        this.aimTile(col, row); this.clickOnce();
+      }
       else this.jump();
       return false;
     }

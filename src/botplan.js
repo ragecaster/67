@@ -58,10 +58,11 @@ Object.assign(Bot, {
   },
   // The ordered list of things a player wants, as [item, qty]. Segments stop the list early (e.g. "iron tier first").
   wantSegments() {
-    const tier = (k) => [[k + '_pickaxe', 1], [k + '_broadsword', 1], [k + '_helmet', 1], [k + '_chainmail', 1], [k + '_greaves', 1]];
+    const tier = (k) => [[k + '_pickaxe', 1], [k + '_broadsword', 1], [k + '_bow', 1], [k + '_helmet', 1], [k + '_chainmail', 1], [k + '_greaves', 1]];
     return [
       { name: 'stations', want: [['furnace', 1], ['iron_anvil', 1]] },
       { name: 'iron', want: tier('iron') },
+      { name: 'ammo', want: [['wooden_arrow', 100]] },
       { name: 'crystals', special: 'crystals' },
       { name: 'gold', want: tier('gold') },
     ];

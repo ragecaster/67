@@ -11,7 +11,24 @@ const Bot = {
     for (const k of ['a', 'd', ' ', 's', 'Shift']) Input.keys[k] = false;
     Input.mDown = false;
   },
-  hold(k) { Input.keys[k] = true; },
+  // Direct walking must not step off a cliff (the game hurts above 25 tiles of fall): A* moves that intend to drop set allowDrop
+  hold(k) {
+    if ((k === 'a' || k === 'd') && !this.allowDrop) {
+      const p = G.player;
+      if (p.onGround && this.cliffAhead(k === 'd' ? 1 : -1)) return;
+    }
+    Input.keys[k] = true;
+  },
+  cliffAhead(dir) {
+    // would the body, one tile further along, have nothing to stand on within a safe fall? (partial support from one column is fine)
+    const p = G.player, w = G.world;
+    const fy = Math.floor((p.y + p.h - 1) / TS);
+    const cx = p.cx + dir * 16, c0 = Math.floor((cx - 9) / TS), c1 = Math.floor((cx + 9) / TS);
+    for (let x = c0; x <= c1; x++) {
+      for (let y = fy + 1; y <= fy + 14; y++) { const t = w.tile(x, y); if ((t && TILES[t].solid) || t === T.PLATFORM || w.liq(x, y) > 100) return false; }
+    }
+    return true;
+  },
   // the game only jumps on a fresh key press (jumpHeld): after landing the key must be up for one tick or a held ' ' never jumps again
   jump() { const p = G.player; if (p.onGround && p.jumpHeld) return; Input.keys[' '] = true; },
   press(k) { if (!Input.keys[k]) { Input.pressed[k] = true; Input.lastKeyTime[k] = performance.now(); } },
@@ -54,7 +71,13 @@ const Bot = {
       if (it.ammo && this.p().findAmmo(it.ammo) < 0) return;
       if (it.mana && this.p().mana < it.mana) return;
       // damage that actually lands (defense soaks half of it), per second
-      const v = Math.max(1, it.damage - def * 0.5) * 60 / (it.useAnim || it.useTime) + (it.use === 'swing' || it.use === 'thrust' ? 2 : 0);
+      let dmg = it.damage;
+      if (it.ammo) dmg += ITEMS[this.p().inv[this.p().findAmmo(it.ammo)].id].damage || 0;
+      const melee = it.use === 'swing' || it.use === 'thrust';
+      // a sword can't reach something hovering well above us
+      const high = enemy && enemy.cy < this.p().cy - 90 && (enemy.noGravity || (enemy.def && enemy.def.noGravity) || enemy.boss);
+      // bosses: shooting from range beats trading blows (and doesn't flip-flop with every dash)
+      const v = Math.max(1, dmg - def * 0.5) * 60 / (it.useAnim || it.useTime) * (melee && high ? 0.12 : 1) * (!melee && enemy && enemy.boss ? 1.6 : 1) + (melee ? 2 : 0);
       if (v > bv) { bv = v; bi = i; }
     });
     return bi;
@@ -67,6 +90,34 @@ const Bot = {
       if (!pred(w.tile(x, y), x, y)) continue;
       const d = Math.abs(x - fx) + Math.abs(y - fy) * 1.2;
       if (d < bd) { bd = d; best = [x, y]; }
+    }
+    return best;
+  },
+  // choose a mining target by estimated effort, not just distance: tunnelling through rock is slow, caves are free, big veins pay off
+  pickMineTarget(ok, w, fx, fy, want) {
+    const cands = [];
+    const scan = (rx, ry) => {
+      for (let y = Math.max(1, fy - ry); y < Math.min(w.h - 1, fy + ry); y++) for (let x = Math.max(1, fx - rx); x < Math.min(w.w - 1, fx + rx); x++) {
+        const t = w.tile(x, y);
+        if (!want(t)) continue;
+        const d = Math.abs(x - fx) + Math.abs(y - fy) * 1.2;
+        if (cands.length < 14 || d < cands[cands.length - 1].d) {
+          if (!ok(t, x, y)) continue;
+          cands.push({ x, y, d }); cands.sort((a, b) => a.d - b.d); if (cands.length > 14) cands.pop();
+        }
+      }
+    };
+    scan(90, 70);
+    if (!cands.length) scan(400, 250);
+    if (!cands.length) return null;
+    let best = null, bs = Infinity;
+    for (const c of cands) {
+      // solid cells along the straight line from us to it (what we'd have to dig), and neighbouring ore (vein size)
+      let solid = 0; const n = Math.max(Math.abs(c.x - fx), Math.abs(c.y - fy));
+      for (let i = 1; i < n; i++) { const x = Math.round(fx + (c.x - fx) * i / n), y = Math.round(fy + (c.y - fy) * i / n); if (w.solid(x, y)) solid++; }
+      let vein = 0; for (let j = -2; j <= 2; j++) for (let i = -2; i <= 2; i++) if ((i || j) && want(w.tile(c.x + i, c.y + j))) vein++;
+      const score = c.d + solid * 2.5 - vein * 2;
+      if (score < bs) { bs = score; best = [c.x, c.y]; }
     }
     return best;
   },
@@ -88,6 +139,7 @@ const Bot = {
     const p = this.p();
     this.t++;
     this.wasDown = Input.mDown;
+    this.allowDrop = false;
     this.resetInputs();
     if (Input.typing) Input.typing = null;
     if (!UI.invOpen && !this.uiBusy) UI.mouseOverUI = false; // the flag is only refreshed on draw, which turbo skips
@@ -194,6 +246,9 @@ const Bot = {
       const range = n.boss ? 900 : 260;
       if (d < range && d < bd && (n.boss || lineOfSight(G.world, p.cx, p.cy, n.cx, n.cy))) { bd = d; best = n; }
     }
+    // a boss fight is about the boss: ignore its minions' chatter unless one is right on top of us
+    const boss = G.npcs.find(n => n.boss && !n.dead && !(this.ignore[n.uid] > G.tick));
+    if (boss && best && !best.boss && bd > 55) return boss;
     return best;
   },
   fight(n) {
@@ -204,23 +259,69 @@ const Bot = {
     if (n.life < f.life) { f.life = n.life; f.since = G.tick; }
     if (G.tick - f.since > (n.boss ? 3600 : 480)) { this.ignore[n.uid] = G.tick + 3600; delete this.fights[n.uid]; this.log('ignoring ' + n.name + ' (unreachable)'); return; }
     if (G.tick % 600 === 0) for (const k in this.fights) if (!G.npcs.some(m => m.uid == k)) delete this.fights[k];
-    const ws = this.bestWeaponSlot(n);
+    // while a boss is up, pick the weapon for the boss (servants/minions die to anything) so we don't swap back and forth
+    const boss = G.npcs.find(m => m.boss && !m.dead);
+    let ws = this.bestWeaponSlot(boss || n);
     if (ws < 0) return;
+    // don't flip-flop between weapons every few ticks: keep the current one unless the new one is clearly better
+    const curS = p.sel, cur = p.inv[curS];
+    if (cur && curS !== ws && ITEMS[cur.id].damage && !ITEMS[cur.id].pick && !ITEMS[cur.id].axe && G.tick - (this.weaponSwitchAt || 0) < 120) ws = curS;
+    else if (ws !== curS) this.weaponSwitchAt = G.tick;
     if (ws > 9) { this.ensureHotbar(ws); return; }
     this.selectSlot(ws);
     const it = ITEMS[p.inv[ws].id];
     const melee = it.use === 'swing' || it.use === 'thrust';
-    const dx = n.cx - p.cx, adx = Math.abs(dx);
-    const want = melee ? (n.boss ? 70 : 34) : 180;
-    if (n.boss && adx < 60) this.hold(dx > 0 ? 'a' : 'd');           // kite bosses
-    else if (adx > want + 40 && !n.boss) { this.moveTo(Math.floor(n.cx / TS), Math.floor((n.y + n.h - 1) / TS), 1); }
-    else if (adx > want) this.hold(dx > 0 ? 'd' : 'a');
-    else if (!melee && adx < 90) this.hold(dx > 0 ? 'a' : 'd');
-    if (n.cy < p.y - 10 || (p.collidedX && p.onGround) || (n.boss && Math.random() < 0.03)) this.jump();
-    this.aimWorld(n.cx, n.cy);
+    const dx = n.cx - p.cx, dy = n.cy - p.cy, adx = Math.abs(dx), dist = Math.hypot(dx, dy);
+    // --- movement ---
+    let dodged = false;
+    if (n.boss) dodged = this.dodgeBoss(n);
+    if (!dodged) {
+      if (melee) {
+        const want = n.boss ? 60 : 34;
+        if (adx > want + 40 && !n.boss) this.moveTo(Math.floor(n.cx / TS), Math.floor((n.y + n.h - 1) / TS), 1);
+        else if (adx > want) this.hold(dx > 0 ? 'd' : 'a');
+      } else {
+        // ranged: stay 140-280 px away, retreat when it closes in
+        if (dist < 140) this.hold(dx > 0 ? 'a' : 'd');
+        else if (dist > 280 && !n.boss) this.hold(dx > 0 ? 'd' : 'a');
+        else if (n.boss && adx > 220) this.hold(dx > 0 ? 'd' : 'a');
+      }
+    }
+    // hop up at something standing above us (melee), or over a wall; never bunny-hop while shooting a hovering boss
+    if ((melee && n.cy < p.y - 10 && adx < 150 && !(n.boss && n.noGravity)) || (p.collidedX && p.onGround)) this.jump();
+    // --- aim (lead moving targets with projectiles) and attack ---
+    let ax = n.cx, ay = n.cy;
+    if (!melee && it.use !== 'throw') {
+      const sp = it.shootSpeed || 8, t = Math.min(45, dist / sp);
+      ax += (n.vx || 0) * t; ay += (n.vy || 0) * t - dist * 0.015;
+    }
+    this.aimWorld(ax, ay);
+    // only auto-reuse weapons repeat while the button is held; everything else needs a fresh click each use
     if (it.autoReuse) this.clickHold();
     else if (p.itemAnim === 0) this.clickOnce();
     this.goal = 'fighting ' + n.name;
+  },
+  // sidestep a boss's telegraphed charge; returns true when we are dodging this tick
+  dodgeBoss(n) {
+    const p = this.p();
+    const rx = p.cx - n.cx, ry = p.cy - n.cy, r = Math.hypot(rx, ry);
+    const vx = n.vx || 0, vy = n.vy || 0, v = Math.hypot(vx, vy);
+    if (n.def && n.def.ai === 'eye' && n.state === 'dash' && v > 3 && r < 420) {
+      const ux = vx / v, uy = vy / v;
+      const along = rx * ux + ry * uy;        // >0: it is heading toward us
+      const cross = rx * uy - ry * ux;        // sideways offset from its line
+      // rx/ry point from the boss to us: along > 0 means we are in front of the charge; sidestep until we are clear of its line
+      if (along > 0 && Math.abs(cross) < 110) {
+        if (Math.abs(uy) < 0.35) { this.jump(); return true; } // flat charge: hop over it
+        // pick a side once per charge (re-deciding every tick makes us shuffle in place) and keep running that way
+        if (!(this.dodgeUntil > G.tick)) { this.dodgeSign = cross === 0 ? (Math.random() < 0.5 ? 1 : -1) : (cross * uy >= 0 ? 1 : -1); this.dodgeUntil = G.tick + 35; }
+        this.hold(this.dodgeSign > 0 ? 'd' : 'a');
+        return true;
+      }
+    }
+    // keep out of melee range of anything big that walks at us
+    if (n.def && n.def.ai === 'tung' && r < 130) { this.hold(rx > 0 ? 'd' : 'a'); if (n.state === 'leap') this.jump(); return true; }
+    return false;
   },
 
   // ================= task planner =================
@@ -541,7 +642,7 @@ const Bot = {
         self.dbg = 'mine near=' + near + ' target=' + target;
         if (near) { if (self.dig(near[0], near[1]) === 'fail') markBad(near); self.goal = 'mining ' + TILES[w.tile(near[0], near[1])].name; since = G.tick; return; }
         if (!target || (!target.synthetic && !want(w.tile(target[0], target[1])))) {
-          target = self.nearestTile(ok, 90, 70) || self.nearestTile(ok, 400, 250);
+          target = self.pickMineTarget(ok, w, fx, fy, want);
           if (!target) { // nothing known nearby: head deeper, away from the house
             const depth = what === 'stone' ? w.worldSurface + 12 : w.rockLayer + 15;
             const side = self.houseSpot && Math.abs(fx - self.houseSpot[0]) < 20 ? (fx < self.houseSpot[0] + 5 ? -25 : 25) : (Math.random() < 0.5 ? -30 : 30);
@@ -681,7 +782,7 @@ const Bot = {
         if (self.hasBetterPick(65)) { this.done = true; return; }
         if (self.count('rotten_chunk') >= 6 && self.count('demonite_ore') + self.count('demonite_bar') * 3 >= 36) { this.done = true; return; }
         if (self.count('rotten_chunk') < 6) { const bx = w.biomes.rotX; self.moveTo(bx + (Math.floor(self.t / 900) % 2 ? 20 : -20), topSolid(w, bx) - 1, 4); self.goal = 'hunting Doomscrollers for chunks'; return; }
-        if (!this.sub || this.sub.done) this.sub = self.taskMine('ore', () => self.count('demonite_ore') >= 36);
+        if (!this.sub || this.sub.done) this.sub = self.taskMine('ore', () => self.count('demonite_ore') + self.count('demonite_bar') * 3 >= 36, [T.DEMONITE]);
         this.sub.step();
       },
     };
