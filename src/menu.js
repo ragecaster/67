@@ -40,7 +40,7 @@ const Menu = {
     this.screen = 'loading';
     await Save.saveWorld(world);
     G.start(g.player, world);
-    if (this.botRun) { Bot.start(this.botRun.turbo); this.botRun = null; return; }
+    if (this.botRun) { Bot.vision = true; Bot.start(this.botRun.turbo); this.botRun = null; return; }
     G.save(true);
     if (this.mpMode === 'host') Net.host();
   },

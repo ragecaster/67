@@ -25,7 +25,8 @@ const TerraJev = {
     this.ready = Object.keys(this.M).length > 0;
     return true;
   },
-  has(qid) { return this.ready && !!this.M[qid]; },
+  // a network trained on a different feature layout must not be used (it would silently misread the state)
+  has(qid) { const m = this.ready && this.M[qid]; return !!m && (!m.meta || !m.meta.stateDim || m.meta.stateDim === JEV_STATE_DIM); },
 
   // ---------- tiny tensor helpers ----------
   lin(L, x) { const o = L.b.slice(), n = x.length; for (let i = 0; i < o.length; i++) { let s = o[i]; const off = i * n; for (let j = 0; j < n; j++) s += L.w[off + j] * x[j]; o[i] = s; } return o; },
@@ -113,6 +114,7 @@ const TerraJev = {
 };
 
 // ---------- feature extraction (keep in sync with tools/jev/train_terrajev.py: STATE_DIM / CAND_DIM) ----------
+const JEV_STATE_DIM = 79;
 const JEV_TASKS = ['chop', 'build', 'craft', 'mine', 'fight', 'boss', 'hell', 'explore', 'other'];
 function jevTaskKind(goal) {
   goal = goal || '';
@@ -151,7 +153,7 @@ function jevStateFeatures(bot, enemy) {
     Math.min(recent, 200) / Math.max(50, p.lifeMax), p.onGround ? 1 : 0, bot.floating && bot.floating() ? 1 : 0,
   ];
   for (const k of JEV_TASKS) v.push(kind === k ? 1 : 0);
-  return v; // 38 + 9 = 47
+  return v.concat(SDK.features()); // 38 + 9 + 32 (SDK) = 79
 }
 function jevCandFeatures(bot, opt, enemy) {
   const p = G.player;

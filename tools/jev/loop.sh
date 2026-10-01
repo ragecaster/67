@@ -7,7 +7,7 @@ export CHROME_PATH=${CHROME_PATH:-$HOME/Library/Caches/ms-playwright/chromium_he
 r=$START
 while [ $r -lt $((START + ROUNDS)) ]; do
   echo "=== round $r: collecting $(date +%H:%M:%S)"
-  for s in a b c d e f; do
+  for s in $(echo a b c d e f | cut -d" " -f1-${WORLDS:-1}); do
     (cd tests && node jevcollect.js $TICKS r${r}$s 0.15 ../tools/jev/data/r${r}_$s.jsonl 1 > ../tools/jev/data/r${r}_$s.log 2>&1) &
   done
   wait

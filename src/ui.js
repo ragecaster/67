@@ -147,6 +147,12 @@ const UI = {
         const top = Object.entries(Bot.tactic.probs).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, v]) => k + ' ' + Math.round(v * 100) + '%').join(' · ');
         txt(ctx, (TerraJev.ready ? '🧠 TerraJev: ' : '📜 rules: ') + top, vw / 2, vh - 116, TerraJev.ready ? '#ffd23a' : '#cfe8ff', 12, 'center');
       }
+      if (Bot.vision) {
+        const lines = SDK.summary(), bw = Math.min(vw - 40, 900);
+        ctx.fillStyle = 'rgba(8,12,30,0.82)'; roundRect(ctx, vw / 2 - bw / 2, 70, bw, 22 + lines.length * 17, 8); ctx.fill();
+        txt(ctx, 'BOT VISION (F7) — what TerraJev sees this tick', vw / 2, 86, '#ffd23a', 12, 'center');
+        lines.forEach((l, k) => txt(ctx, l, vw / 2 - bw / 2 + 10, 104 + k * 17, '#dfe6ff', 11, 'left', false));
+      }
       const ms = Object.keys(Bot.milestones);
       if (ms.length) txt(ctx, 'milestones: ' + ms.slice(-6).join(' → '), vw / 2, vh - 100, '#cfe8ff', 11, 'center', false);
     }

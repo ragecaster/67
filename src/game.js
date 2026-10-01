@@ -476,6 +476,7 @@ const G = {
     if (Input.hit('=') || Input.hit('+')) { SETTINGS.zoom = clamp((SETTINGS.zoom || this.zoom) + 0.25, 1, 3); saveSettings(); this.resize(); }
     if (Input.hit('-')) { SETTINGS.zoom = clamp((SETTINGS.zoom || this.zoom) - 0.25, 1, 3); saveSettings(); this.resize(); }
     if (Input.hit('F5')) this.save();
+    if (Input.hit('F7')) Bot.vision = !Bot.vision;
     if (Input.hit('F8')) { if (Bot.active) Bot.stop(); else Bot.start(); }
     if (Input.hit('F9') && Bot.active) { const sp = [1, 2, 4, 8, 16, 32, 64]; Bot.turbo = sp[(sp.indexOf(Bot.turbo) + 1) % sp.length]; }
     // right-click interactions

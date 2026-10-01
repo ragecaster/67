@@ -442,7 +442,8 @@ const Bot = {
       else if (it.lifeCrystal) { if (p.lifeMax >= 400) return; gain = 2; }
       else if (it.manaCrystal) { if (p.manaMaxBase >= 200) return; gain = 1; }
       else return;
-      add('equip:' + s.id, 'equip', () => this.taskEquip(i), { def: gain / 10 });
+      if (out.some(c => c.id === 'equip:' + s.id)) return;
+      add('equip:' + s.id, 'equip', () => this.taskEquip(s.id), { def: gain / 10 });
     });
     const tree = this.nearestTile((t, x, y) => t === T.TREE && w.treeType(x, y) === TREE_BASE, 140, 40);
     if (tree) add('chop', 'chop', () => this.taskChop(this.count('wood') + 40), { value: Math.min(this.count('wood'), 200) / 100, dist: Math.abs(tree[0] - this.feet()[0]) });
@@ -468,7 +469,7 @@ const Bot = {
       if (it.summon && w.flags[it.summon]) continue;
       if (this.owns(id, qty)) continue;
       const step = this.resolve(id, qty);
-      if (!step) continue;
+      if (!step || !this.stepFeasible(step, pickPow)) continue;   // action masking: only goals whose next step is doable now
       const needs = this.rawNeeds(id, qty);
       const total = Object.values(needs).reduce((a, b) => a + b, 0) || 1;
       const have = Object.entries(needs).reduce((a, [k, v]) => a + Math.min(v, this.count(k)), 0);
@@ -488,6 +489,19 @@ const Bot = {
     // the cooldown memory: drop candidates that just failed (unless that leaves nothing)
     const fresh = out.filter(c => !(this.cooldowns && this.cooldowns[c.id] > G.tick));
     return fresh.length ? fresh : out;
+  },
+  // can the next step of a goal actually be done right now with what we have / know?
+  stepFeasible(step, pickPow, depth = 0) {
+    if (!step || depth > 3) return false;
+    if (step.craft) return true;
+    if (step.station) { const it = STATION_ITEM[step.station]; if (this.has(it)) return true; return this.stepFeasible(this.resolve(it, 1), pickPow, depth + 1); }
+    if (step.gather) {
+      const id = step.gather;
+      if (id === 'wood' || id === 'stone_block' || id === 'dirt_block') return true;
+      if (ORE_TILE[id]) { const td = TILES[T[ORE_TILE[id]]]; const known = SDK.obs().near.ores && SDK.obs().near.ores[id]; return td.minPick <= pickPow && !!known; }
+      return false; // monster drops (gel, lens, chunks, boss loot), obsidian... come from the boss/biome skills
+    }
+    return false;
   },
   taskGoHome() {
     const self = this;
@@ -524,8 +538,9 @@ const Bot = {
   // ================= UI helpers (clicks on the real inventory UI) =================
   slotPos(i) { return [20 + (i % 10) * (SLOT + GAP) + SLOT / 2, 22 + Math.floor(i / 10) * (SLOT + GAP) + SLOT / 2]; },
   // move an inventory item into hotbar slot 9 (swap) using mouse clicks
-  ensureHotbar(i, target = 9) {
+  ensureHotbar(i, target) {
     const p = this.p();
+    if (target == null) target = p.inv[i] ? SDK.hotbarSlotFor(p.inv[i].id) : 9; // each kind of item has its own home slot
     this.uiBusy = true;
     const st = this.hb || (this.hb = { step: 0, from: i, to: target });
     if (st.step === 0) { if (!UI.invOpen) this.press('Escape'); st.step = 1; return; }
@@ -593,17 +608,25 @@ const Bot = {
       },
     };
   },
-  taskEquip(i) {
-    const self = this, it = ITEMS[this.p().inv[i].id];
+  // equip / use an item, tracked by id (its slot is looked up live every step, so it can't loop on a stale slot)
+  taskEquip(id) {
+    const self = this, it = ITEMS[id], start = SDK.count(id);
     this.goal = 'equipping ' + it.name;
-    let step = 0;
+    let step = 0, tries = 0;
     return {
       step() {
-        self.uiBusy = true;
+        const i = SDK.slotOf(id);
+        // gone (used up / equipped) or not worth it anymore: done
+        if (i < 0 || SDK.count(id) < start || ++tries > 120) { if (UI.invOpen && !self.hb) self.press('Escape'); this.done = true; self.uiBusy = false; return; }
         if (it.lifeCrystal || it.manaCrystal) {
-          if (i > 9) { self.ensureHotbar(i); if (!self.hb) i = 9; return; }
-          self.selectSlot(i); self.clickOnce(); this.done = true; self.uiBusy = false; return;
+          if ((it.lifeCrystal && self.p().lifeMax >= 400) || (it.manaCrystal && self.p().manaMaxBase >= 200)) { this.done = true; return; }
+          if (i > 9) { self.ensureHotbar(i); return; }
+          self.uiBusy = false;
+          if (UI.invOpen) { self.press('Escape'); return; }
+          self.selectSlot(i); if (self.p().sel === i && self.p().itemAnim === 0) self.clickOnce();
+          return;
         }
+        self.uiBusy = true;
         if (step === 0) { if (!UI.invOpen) self.press('Escape'); step = 1; return; }
         if (step === 1) { const [x, y] = self.slotPos(i); self.uiClick(x, y, true); step = 2; return; }
         if (UI.invOpen) self.press('Escape');
