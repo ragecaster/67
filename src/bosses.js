@@ -38,6 +38,7 @@ function bossDefeated(n, key) {
   w.flags[key] = true;
   G.announce(n.name + ' has been defeated! ' + pick(['W.', 'Ratio.', 'Mogged.', 'GG no re.', 'Aura +10000.']), '#af4bff');
   G.achieve(key);
+  if (typeof Bot !== 'undefined' && Bot.active) Bot.milestone('killed ' + key.replace(/_/g, ' '));
   G.chatReact();
   if (G.player) G.player.addAura(25);
   if (key === 'wall_of_flesh') {

@@ -99,7 +99,7 @@ class NPC {
       return final;
     }
     if (!G.suppress67 && G.player) G.player.addAura(this.boss ? 0.25 : 0.6);
-    if (!G.suppress67 && typeof TerraJev !== 'undefined') TerraJev.counters.dmgDealt += final;
+    if (!G.suppress67 && typeof TerraJev !== 'undefined') { TerraJev.counters.dmgDealt += final; if (this.boss || (this.def && this.def.boss)) TerraJev.counters.bossDealt += final; }
     this.life -= final;
     this.hitFlash = 8;
     if (final === 67 && !G.suppress67) G.sixSevenHit(this.cx, this.y);

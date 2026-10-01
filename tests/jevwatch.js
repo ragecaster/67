@@ -17,8 +17,8 @@ run(async (page) => {
         Bot.wantsDraw = false; G.update(); if (Bot.wantsDraw || G.tick % 1200 === 0) G.draw(); Input.endFrame();
         if (G.tick % 100) continue;
         const p = G.player, fx = Math.floor(p.cx / TS), fy = Math.floor((p.y + p.h - 1) / TS);
-        const t = Bot.tactic;
-        const s = { t: G.tick, x: fx, y: fy, life: Math.round(p.life) + '/' + p.lifeMax, dead: p.dead, goal: Bot.goal, why: Bot.why, jev: t && G.tick - t.at < 100 ? t.choice : '', deaths: Bot.deaths };
+        const t = Bot.act;
+        const s = { t: G.tick, x: fx, y: fy, life: Math.round(p.life) + '/' + p.lifeMax, dead: p.dead, goal: Bot.goal, why: Bot.why, jev: t ? t.id : '', deaths: Bot.deaths };
         samples.push(s);
         W.hist.push(s); if (W.hist.length > 30) W.hist.shift();
         const h = W.hist;

@@ -29,7 +29,23 @@ const SDK = {
     if (it.summon || it.consumable || it.use) return 'consumable';
     return 'spare';
   },
-  hotbarSlotFor(id) { const k = this.kindOf(id); const i = this.LOADOUT.indexOf(k); return i >= 0 ? i : 9; },
+  // core kinds (weapon, pick, axe, torch, blocks, potions) own a slot; everything else shares the remaining slots,
+  // replacing the least recently used one, so one key doesn't cycle through every item the bot needs
+  CORE: ['melee', 'pick', 'axe', 'ranged', 'torch', 'block', 'potion'],
+  hotbarSlotFor(id) {
+    const k = this.kindOf(id), home = this.CORE.indexOf(k);
+    if (home >= 0) return home;
+    const p = G.player, used = Bot.slotUsed || [];
+    const free = [], kept = new Set();
+    for (let i = 0; i < 10; i++) { const s = p.inv[i]; if (!s) return i; const sk = this.kindOf(s.id); if (this.CORE.indexOf(sk) === i) kept.add(sk); } // an empty hotbar slot: take it
+    for (let i = 0; i < 10; i++) {
+      const sk = this.kindOf(p.inv[i].id);
+      if (this.CORE.includes(sk) && (this.CORE.indexOf(sk) === i || !kept.has(sk))) { kept.add(sk); continue; } // one item of each core kind stays
+      free.push(i);
+    }
+    if (!free.length) return 9;
+    return free.sort((a, b) => (used[a] || 0) - (used[b] || 0))[0];
+  },
 
   // ---------- the observation ----------
   build() {

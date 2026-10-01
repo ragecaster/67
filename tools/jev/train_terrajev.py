@@ -17,15 +17,16 @@ import argparse, glob, json, math, random, sys
 from pathlib import Path
 import torch, torch.nn as nn, torch.nn.functional as F
 
-OPTIONS = ['fight', 'kite', 'flee', 'heal', 'ignore', 'rest', 'shelter', 'continue']
 ROOT = Path(__file__).resolve().parents[2]
 
 
 def reward(o, q='tactic'):
     # one number per decision: hurting is bad, dying is very bad, killing/progress is good
     base = (-3.0 * o['taken'] - 6.0 * o['died'] + 0.3 * o['kills'] + 0.002 * o['dealt']
-            + 0.15 * math.log1p(o['gain'] / 100.0) + 0.5 * o['ms'])
-    if q == 'task':  # long horizon: progress dominates (gear, life, pick power, milestones)
+            + 0.15 * math.log1p(o['gain'] / 100.0) + 0.5 * o['ms']
+            # the end goal: all four bosses dead. A first kill outweighs any death, and damage on a boss earns partial credit
+            + 15.0 * o.get('boss', 0) + 0.003 * o.get('bossDealt', 0))
+    if q in ('task', 'act'):  # long horizon: progress dominates (gear, life, pick power, milestones)
         base += 1.0 * o['ms'] + 0.3 * o.get('dDef', 0) + 0.02 * o.get('dLife', 0) + 0.05 * o.get('dPick', 0) + 0.3 * math.log1p(o['gain'] / 100.0)
     return base
 
@@ -113,7 +114,6 @@ def train_one(q, paths, a):
     stats = {}
     for r in rows:
         o = r['cands'][r['chosen']].split(':')[0]
-        o = o if not o.startswith('npc') else 'npc'
         st = stats.setdefault(o, [0, 0.0]); st[0] += 1; st[1] += reward(r['outcome'], q)
     for o, (n, tot) in sorted(stats.items(), key=lambda x: -x[1][0])[:14]:
         print(f'    {o:22s} chosen {n:6d}x  mean reward {tot / n:+.3f}')
@@ -162,7 +162,7 @@ def main():
     ap.add_argument('--ent', type=float, default=0.01)
     ap.add_argument('--epochs', type=int, default=30)
     ap.add_argument('--resume', action='store_true')
-    ap.add_argument('--questions', default='tactic,task,target,weapon,control')
+    ap.add_argument('--questions', default='act')
     ap.add_argument('--out', default=str(ROOT / 'src' / 'terrajev_weights.js'))
     a = ap.parse_args()
     paths = sorted({p for g in a.data for p in glob.glob(g)})

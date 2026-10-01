@@ -14,9 +14,8 @@
 //   V(s) = value head (used only in training as the advantage baseline)
 const TerraJev = {
   W: null, ready: false, temperature: 1, sample: false, epsilon: 0, logging: false, records: [], pending: [],
-  OPTIONS: ['fight', 'kite', 'flee', 'heal', 'ignore', 'rest', 'shelter', 'continue'],
 
-  // one small network per question id ('tactic', 'target', 'weapon', 'control'); older single-model files = tactic
+  // one small network per question id (now just 'act'); older single-model files load as 'tactic' and go unused
   M: {},
   load(weights) {
     if (!weights) return false;
@@ -26,7 +25,7 @@ const TerraJev = {
     return true;
   },
   // a network trained on a different feature layout must not be used (it would silently misread the state)
-  has(qid) { const m = this.ready && this.M[qid]; return !!m && (!m.meta || !m.meta.stateDim || m.meta.stateDim === JEV_STATE_DIM); },
+  has(qid, cdim) { const m = this.ready && this.M[qid]; return !!m && (!m.meta || !m.meta.stateDim || m.meta.stateDim === JEV_STATE_DIM) && (!cdim || !m.meta || !m.meta.candDim || m.meta.candDim === cdim); },
 
   // ---------- tiny tensor helpers ----------
   lin(L, x) { const o = L.b.slice(), n = x.length; for (let i = 0; i < o.length; i++) { let s = o[i]; const off = i * n; for (let j = 0; j < n; j++) s += L.w[off + j] * x[j]; o[i] = s; } return o; },
@@ -57,7 +56,7 @@ const TerraJev = {
   //   q = { id, state: number[], candidates: [{ id, features: number[] }], teacher?: id }
   decide(q) {
     let probs;
-    if (this.has(q.id)) {
+    if (this.has(q.id, q.candidates[0] && q.candidates[0].features.length)) {
       const logits = this.forward(q.state, q.candidates.map(c => c.features), q.id);
       const T = this.temperature, mx = Math.max(...logits);
       const e = logits.map(z => Math.exp((z - mx) / T)), sum = e.reduce((a, b) => a + b, 0);
@@ -66,7 +65,7 @@ const TerraJev = {
       // no trained network for this question yet: explore uniformly (that's how it learns)
       probs = q.candidates.map(() => 1 / q.candidates.length);
     }
-    const untrained = !this.has(q.id);
+    const untrained = !this.has(q.id, q.candidates[0] && q.candidates[0].features.length);
     // exploration for training rollouts: with probability epsilon try a random allowed option
     const eps = this.epsilon || 0;
     if (eps > 0) probs = probs.map(v => (1 - eps) * v + eps / probs.length);
@@ -80,15 +79,16 @@ const TerraJev = {
   },
 
   // ---------- rollout logging for training (outcome measured over the next H ticks) ----------
-  H: 240, HQ: { tactic: 240, target: 120, weapon: 180, control: 45, task: 3000 },
+  H: 240, HQ: { act: 1500 },
   record(q, out, probs) {
     const m = this.metrics();
     this.pending.push({ t: G.tick, q: q.id, state: q.state, cands: q.candidates.map(c => c.id), feats: q.candidates.map(c => c.features), chosen: out.idx, mu: probs[out.idx], teacher: q.candidates.findIndex(c => c.id === q.teacher), m0: m });
     if (this.pending.length > 8000) this.pending.shift();
   },
   // running counters the reward is built from (filled by bot/npc hooks)
-  counters: { dmgTaken: 0, dmgDealt: 0, kills: 0, deaths: 0, value: 0 },
-  metrics() { const c = this.counters, p = G.player; return { taken: c.dmgTaken, dealt: c.dmgDealt, kills: p.stats.kills, deaths: c.deaths, value: this.invValue(p), lifeMax: p.lifeMax, ms: Object.keys(Bot.milestones || {}).length, def: p.calc.defense, pick: Math.max(0, ...p.inv.map(s => s ? ITEMS[s.id].pick || 0 : 0)) }; },
+  counters: { dmgTaken: 0, dmgDealt: 0, bossDealt: 0, kills: 0, deaths: 0, value: 0 },
+  BOSSES: ['king_slime', 'eye_of_cthulhu', 'tung_sahur', 'wall_of_flesh'],   // killing all four beats the game
+  metrics() { const c = this.counters, p = G.player; return { taken: c.dmgTaken, dealt: c.dmgDealt, kills: p.stats.kills, deaths: c.deaths, value: this.invValue(p), lifeMax: p.lifeMax, ms: Object.keys(Bot.milestones || {}).length, def: p.calc.defense, pick: Math.max(0, ...p.inv.map(s => s ? ITEMS[s.id].pick || 0 : 0)), bosses: this.BOSSES.filter(k => G.world.flags[k]).length, bossDealt: c.bossDealt }; },
   invValue(p) { let v = 0; for (const s of p.inv) if (s && ITEMS[s.id]) v += (ITEMS[s.id].value || 1) * s.count; return v; },
   tickLogging() {
     if (!this.logging) return;
@@ -106,6 +106,7 @@ const TerraJev = {
         taken: (m.taken - m0.taken) / Math.max(100, m0.lifeMax), died: m.deaths - m0.deaths, kills: m.kills - m0.kills,
         dealt: m.dealt - m0.dealt, gain: Math.max(0, m.value - m0.value), ms: m.ms - m0.ms,
         dDef: m.def - m0.def, dLife: m.lifeMax - m0.lifeMax, dPick: m.pick - m0.pick,
+        boss: m.bosses - (m0.bosses || 0), bossDealt: m.bossDealt - (m0.bossDealt || 0),
       };
       delete r.m0;
       this.records.push(r);
@@ -119,7 +120,7 @@ const JEV_TASKS = ['chop', 'build', 'craft', 'mine', 'fight', 'boss', 'hell', 'e
 function jevTaskKind(goal) {
   goal = goal || '';
   if (/chop/.test(goal)) return 'chop'; if (/house|build/.test(goal)) return 'build'; if (/craft|placing|equip/.test(goal)) return 'craft';
-  if (/min/.test(goal)) return 'mine'; if (/Eye|Tung|boss|summon|lens/.test(goal)) return 'boss'; if (/Ohio|hell|bridge|doll|island/.test(goal)) return 'hell';
+  if (/min/.test(goal)) return 'mine'; if (/Eye|Tung|King|boss|summon|lens|preparing for|farming (gel|lens|bone)/.test(goal)) return 'boss'; if (/Ohio|hell|bridge|doll|island/.test(goal)) return 'hell';
   if (/fight/.test(goal)) return 'fight'; if (/explor/.test(goal)) return 'explore'; return 'other';
 }
 function jevStateFeatures(bot, enemy) {
@@ -155,58 +156,24 @@ function jevStateFeatures(bot, enemy) {
   for (const k of JEV_TASKS) v.push(kind === k ? 1 : 0);
   return v.concat(SDK.features()); // 38 + 9 + 32 (SDK) = 79
 }
-function jevCandFeatures(bot, opt, enemy) {
-  const p = G.player;
-  const oh = TerraJev.OPTIONS.map(o => (o === opt ? 1 : 0));
-  const potions = p.inv.reduce((n, s) => n + (s && ITEMS[s.id].heal && ITEMS[s.id].potion ? s.count : 0), 0);
-  const [fx, fy] = bot.feet(), base = bot.base || [fx, fy];
-  const dBase = Math.abs(fx - base[0]) + Math.abs(fy - base[1]);
-  let a = 0, b = 0;
-  if (opt === 'heal') { a = Math.min(potions, 10) / 5; b = (p.lifeMax - p.life) / p.lifeMax; }
-  else if (opt === 'flee' || opt === 'shelter') { a = Math.min(dBase, 300) / 100; b = enemy ? Math.min(Math.abs(enemy.cx - p.cx), 600) / 200 : 0; }
-  else if (opt === 'fight' || opt === 'kite') { a = enemy ? enemy.life / enemy.lifeMax : 0; b = enemy ? Math.min(Math.hypot(enemy.cx - p.cx, enemy.cy - p.cy), 600) / 200 : 0; }
-  else if (opt === 'rest') { a = (p.lifeMax - p.life) / p.lifeMax; }
-  return oh.concat([a, b]); // 8 + 2 = 10
-}
-
-// ---------- finer-grained questions ----------
-// target: which enemy?   weapon: which weapon?   control: which raw inputs (move x jump x attack, or path to it)?
-function jevTargetFeatures(bot, n, current) {
-  const p = G.player, dx = n.cx - p.cx, dy = n.cy - p.cy, d = Math.hypot(dx, dy);
-  const ws = bot.bestWeaponSlot(n), it = ws >= 0 ? ITEMS[p.inv[ws].id] : null;
-  const dmg = it ? (it.fixedDamage ? 67 : Math.max(1, it.damage - n.defense * 0.5)) : 1;
-  const ai = n.def && n.def.ai;
-  return [Math.min(d, 900) / 300, clamp(dx / 300, -3, 3), clamp(dy / 300, -3, 3), n.life / n.lifeMax, Math.min(n.life, 600) / 200,
-    Math.max(1, n.damage - p.calc.defense * 0.5) / 50, (n.def.noGravity || ai === 'flyer' || ai === 'bat') ? 1 : 0, n.boss ? 1 : 0,
-    lineOfSight(G.world, p.cx, p.cy, n.cx, n.cy) ? 1 : 0, n === current ? 1 : 0, Math.min(n.life / dmg, 30) / 10,
-    ['caster', 'demon', 'harpy', 'antlion', 'bombardiro'].includes(ai) ? 1 : 0];
-}
-function jevWeaponFeatures(bot, slot, target) {
-  const p = G.player, it = ITEMS[p.inv[slot].id];
-  const def = target ? target.defense : 0, dmg = it.fixedDamage ? 67 : Math.max(1, it.damage - def * 0.5);
-  const ranged = !!(it.use === 'shoot' || it.shoot || it.use === 'throw');
-  const d = target ? Math.hypot(target.cx - p.cx, target.cy - p.cy) : 0;
-  const ammoOk = !it.ammo || p.findAmmo(it.ammo) >= 0, manaOk = !it.mana || p.mana >= it.mana;
-  return [Math.min(it.damage, 100) / 50, Math.min(it.useTime, 60) / 30, Math.min(dmg * 60 / Math.max(6, it.useTime), 600) / 200,
-    ranged ? 1 : 0, (it.use === 'swing' || it.use === 'thrust') ? 1 : 0, it.autoReuse ? 1 : 0, (it.mana || 0) / 20,
-    ammoOk && manaOk ? 1 : 0, p.sel === slot ? 1 : 0, !ranged && d > 70 ? 1 : 0, it.fixedDamage ? 1 : 0];
-}
-const JEV_CONTROLS = (() => { const o = []; for (const m of [-1, 0, 1]) for (const j of [0, 1]) for (const a of [0, 1]) o.push({ id: (m < 0 ? 'L' : m > 0 ? 'R' : '_') + (j ? 'J' : '_') + (a ? 'A' : '_'), m, j, a }); o.push({ id: 'path', m: 0, j: 0, a: 1, path: true }); return o; })();
-function jevControlFeatures(bot, c, target, it) {
-  const p = G.player, w = G.world, [fx, fy] = bot.feet();
-  const dx = target ? target.cx - p.cx : 0, dy = target ? target.cy - p.cy : 0;
-  const m = c.m;
-  const blocked = m !== 0 && (w.solid(fx + m * 2, fy - 1) || w.solid(fx + m * 2, fy - 2)) ? 1 : 0;
-  const cliff = m !== 0 && bot.cliffAhead(m) ? 1 : 0;
-  let lava = 0; if (m !== 0) for (let k = 1; k <= 4 && !lava; k++) for (let j = -1; j <= 3; j++) if (w.liq(fx + m * k, fy + j) > 20 && w.ltype[w.idx(fx + m * k, fy + j)] === 1) { lava = 1; break; }
-  const edge = m !== 0 ? bot.edgeDist(m) / 12 : 1;
-  const toward = target && m !== 0 ? m * sign(dx) : 0;
-  const after = target ? Math.hypot(dx - m * 30, dy) : 0;
-  const melee = it && (it.use === 'swing' || it.use === 'thrust') && !it.shoot;
-  const inReach = target ? (melee ? (after < 60 ? 1 : 0) : (after < 450 ? 1 : 0)) : 0;
-  let proj = 0; for (const q of G.projectiles) if (q.hostile && !q.dead && Math.abs(q.cy - p.cy) < 80 && Math.abs(q.cx - p.cx) < 260 && sign(q.cx - p.cx) === (m || 1) * (m ? 1 : 0) && sign(q.vx) === -sign(q.cx - p.cx)) proj++;
-  const above = target && dy < -24 ? 1 : 0;
-  return [m < 0 ? 1 : 0, m === 0 ? 1 : 0, m > 0 ? 1 : 0, c.j, c.a, c.path ? 1 : 0, blocked, cliff, lava, edge, toward, Math.min(after, 600) / 200, inReach,
-    Math.min(proj, 3) / 3, above, c.j && (above || blocked) ? 1 : 0, p.onGround ? 1 : 0];
+// ---------- candidate features for the 'act' question (one row per concrete action the SDK can run) ----------
+const ACT_KINDS = ['fight', 'kite', 'flee', 'heal', 'rest', 'shelter', 'chop', 'build', 'stone', 'ore', 'craft', 'crystal', 'boss', 'brainrot', 'hell', 'explore', 'home'];
+const ACT_COMBAT = ['fight', 'kite', 'flee', 'heal'];
+function jevActFeatures(bot, c, cur) {
+  const p = G.player, w = G.world, n = c.enemy;
+  const last = bot.taskHist && bot.taskHist[c.id];
+  const v = ACT_KINDS.map(k => (k === c.kind ? 1 : 0));
+  v.push(c.value || 0, c.def || 0, c.dmg || 0, c.pickGain || 0, c.ready == null ? 1 : c.ready, c.needs || 0,
+    c.dist == null ? 0 : Math.min(c.dist, 300) / 100, c.id === cur ? 1 : 0, bot.cooldowns && bot.cooldowns[c.id] > G.tick ? 1 : 0,
+    last ? Math.min(G.tick - last, 6000) / 3000 : 2);
+  for (const b of TerraJev.BOSSES) v.push(c.boss === b || (c.kind === 'hell' && b === 'wall_of_flesh') || (n && n.boss && n.type === b) ? 1 : 0);
+  v.push(TerraJev.BOSSES.filter(b => !w.flags[b]).length / 4);
+  if (n) {
+    const dx = n.cx - p.cx, dy = n.cy - p.cy, ws = bot.bestWeaponSlot(n), it = ws >= 0 ? ITEMS[p.inv[ws].id] : null;
+    const dps = it ? Math.max(1, (it.fixedDamage ? 67 : it.damage) - (n.defense || 0) * 0.5) * 60 / Math.max(6, it.useTime) : 1;
+    v.push(1, Math.min(Math.hypot(dx, dy), 900) / 300, clamp(dy / 300, -3, 3), n.life / n.lifeMax, Math.max(1, n.damage - p.calc.defense * 0.5) / Math.max(20, p.life),
+      n.boss ? 1 : 0, (n.def.noGravity || ['flyer', 'bat', 'smiler'].includes(n.def.ai)) ? 1 : 0, Math.min(n.life / dps, 30) / 10);
+  } else v.push(0, 0, 0, 0, 0, 0, 0, 0);
+  return v; // 17 + 10 + 4 + 1 + 8 = 40
 }
 if (typeof TERRAJEV_WEIGHTS !== 'undefined') TerraJev.load(TERRAJEV_WEIGHTS);

@@ -40,7 +40,7 @@ const Bot = {
   clickOnce() { Input.mDown = true; Input.mClick = true; },
   uiClick(x, y, right) { Input.mx = x; Input.my = y; if (right) Input.rClick = true; else { Input.mClick = true; Input.mDown = true; } this.wantsDraw = true; },
   rightClickWorld(tx, ty) { this.aimTile(tx, ty); Input.rClick = true; },
-  selectSlot(i) { if (i >= 0 && i < 10 && G.player.sel !== i) this.press(String((i + 1) % 10)); },
+  selectSlot(i) { if (i >= 0 && i < 10) { (this.slotUsed = this.slotUsed || [])[i] = G.tick; if (G.player.sel !== i) this.press(String((i + 1) % 10)); } },
 
   log(msg) {
     const w = G.world, line = '[' + (G.clockString ? G.clockString() : '') + ' d' + (w ? w.day : 0) + '] ' + msg;
@@ -205,14 +205,14 @@ const Bot = {
     if (G.inBackrooms(p) && !this.uiBusy) {
       const ex = this.nearestTile(t => t === T.EXIT_SIGN, 200, 60);
       const enemy = this.findEnemy();
-      if (enemy && dist(enemy.cx, enemy.cy, p.cx, p.cy) < 120) { this.fight(enemy); return; }
+      if (enemy && dist(enemy.cx, enemy.cy, p.cx, p.cy) < 120) { this.combat(enemy, false); return; }
       if (ex) { this.goal = 'escaping the Backrooms (EXIT sign)'; if (this.moveTo(ex[0], ex[1], 0) === 'fail') this.stuck = 0; return; }
     }
     // pick what to do
     if (!this.uiBusy) {
       const wall = G.npcs.find(n => n.type === 'wall_of_flesh' && !n.dead);
       if (wall) { this.why = 'wall'; this.wallFight(wall); return; }
-      if (this.tactics()) return;
+      if (this.needDecision()) this.decideAct();
     }
     // watchdog: abandon tasks that make no progress (no movement, no inventory change)
     const sig = Math.round(p.x / 48) + ',' + Math.round(p.y / 48) + '|' + p.inv.reduce((n, s) => n + (s ? s.count : 0), 0);
@@ -221,13 +221,9 @@ const Bot = {
       this.log('watchdog: abandoning "' + this.goal + '" (no progress)');
       this.cooldowns = this.cooldowns || {}; this.cooldowns[this.lastTaskId || this.goal] = G.tick + 3600;
       this.task = null; this.nav = null; this.progAt = G.tick; this.watchdogs = (this.watchdogs || 0) + 1;
-      this.task = this.taskExplore();
+      this.setAct({ id: 'explore', kind: 'explore' }, this.taskExplore(), []);
     }
-    if (!this.task || this.task.done) {
-      this.task = this.nextTask(); this.nav = null; this.taskAge = 0;
-      const key = this.goal.split(' ').slice(0, 2).join(' ');
-      if (this.cooldowns && this.cooldowns[key] > G.tick) { this.log('skipping "' + key + '" (cooling down)'); this.task = this.taskExplore(); }
-    }
+    if (!this.task || this.task.done) this.decideAct();
     this.why = 'task:' + this.goal; this.lastGoal = this.goal;
     if (this.task) {
       try { this.task.step(); } catch (e) { this.errors++; this.log('task error ' + e.message); this.task = null; }
@@ -238,66 +234,153 @@ const Bot = {
           const key = this.goal.split(' ').slice(0, 2).join(' ');
           this.log('task loop on "' + this.goal + '": cooling it down');
           this.cooldowns = this.cooldowns || {}; this.cooldowns[key] = G.tick + 3600;
-          this.task = this.taskExplore();
+          this.setAct({ id: 'explore', kind: 'explore' }, this.taskExplore(), []);
         }
       } else if (this.task && !this.task.done) this.instantDone = 0;
       if (this.task) this.taskAge++;
     }
   },
 
-  // ================= TerraJev tactics: one typed decision instead of an if-chain =================
-  // returns true when the chosen tactic used this tick (the task does not run)
-  tactics() {
-    const p = this.p();
-    const enemy = this.findEnemy();
+  // ================= TerraJev: ONE question — "given what the SDK sees, what do you do?" =================
+  // Every candidate is a concrete action a skill can carry out right now: fight THIS enemy, mine THAT ore, craft X,
+  // summon boss Y, go home... The skills own the details (weapon, hotbar, aiming, dodging, pathing, digging);
+  // housekeeping (equipping upgrades, clearing junk) is a reflex, not a decision.
+  foesNear() {
+    const p = this.p(); this.ignore = this.ignore || {};
+    return G.npcs.filter(n => !n.friendly && !n.town && !n.dead && n.alpha >= 0.5 && !n.def.critter && !(this.ignore[n.uid] > G.tick) &&
+      (n.boss ? dist(n.cx, n.cy, p.cx, p.cy) < 900 : dist(n.cx, n.cy, p.cx, p.cy) < 300 && lineOfSight(G.world, p.cx, p.cy, n.cx, n.cy)))
+      .sort((a, b) => (b.boss ? 1 : 0) - (a.boss ? 1 : 0) || dist(a.cx, a.cy, p.cx, p.cy) - dist(b.cx, b.cy, p.cx, p.cy)).slice(0, 4);
+  },
+  // re-ask when the action ends, a new enemy shows up, after a big hit, every second in combat, every 30 s otherwise
+  needDecision() {
+    const A = this.act, p = this.p();
+    if (!A || !this.task || this.task.done) return true;
+    if (this.foesNear().some(n => !A.seen.has(n.uid))) return true;
+    if (p.life < A.life - p.lifeMax * 0.15) return true;
+    return G.tick - A.at >= (ACT_COMBAT.includes(A.kind) ? 60 : 1800);
+  },
+  decideAct() {
+    const p = this.p(), foes = this.foesNear();
+    this.uiBusy = false;
+    if (this.houseValid() && this.houseFinished) this.milestone('house');
+    // reflexes: nothing to decide about these
+    if (!foes.length) {
+      const up = this.equipUpgrade();
+      if (up) { this.setAct({ id: 'equip:' + up, kind: 'reflex' }, this.taskEquip(up), foes); return; }
+      if (p.inv.slice(10).filter(s => !s).length < 4 && !(this.cooldowns && this.cooldowns.trash > G.tick)) { (this.cooldowns = this.cooldowns || {}).trash = G.tick + 1800; this.setAct({ id: 'trash', kind: 'reflex' }, this.taskTrash(), foes); return; }
+    }
+    const cands = this.actionCandidates(foes);
+    const state = jevStateFeatures(this, foes[0] || null);
+    const cur = this.act && this.task && !this.task.done ? this.act.id : null;
+    const ans = TerraJev.decide({ id: 'act', state, candidates: cands.map(c => ({ id: c.id, features: jevActFeatures(this, c, cur) })) });
+    const pick = cands[ans.idx];
+    // same action as now: keep its progress. An interrupted task is parked and resumed if it's picked again soon.
+    if (pick.id === cur) { this.act.at = G.tick; this.act.life = p.life; this.act.probs = ans.probabilities; foes.forEach(n => this.act.seen.add(n.uid)); return; }
+    if (cur && this.task && !this.task.done && !ACT_COMBAT.includes(this.act.kind)) (this.parked = this.parked || {})[cur] = { task: this.task, at: G.tick };
+    const parked = this.parked && this.parked[pick.id];
+    let task = parked && !parked.task.done && G.tick - parked.at < 3000 ? parked.task : null;
+    if (this.parked) delete this.parked[pick.id];
+    if (!task) { if (pick.item) this.commit(pick.item, pick.qty || 1); task = pick.make(); }
+    (this.taskHist = this.taskHist || {})[pick.id] = G.tick;
+    this.lastTaskId = pick.id;
+    this.setAct(pick, task || this.taskExplore(), foes, ans.probabilities);
+  },
+  setAct(c, task, foes, probs) {
+    this.act = { id: c.id, kind: c.kind, at: G.tick, life: this.p().life, probs: probs || null, seen: new Set(foes.map(n => n.uid)) };
+    this.task = task; this.nav = null; this.taskAge = 0;
+  },
+  actionCandidates(foes) {
+    const p = this.p(), out = [];
     const potions = p.inv.some(s => s && ITEMS[s.id].heal && ITEMS[s.id].potion) && !p.buffs.potion_sickness;
-    const ranged = p.inv.some(s => s && ITEMS[s.id].damage && (ITEMS[s.id].use === 'shoot' || ITEMS[s.id].shoot) && !(ITEMS[s.id].ammo && p.findAmmo(ITEMS[s.id].ammo) < 0));
-    const hurt = p.life < p.lifeMax * 0.95;
-    const hostilesNear = G.npcs.some(n => !n.friendly && !n.town && !n.dead && dist(n.cx, n.cy, p.cx, p.cy) < 450) || G.projectiles.some(q => q.hostile && !q.dead && dist(q.cx, q.cy, p.cx, p.cy) < 300);
-    const opts = [];
-    if (enemy) {
-      opts.push('fight');
-      if (ranged) opts.push('kite');
-      if (this.houseSpot && !enemy.boss) opts.push('flee');
-      if (potions && hurt) opts.push('heal');
-      if (!enemy.boss) opts.push('ignore');
-    } else {
-      if (hurt && !(hostilesNear && p.y / TS > G.world.hellLayer)) opts.push('rest');
-      if (potions && p.life < p.lifeMax * 0.7) opts.push('heal');
-      if (G.isNight() && this.houseValid() && this.feet()[1] < G.world.worldSurface + 5 && !G.npcs.some(n => n.boss)) opts.push('shelter');
-      opts.push('continue');
+    const ranged = this.rangedSlot() >= 0;
+    const boss = foes.find(n => n.boss);
+    for (const n of foes) {
+      out.push({ id: 'fight:' + n.uid, kind: 'fight', enemy: n, make: () => this.skillFight(n, false) });
+      if (ranged) out.push({ id: 'kite:' + n.uid, kind: 'kite', enemy: n, make: () => this.skillFight(n, true) });
     }
-    if (opts.length === 1 && opts[0] === 'continue') { this.tactic = null; this.resting = false; this.restTicks = 0; return false; }
-    // ask again every 15 ticks, when the target changes, or after a big hit
-    const T = this.tactic, lifeDrop = T ? T.life - p.life : 0;
-    if (!T || G.tick - T.at >= 15 || T.enemy !== (enemy && enemy.uid) || lifeDrop > p.lifeMax * 0.1 || !opts.includes(T.choice)) {
-      const state = jevStateFeatures(this, enemy);
-      const ans = TerraJev.decide({ id: 'tactic', state, candidates: opts.map(o => ({ id: o, features: jevCandFeatures(this, o, enemy) })) });
-      this.tactic = { choice: ans.choice, at: G.tick, enemy: enemy && enemy.uid, life: p.life, probs: ans.probabilities };
-    }
-    const c = this.tactic.choice;
-    this.why = 'jev:' + c;
-    switch (c) {
-      case 'fight': this.resting = false; this.fight(enemy); return true;
-      case 'kite': {
-        this.resting = false; this.fight(enemy);
-        const away = enemy.cx > p.cx ? 'a' : 'd';
-        if (dist(enemy.cx, enemy.cy, p.cx, p.cy) < 200) { Input.keys.a = Input.keys.d = false; this.holdSafe(away); }
-        this.goal = 'kiting ' + enemy.name; return true;
-      }
-      case 'flee': {
-        this.goal = 'retreating (' + Math.round(p.life) + '/' + p.lifeMax + ')';
-        const r = this.moveTo(this.base[0], this.base[1], 1);
-        if (enemy && (r === 'fail' || (Math.abs(enemy.cx - p.cx) < 36 && Math.abs(enemy.cy - p.cy) < 40))) this.fight(enemy);
-        return true;
-      }
-      case 'heal': this.press('h'); if (enemy) { this.fight(enemy); return true; } return false;
-      case 'rest': this.resting = true; this.restTicks = (this.restTicks || 0) + 1; this.goal = 'resting (' + Math.round(p.life) + '/' + p.lifeMax + ')'; if (this.restTicks > 4000) { this.tactic = null; return false; } return true;
-      case 'shelter': { this.goal = 'hiding in the house (night)'; const r = this.moveTo(this.base[0], this.base[1], 1); if (r === true) this.aimWorld(p.cx + 200, p.cy); return true; }
-      default: this.resting = false; this.restTicks = 0; return false; // ignore / continue: let the task run
-    }
+    if (potions && p.life < p.lifeMax * 0.7) out.push({ id: 'heal', kind: 'heal', make: () => this.skillHeal() });
+    if (boss) return out;   // a boss fight is not the time to chop trees
+    const [fx, fy] = this.feet(), home = this.base;
+    const dHome = home ? Math.abs(fx - home[0]) + Math.abs(fy - home[1]) : 0;
+    if (foes.length && home && dHome > 6) out.push({ id: 'flee', kind: 'flee', dist: dHome, make: () => this.skillFlee() });
+    if (!foes.length && p.life < p.lifeMax * 0.9) out.push({ id: 'rest', kind: 'rest', make: () => this.skillRest() });
+    if (G.isNight() && this.houseValid() && fy < G.world.worldSurface + 5 && home) out.push({ id: 'shelter', kind: 'shelter', dist: dHome, make: () => this.skillShelter() });
+    return out.concat(this.taskCandidates());
+  },
+  rangedSlot() {
+    const p = this.p(); let bi = -1, bv = 0;
+    p.inv.forEach((s, i) => { if (!s) return; const it = ITEMS[s.id]; if (!it.damage || it.ammoType || it.consumable || it.pick || it.axe || it.hammer) return; if (!(it.use === 'shoot' || it.shoot) || it.use === 'swing') return; if (it.ammo && p.findAmmo(it.ammo) < 0) return; if (it.mana && p.mana < it.mana) return; if (it.damage > bv) { bv = it.damage; bi = i; } });
+    return bi;
   },
 
+  // ================= combat skills =================
+  skillFight(n, kite) {
+    const self = this;
+    return { step() {
+      const p = self.p();
+      if (n.dead || !G.npcs.includes(n) || dist(n.cx, n.cy, p.cx, p.cy) > (n.boss ? 1400 : 600) || self.ignore[n.uid] > G.tick) { this.done = true; return; }
+      self.combat(n, kite);
+    } };
+  },
+  combat(n, kite) {
+    const p = this.p();
+    // give up on enemies we can't actually reach/hurt (stuck behind walls, hopping away forever)
+    this.fights = this.fights || {}; this.ignore = this.ignore || {};
+    const f = this.fights[n.uid] || (this.fights[n.uid] = { since: G.tick, life: n.life });
+    if (n.life < f.life) { f.life = n.life; f.since = G.tick; }
+    if (G.tick - f.since > (n.boss ? 3600 : 480)) { this.ignore[n.uid] = G.tick + 3600; delete this.fights[n.uid]; this.log('ignoring ' + n.name + ' (unreachable)'); return; }
+    if (G.tick % 600 === 0) for (const k in this.fights) if (!G.npcs.some(m => m.uid == k)) delete this.fights[k];
+    // weapon: the skill picks it (best damage that lands; ranged when kiting)
+    let ws = kite ? this.rangedSlot() : -1;
+    if (ws < 0) ws = this.bestWeaponSlot(n);
+    if (ws < 0) return;
+    if (ws > 9) { this.ensureHotbar(ws); return; }
+    this.selectSlot(ws);
+    const it = ITEMS[p.inv[ws].id], melee = (it.use === 'swing' || it.use === 'thrust') && !it.shoot;
+    const dx = n.cx - p.cx, dy = n.cy - p.cy, d = Math.hypot(dx, dy), toward = dx > 0 ? 'd' : 'a', away = dx > 0 ? 'a' : 'd';
+    const tile = () => this.moveTo(Math.floor(n.cx / TS), Math.floor((n.y + n.h - 1) / TS), 1);
+    if (melee) {
+      if (n.boss && Math.abs(dx) < 40 && Math.abs(dy) < 60) this.holdSafe(G.tick % 160 < 80 ? away : toward);   // don't stand inside a boss
+      else if (Math.abs(dx) > 26 || Math.abs(dy) > 50) { if (Math.abs(dy) > 90 || this.stuck > 20 || d > 260) tile(); else this.holdSafe(toward); }
+      if (dy < -30 && Math.abs(dx) < 140) this.jump();
+    } else {
+      const want = kite ? 230 : 170;
+      if (d < want - 70) this.holdSafe(away);
+      else if (d > want + 200 || !lineOfSight(G.world, p.cx, p.cy, n.cx, n.cy)) { if (d > 400 || this.stuck > 20) tile(); else this.holdSafe(toward); }
+      if (n.boss && (G.tick % 90 < 12 || G.projectiles.some(q => q.hostile && !q.dead && dist(q.cx, q.cy, p.cx, p.cy) < 120))) this.jump();
+    }
+    if (p.collidedX && p.onGround) this.jump();
+    // aim (lead moving targets with projectiles) and attack when it can land
+    let ax = n.cx, ay = n.cy;
+    if (!melee && it.use !== 'throw') { const sp = it.shootSpeed || 8, t = Math.min(45, d / sp); ax += (n.vx || 0) * t; ay += (n.vy || 0) * t - d * 0.015; }
+    this.aimWorld(ax, ay);
+    if (melee ? d < 90 : d < 520) { if (it.autoReuse) this.clickHold(); else if (p.itemAnim === 0) this.clickOnce(); }
+    this.goal = (kite ? 'kiting ' : 'fighting ') + n.name;
+  },
+  skillHeal() { const self = this; return { step() { self.press('h'); self.goal = 'drinking a potion'; this.done = true; } }; },
+  skillFlee() {
+    const self = this, t0 = G.tick;
+    return { step() {
+      const p = self.p();
+      self.goal = 'retreating home (' + Math.round(p.life) + '/' + p.lifeMax + ')';
+      const r = self.moveTo(self.base[0], self.base[1], 1);
+      const close = self.foesNear().find(n => Math.abs(n.cx - p.cx) < 36 && Math.abs(n.cy - p.cy) < 40);
+      if (close && (r === 'fail' || true)) self.combat(close, false);
+      if (r === true || r === 'fail' || G.tick - t0 > 1200) this.done = true;
+    } };
+  },
+  skillRest() {
+    const self = this, t0 = G.tick;
+    return { step() { const p = self.p(); self.goal = 'resting (' + Math.round(p.life) + '/' + p.lifeMax + ')'; if (p.life >= p.lifeMax * 0.95 || G.tick - t0 > 4000) this.done = true; } };
+  },
+  skillShelter() {
+    const self = this, t0 = G.tick;
+    return { step() {
+      const p = self.p(); self.goal = 'hiding in the house (night)';
+      const r = self.moveTo(self.base[0], self.base[1], 1); if (r === true) self.aimWorld(p.cx + 200, p.cy);
+      if (!G.isNight() || G.tick - t0 > 3000 || r === 'fail') this.done = true;
+    } };
+  },
 
   // Dying over and over in the same place means the plan walks into the same trap each respawn: stay out of that area for a while
   registerDeath(cause) {
@@ -349,113 +432,32 @@ const Bot = {
     if (boss && best && !best.boss && bd > 55) return boss;
     return best;
   },
-  fight(n) {
+  equipUpgrade() {
     const p = this.p();
-    // give up on enemies we can't actually reach/hurt (stuck behind walls, hopping away forever)
-    this.fights = this.fights || {};
-    const f = this.fights[n.uid] || (this.fights[n.uid] = { since: G.tick, life: n.life });
-    if (n.life < f.life) { f.life = n.life; f.since = G.tick; }
-    if (G.tick - f.since > (n.boss ? 3600 : 480)) { this.ignore[n.uid] = G.tick + 3600; delete this.fights[n.uid]; this.log('ignoring ' + n.name + ' (unreachable)'); return; }
-    if (G.tick % 600 === 0) for (const k in this.fights) if (!G.npcs.some(m => m.uid == k)) delete this.fights[k];
-    const T = this.fightT || (this.fightT = {});
-    // ---- target: which enemy? (TerraJev 'target', re-asked every 30 ticks) ----
-    const foes = G.npcs.filter(m => !m.friendly && !m.town && !m.dead && m.alpha >= 0.5 && !m.def.critter && !(this.ignore[m.uid] > G.tick) && dist(m.cx, m.cy, p.cx, p.cy) < (m.boss ? 900 : 350))
-      .sort((x, y) => dist(x.cx, x.cy, p.cx, p.cy) - dist(y.cx, y.cy, p.cx, p.cy)).slice(0, 6);
-    if (!foes.includes(n)) foes.push(n);
-    if (!T.target || T.target.dead || !foes.includes(T.target) || G.tick - T.tAt >= 30) {
-      if (foes.length > 1) {
-        const ans = TerraJev.decide({ id: 'target', state: jevStateFeatures(this, n), candidates: foes.map(m => ({ id: 'npc' + m.uid, features: jevTargetFeatures(this, m, T.target) })) });
-        T.target = foes[ans.idx];
-      } else T.target = n;
-      T.tAt = G.tick;
+    for (const s of p.inv) {
+      if (!s) continue; const it = ITEMS[s.id];
+      if (this.cooldowns && this.cooldowns['equip:' + s.id] > G.tick) continue;
+      if (it.armor) { const k = { head: 0, body: 1, legs: 2 }[it.armor], cur = p.armor[k]; if ((it.defense || 0) > (cur ? ITEMS[cur.id].defense || 0 : 0)) return s.id; }
+      else if (it.acc) { if (!p.acc.some(a => a && a.id === s.id) && p.acc.some(a => !a)) return s.id; }
+      else if (it.lifeCrystal) { if (p.lifeMax < 400) return s.id; }
+      else if (it.manaCrystal) { if (p.manaMaxBase < 200) return s.id; }
     }
-    const tgt = T.target;
-    // ---- weapon: which one? (TerraJev 'weapon', re-asked every 60 ticks or on a new target) ----
-    const slots = [];
-    p.inv.forEach((s2, i) => { if (!s2) return; const it2 = ITEMS[s2.id]; if (!it2.damage || it2.ammoType || it2.consumable || it2.pick || it2.axe || it2.hammer) return; if (it2.ammo && p.findAmmo(it2.ammo) < 0) return; if (it2.mana && p.mana < it2.mana) return; slots.push(i); });
-    if (!slots.length) return;
-    slots.sort((x, y) => (ITEMS[p.inv[y].id].damage || 0) - (ITEMS[p.inv[x].id].damage || 0));
-    if (slots.length > 6) slots.length = 6;
-    if (T.ws == null || !slots.includes(T.ws) || G.tick - T.wAt >= 60 || T.wTarget !== tgt.uid) {
-      const ans = TerraJev.decide({ id: 'weapon', state: jevStateFeatures(this, tgt), candidates: slots.map(i => ({ id: p.inv[i].id, features: jevWeaponFeatures(this, i, tgt) })) });
-      T.ws = slots[ans.idx]; T.wAt = G.tick; T.wTarget = tgt.uid;
-    }
-    const ws = T.ws;
-    if (ws > 9) { this.ensureHotbar(ws); return; }
-    this.selectSlot(ws);
-    const it = ITEMS[p.inv[ws].id];
-    // ---- control: raw inputs every 4 ticks (TerraJev 'control': move L/-/R x jump x attack, or path to the target) ----
-    if (!T.ctrl || G.tick - T.cAt >= 4 || T.cTarget !== tgt.uid) {
-      const ans = TerraJev.decide({ id: 'control', state: jevStateFeatures(this, tgt), candidates: JEV_CONTROLS.map(c => ({ id: c.id, features: jevControlFeatures(this, c, tgt, it) })) });
-      T.ctrl = JEV_CONTROLS[ans.idx]; T.cAt = G.tick; T.cTarget = tgt.uid;
-    }
-    const c = T.ctrl;
-    if (c.path) this.moveTo(Math.floor(tgt.cx / TS), Math.floor((tgt.y + tgt.h - 1) / TS), 1);
-    else if (c.m) this.holdSafe(c.m > 0 ? 'd' : 'a');   // the cliff/edge guard stays in code ("authorise in code")
-    if (c.j) this.jump();
-    // aim (lead moving targets with projectiles); attack only when the model says so
-    const melee = (it.use === 'swing' || it.use === 'thrust') && !it.shoot;
-    const dx = tgt.cx - p.cx, dy = tgt.cy - p.cy, d = Math.hypot(dx, dy);
-    let ax = tgt.cx, ay = tgt.cy;
-    if (!melee && it.use !== 'throw') { const sp = it.shootSpeed || 8, t = Math.min(45, d / sp); ax += (tgt.vx || 0) * t; ay += (tgt.vy || 0) * t - d * 0.015; }
-    this.aimWorld(ax, ay);
-    if (c.a) { if (it.autoReuse) this.clickHold(); else if (p.itemAnim === 0) this.clickOnce(); }
-    this.goal = 'fighting ' + tgt.name;
-  },
-  // ================= task choice: TerraJev picks the next skill =================
-  // Candidates are the skills that make sense right now (masked); TerraJev returns a probability for each.
-  nextTask() {
-    const p = this.p();
-    this.uiBusy = false;
-    if (this.houseValid() && this.houseFinished) this.milestone('house');
-    const cands = this.taskCandidates();
-    if (!cands.length) return this.taskExplore();
-    const state = jevStateFeatures(this, null);
-    const ans = TerraJev.decide({ id: 'task', state, candidates: cands.map(c => ({ id: c.id, features: c.f })) });
-    const pick = cands[ans.idx];
-    this.taskChoice = { id: pick.id, at: G.tick, probs: ans.probabilities };
-    this.lastTaskId = pick.id;
-    (this.taskHist = this.taskHist || {})[pick.id] = G.tick;
-    if (pick.item) this.commit(pick.item, pick.qty || 1);
-    const t = pick.make();
-    return t || this.taskExplore();
+    return null;
   },
   taskCandidates() {
     const p = this.p(), w = G.world, out = [];
-    const KINDS = ['trash', 'equip', 'chop', 'build', 'stone', 'ore', 'craft', 'crystal', 'eye', 'brainrot', 'hell', 'explore', 'home'];
-    const add = (id, kind, make, extra = {}) => {
-      const f = KINDS.map(k => (k === kind ? 1 : 0));
-      const last = this.taskHist && this.taskHist[id];
-      const cool = this.cooldowns && this.cooldowns[id] > G.tick ? 1 : 0;
-      f.push(extra.value || 0, extra.def || 0, extra.dmg || 0, extra.pickGain || 0, extra.ready == null ? 1 : extra.ready, extra.needs || 0,
-        extra.dist == null ? 0 : Math.min(extra.dist, 300) / 100, this.lastTaskId === id ? 1 : 0, cool, last ? Math.min(G.tick - last, 6000) / 3000 : 2);
-      out.push(Object.assign({ id, kind, make, f }, extra));
-    };
-    const freeSlots = p.inv.slice(10).filter(s => !s).length;
-    if (freeSlots < 6) add('trash', 'trash', () => this.taskTrash(), { value: (6 - freeSlots) / 6 });
-    // equipment upgrades in the inventory
-    p.inv.forEach((s, i) => {
-      if (!s) return; const it = ITEMS[s.id];
-      let gain = 0;
-      if (it.armor) { const k = { head: 0, body: 1, legs: 2 }[it.armor], cur = p.armor[k]; gain = (it.defense || 0) - (cur ? ITEMS[cur.id].defense || 0 : 0); if (gain <= 0) return; }
-      else if (it.acc) { if (p.acc.some(a => a && a.id === s.id) || !p.acc.some(a => !a)) return; gain = 1; }
-      else if (it.lifeCrystal) { if (p.lifeMax >= 400) return; gain = 2; }
-      else if (it.manaCrystal) { if (p.manaMaxBase >= 200) return; gain = 1; }
-      else return;
-      if (out.some(c => c.id === 'equip:' + s.id)) return;
-      add('equip:' + s.id, 'equip', () => this.taskEquip(s.id), { def: gain / 10 });
-    });
+    const add = (id, kind, make, extra = {}) => out.push(Object.assign({ id, kind, make }, extra));
     const tree = this.nearestTile((t, x, y) => t === T.TREE && w.treeType(x, y) === TREE_BASE, 140, 40);
     if (tree) add('chop', 'chop', () => this.taskChop(this.count('wood') + 40), { value: Math.min(this.count('wood'), 200) / 100, dist: Math.abs(tree[0] - this.feet()[0]) });
     if (!this.houseValid() || !this.houseFinished) add('build', 'build', () => this.taskBuildHouse(), { ready: Math.min(1, this.count('wood') / 90) });
-    add('stone', 'stone', () => this.taskMine('stone', () => this.count('stone_block') >= Math.min(9999, this.count('stone_block') + 30)), { value: Math.min(this.count('stone_block'), 200) / 100 });
+    add('stone', 'stone', () => { const want = this.count('stone_block') + 30; return this.taskMine('stone', () => this.count('stone_block') >= want); }, { value: Math.min(this.count('stone_block'), 200) / 100 });
     const pickPow = Math.max(0, ...p.inv.map(s => s ? ITEMS[s.id].pick || 0 : 0));
     for (const [ore, tileName] of Object.entries(ORE_TILE)) {
       const tile = T[tileName], td = TILES[tile];
       if (!td || td.minPick > pickPow) continue;
       const near = this.nearestTile(t => t === tile, 90, 80);
       if (!near) continue;
-      add('ore:' + ore, 'ore', () => this.taskMine('ore', () => this.count(ore) >= this.count(ore) + 15, [tile]), { value: Math.log1p(ITEMS[ore].value || 1) / 8, dist: Math.abs(near[0] - this.feet()[0]) + Math.abs(near[1] - this.feet()[1]), needs: Math.min(this.count(ore), 200) / 100 });
+      add('ore:' + ore, 'ore', () => { const want = this.count(ore) + 15; return this.taskMine('ore', () => this.count(ore) >= want, [tile]); }, { value: Math.log1p(ITEMS[ore].value || 1) / 8, dist: Math.abs(near[0] - this.feet()[0]) + Math.abs(near[1] - this.feet()[1]), needs: Math.min(this.count(ore), 200) / 100 });
     }
     // craftable goals: gear, stations, ammo, consumables, summons (the skill resolves missing ingredients itself)
     for (const [id, qty] of JEV_GOALS) {
@@ -481,7 +483,12 @@ const Bot = {
       });
     }
     if (p.lifeMax < 400) { const c = this.nearestTile(t => t === T.LIFE_CRYSTAL, 120, 90); if (c && !this.crystalBad(c)) add('crystal', 'crystal', () => this.taskBreakAt(c, 'aura crystal', 'pick'), { dist: Math.abs(c[0] - this.feet()[0]) + Math.abs(c[1] - this.feet()[1]) }); }
-    if (!w.flags.eye_of_cthulhu && this.houseValid()) add('eye', 'eye', () => this.taskEye(), { ready: Math.min(1, this.count('lens') / 6) });
+    for (const key of Object.keys(BOSS_SUMMON)) {
+      if (w.flags[key] || !this.houseValid()) continue;
+      const B = BOSS_SUMMON[key], needs = this.rawNeeds(B.item, 1);
+      const total = Object.values(needs).reduce((a, b) => a + b, 0) || 1, have = this.has(B.item) ? total : Object.entries(needs).reduce((a, [k, v]) => a + Math.min(v, this.count(k)), 0);
+      add('boss:' + key, 'boss', () => this.taskBoss(key), { ready: have / total, boss: key, value: BOSS_TYPES[key].life / 4000 });
+    }
     if (w.flags.eye_of_cthulhu && !this.hasBetterPick(65)) add('brainrot', 'brainrot', () => this.taskBrainrot(), { ready: Math.min(1, this.count('rotten_chunk') / 6) });
     if (this.hasBetterPick(65) && !w.flags.wall_of_flesh) add('hell', 'hell', () => this.taskHell(), { ready: Math.min(1, p.lifeMax / 300) });
     add('explore', 'explore', () => this.taskExplore());
@@ -617,7 +624,7 @@ const Bot = {
       step() {
         const i = SDK.slotOf(id);
         // gone (used up / equipped) or not worth it anymore: done
-        if (i < 0 || SDK.count(id) < start || ++tries > 120) { if (UI.invOpen && !self.hb) self.press('Escape'); this.done = true; self.uiBusy = false; return; }
+        if (i < 0 || SDK.count(id) < start || ++tries > 120) { if (tries > 120) { self.log('could not equip ' + it.name + ', cooling down'); (self.cooldowns = self.cooldowns || {})['equip:' + id] = G.tick + 6000; } if (UI.invOpen && !self.hb) self.press('Escape'); this.done = true; self.uiBusy = false; return; }
         if (it.lifeCrystal || it.manaCrystal) {
           if ((it.lifeCrystal && self.p().lifeMax >= 400) || (it.manaCrystal && self.p().manaMaxBase >= 200)) { this.done = true; return; }
           if (i > 9) { self.ensureHotbar(i); return; }
@@ -891,36 +898,50 @@ const Bot = {
     if (op === 'furn') { const want = ITEMS[item].place; return t === want || (want === T.DOOR_CLOSED && td && td.door) || [-1, 0, 1].some(d => w.tile(x + d, y) === want && want === T.WORKBENCH); }
     return true;
   },
-  taskEye() {
-    const self = this, w = G.world;
-    this.goal = 'preparing for the Eye of Ohio (' + this.count('lens') + '/6 lenses)';
+  // ================= bosses: the end goal (King Skibidi, Eye of Ohio, Tung Tung Tung Sahur, then the Wall in Ohio) =================
+  // get the summon item (craft it, or farm the monster drop it is missing), go home, summon it, and let the tactic layer fight
+  taskBoss(key) {
+    const self = this, w = G.world, B = BOSS_SUMMON[key], name = BOSS_TYPES[key].name;
+    this.goal = 'preparing for ' + name;
+    let sub = null, wander = 0;
     return {
       step() {
-        const p = self.p();
-        if (w.flags.eye_of_cthulhu) { this.done = true; return; }
-        if (self.has('suspicious_looking_eye')) {
-          const [fx0, fy0] = self.feet();
-          // summon it at home, on the surface, healthy: not wherever we happen to be standing
-          if (G.isNight() && !G.npcs.some(n => n.boss) && (Math.abs(fx0 - self.base[0]) > 25 || Math.abs(fy0 - self.base[1]) > 12)) { self.goal = 'heading home to summon the Eye'; self.moveTo(self.base[0] - 6, self.base[1], 3); return; }
-          if (G.isNight() && !G.npcs.some(n => n.boss) && p.life >= p.lifeMax * 0.85) {
-            const s = self.slotOf(it => it.id === 'suspicious_looking_eye');
-            if (s > 9) { self.ensureHotbar(s); return; }
-            if (this.summonedAt && G.tick - this.summonedAt < 300) return; // the item takes a moment to be used up and the boss to appear
-            self.selectSlot(s); self.clickOnce(); this.summonedAt = G.tick; self.log('summoning the Eye of Ohio'); self.milestone('eye summoned');
-          } else self.moveTo(self.base[0], self.base[1], 2);
+        const p = self.p(), [fx, fy] = self.feet();
+        if (w.flags[key]) { this.done = true; return; }
+        if (G.npcs.some(n => n.boss)) { self.goal = 'boss fight: ' + name; this.done = true; return; }   // the boss shows up as a fight option
+        if (sub && !sub.done) { sub.step(); return; }
+        const home = self.base || self.houseSpot || self.feet();
+        const nightOk = !B.night || G.isNight();
+        if (self.has(B.item)) {
+          // summon at home on the surface, healthy: not wherever we happen to be standing
+          if (!nightOk) { self.goal = 'waiting for night to summon ' + name; self.moveTo(home[0] - 6, home[1], 3); return; }
+          if (Math.abs(fx - home[0]) > 25 || Math.abs(fy - home[1]) > 12) { self.goal = 'heading home to summon ' + name; self.moveTo(home[0] - 6, home[1], 3); return; }
+          if (p.life < p.lifeMax * 0.85) { self.goal = 'healing up before ' + name; return; }
+          const s = SDK.slotOf(B.item);
+          if (s > 9) { self.ensureHotbar(s); return; }
+          if (this.summonedAt && G.tick - this.summonedAt < 300) return;   // the item takes a moment to be used and the boss to appear
+          self.selectSlot(s); self.clickOnce(); this.summonedAt = G.tick; self.log('summoning ' + name); self.milestone('summoned ' + key.replace(/_/g, ' '));
           return;
         }
-        if (self.count('lens') >= 6) { self.task = self.taskCraftAtBase(['suspicious_looking_eye', 1, 'altar']); return; }
-        // hunt demon eyes on the surface at night; otherwise mine
-        if (G.isNight()) { if (self.feet()[1] > w.worldSurface) self.moveTo(self.base[0], self.base[1], 3); else self.hold(Math.floor(self.t / 600) % 2 ? 'a' : 'd'); }
-        else {
-          // daytime: nothing useful to mine for this goal; wait at the house for dusk (the lens-droppers only spawn at night)
-          self.goal = 'waiting for night at the house (' + self.count('lens') + '/6 lenses)';
-          self.moveTo(self.base[0] - 6, self.base[1], 3);
-        }
+        // natural spawns: the Eye and Tung come by themselves at night once life >= 200 — wait for them at home
+        if (B.natural && p.lifeMax >= 200 && G.isNight() && fy <= w.worldSurface) { self.goal = 'waiting at home for ' + name; self.moveTo(home[0] - 6, home[1], 3); return; }
+        const step = self.resolve(B.item, 1), pickPow = SDK.obs().inv.pick.power;
+        if (step && self.stepFeasible(step, pickPow)) { self.commit(B.item, 1); sub = self.taskForStep(step); if (sub) return; }
+        // the missing ingredient is a monster drop: go where that monster lives
+        const need = Object.entries(self.rawNeeds(B.item, 1)).find(([id, n]) => self.count(id) < n);
+        const drop = need ? need[0] : null, farm = BOSS_FARM[drop];
+        if (!farm) { sub = self.taskExplore(); return; }
+        self.goal = 'farming ' + drop.replace(/_/g, ' ') + ' for ' + name + ' (' + self.count(drop) + '/' + need[1] + ')';
+        if (farm === 'night' && !G.isNight()) { self.goal = 'waiting for night (' + drop + ' drops at night)'; self.moveTo(home[0] - 6, home[1], 3); return; }
+        const deep = farm === 'caverns', ty = deep ? w.rockLayer + 20 : topSolid(w, home[0]) - 1;
+        if (deep && fy < w.rockLayer + 5) { self.moveTo(home[0], ty, 6); return; }
+        if (!deep && fy > w.worldSurface) { self.moveTo(home[0], ty, 3); return; }
+        if (++wander > 900) wander = 0;
+        self.hold(wander < 450 ? 'a' : 'd');
       },
     };
   },
+  taskEye() { return this.taskBoss('eye_of_cthulhu'); },
   taskBrainrot() {
     const self = this, w = G.world;
     this.goal = 'farming Brainrot (chunks ' + this.count('rotten_chunk') + '/6, bars ' + this.count('demonite_bar') + '/12)';

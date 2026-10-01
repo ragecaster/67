@@ -9,7 +9,7 @@ run(async (page) => {
     await page.evaluate((mode) => {
       if (mode === 'rules') { TerraJev.ready = false; } else if (!TerraJev.ready) throw new Error('no weights loaded');
       TerraJev.epsilon = 0; TerraJev.sample = false; TerraJev.logging = true; TerraJev.records = []; TerraJev.pending = [];
-      TerraJev.counters = { dmgTaken: 0, dmgDealt: 0, kills: 0, deaths: 0, value: 0 };
+      TerraJev.counters = { dmgTaken: 0, dmgDealt: 0, bossDealt: 0, kills: 0, deaths: 0, value: 0 };
       Bot.deaths = 0; Bot.milestones = {}; Bot.start(1);
     }, MODE);
     const r = await page.evaluate((n) => {

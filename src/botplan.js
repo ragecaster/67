@@ -1,3 +1,11 @@
+// boss summons: the item, whether it needs night, whether the boss also comes by itself at night (life >= 200)
+const BOSS_SUMMON = {
+  king_slime: { item: 'slime_crown', night: false, natural: false },
+  eye_of_cthulhu: { item: 'suspicious_looking_eye', night: true, natural: true },
+  tung_sahur: { item: 'kentongan', night: true, natural: true },
+};
+// where the monster drops for those summons come from
+const BOSS_FARM = { gel: 'surface', lens: 'night', bone: 'caverns' };
 // ---------- BotSigma progression planner ----------
 // A recipe-driven shopping list: walk the wanted items in priority order; for the first one we don't own, resolve it down
 // the recipe tree to the first thing that is actually missing (craft it, or gather the raw material) and return a task for that.

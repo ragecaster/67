@@ -27,12 +27,12 @@ run(async (page, errors) => {
         }
       }
       const recs = TerraJev.records; TerraJev.records = [];
-      return { recs, alerts, t: G.tick, deaths: Bot.deaths, ms: Object.keys(Bot.milestones).length, goal: Bot.goal, life: G.player.life + '/' + G.player.lifeMax };
+      return { recs, alerts, t: G.tick, bosses: TerraJev.BOSSES.filter(b => G.world.flags[b]).join('+') || '-', deaths: Bot.deaths, ms: Object.keys(Bot.milestones).length, goal: Bot.goal, life: G.player.life + '/' + G.player.lifeMax };
     }, CH);
     for (const rec of r.recs) { rec.seed = SEED; out.write(JSON.stringify(rec) + '\n'); }
     n += r.recs.length;
     for (const al of r.alerts) console.log('  !!! ' + al);
-    console.log(`t=${r.t} decisions=${n} deaths=${r.deaths} milestones=${r.ms} life=${r.life} | ${r.goal}`);
+    console.log(`t=${r.t} decisions=${n} bosses=${r.bosses} deaths=${r.deaths} milestones=${r.ms} life=${r.life} | ${r.goal}`);
   }
   out.end();
 });

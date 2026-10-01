@@ -7,3 +7,4 @@ tools/jev/.venv/
 tools/jev/models/
 tools/jev/data/
 __pycache__/
+tools/jev/old_v1/
