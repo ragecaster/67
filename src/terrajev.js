@@ -56,19 +56,24 @@ const TerraJev = {
   //   q = { id, state: number[], candidates: [{ id, features: number[] }], teacher?: id }
   decide(q) {
     let probs;
+    // exploration is uniform over kinds of action first (fight / flee / craft / mine ...), then over the options of that kind,
+    // so twenty craftable items don't drown out the one 'fight' option
+    const grp = q.candidates.map(c => c.group || c.id), size = {};
+    for (const g of grp) size[g] = (size[g] || 0) + 1;
+    const ng = Object.keys(size).length, uni = grp.map(g => 1 / (ng * size[g]));
     if (this.has(q.id, q.candidates[0] && q.candidates[0].features.length)) {
       const logits = this.forward(q.state, q.candidates.map(c => c.features), q.id);
       const T = this.temperature, mx = Math.max(...logits);
       const e = logits.map(z => Math.exp((z - mx) / T)), sum = e.reduce((a, b) => a + b, 0);
       probs = e.map(v => v / sum);
     } else {
-      // no trained network for this question yet: explore uniformly (that's how it learns)
-      probs = q.candidates.map(() => 1 / q.candidates.length);
+      // no trained network for this question yet: explore (that's how it learns)
+      probs = uni;
     }
     const untrained = !this.has(q.id, q.candidates[0] && q.candidates[0].features.length);
     // exploration for training rollouts: with probability epsilon try a random allowed option
     const eps = this.epsilon || 0;
-    if (eps > 0) probs = probs.map(v => (1 - eps) * v + eps / probs.length);
+    if (eps > 0) probs = probs.map((v, i) => (1 - eps) * v + eps * uni[i]);
     let idx = 0;
     if (this.sample || eps > 0 || untrained) { let r = Math.random(), acc = 0; idx = probs.length - 1; for (let i = 0; i < probs.length; i++) { acc += probs[i]; if (r <= acc) { idx = i; break; } } }
     else idx = probs.indexOf(Math.max(...probs));

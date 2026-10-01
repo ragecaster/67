@@ -272,7 +272,7 @@ const Bot = {
     const cands = this.actionCandidates(foes);
     const state = jevStateFeatures(this, foes[0] || null);
     const cur = this.act && this.task && !this.task.done ? this.act.id : null;
-    const ans = TerraJev.decide({ id: 'act', state, candidates: cands.map(c => ({ id: c.id, features: jevActFeatures(this, c, cur) })) });
+    const ans = TerraJev.decide({ id: 'act', state, candidates: cands.map(c => ({ id: c.id, group: c.kind, features: jevActFeatures(this, c, cur) })) });
     const pick = cands[ans.idx];
     // same action as now: keep its progress. An interrupted task is parked and resumed if it's picked again soon.
     if (pick.id === cur) { this.act.at = G.tick; this.act.life = p.life; this.act.probs = ans.probabilities; foes.forEach(n => this.act.seen.add(n.uid)); return; }
