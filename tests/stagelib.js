@@ -9,7 +9,10 @@ async function applyStage(page, STAGE) {
     if (stage === 'gold' || stage === 'lenses' || stage === 'demon' || stage === 'hell') { give('gold_pickaxe'); give('gold_broadsword'); p.lifeMax = 200; p.life = 200; }
     if (stage === 'lenses' || stage === 'demon' || stage === 'hell') give('lens', 6);
     if (stage === 'eyefight') { for (const id of ['iron_pickaxe', 'gold_broadsword', 'gold_bow', 'suspicious_looking_eye']) give(id); give('wooden_arrow', 999); p.armor[0] = { id: 'gold_helmet', count: 1 }; p.armor[1] = { id: 'gold_chainmail', count: 1 }; p.armor[2] = { id: 'gold_greaves', count: 1 }; p.lifeMax = 300; p.life = 300; }
-    if (stage === 'demon' || stage === 'hell') { G.world.flags.eye_of_cthulhu = true; }
+    if (stage === 'demon' || stage === 'hell') {
+      G.world.flags.eye_of_cthulhu = true; give('iron_bar', 40); give('gold_bow'); give('wooden_arrow', 999);
+      p.armor[0] = { id: 'gold_helmet', count: 1 }; p.armor[1] = { id: 'gold_chainmail', count: 1 }; p.armor[2] = { id: 'gold_greaves', count: 1 }; p.lifeMax = 300; p.life = 300;
+    }
     if (stage === 'hell') { give('nightmare_pickaxe'); give('demonite_bar', 12); p.lifeMax = 300; p.life = 300; }
     Bot.start(1); Bot.verbose = false; window.__seen = 0;
   }, STAGE);

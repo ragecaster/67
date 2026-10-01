@@ -298,7 +298,10 @@ const Bot = {
     if (!dodged) {
       if (melee) {
         const want = n.boss ? 60 : 34;
-        if (adx > want + 40 && !n.boss) this.moveTo(Math.floor(n.cx / TS), Math.floor((n.y + n.h - 1) / TS), 1);
+        // path to it only when it stands on reachable ground; a flyer far above is chased by walking underneath (A* to the sky wastes seconds)
+        const reachable = Math.abs(n.cy - p.cy) < 160 && !(n.noGravity || (n.def && n.def.noGravity) || (n.def && (n.def.ai === 'flyer' || n.def.flying)));
+        if (adx > want + 40 && !n.boss && reachable) this.moveTo(Math.floor(n.cx / TS), Math.floor((n.y + n.h - 1) / TS), 1);
+        else if (adx > want + 40 && !n.boss) this.hold(dx > 0 ? 'd' : 'a');
         else if (adx > want) this.hold(dx > 0 ? 'd' : 'a');
       } else {
         // ranged: stay 140-280 px away, retreat when it closes in

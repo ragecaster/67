@@ -4,6 +4,10 @@
 const NO_SPACE = [Infinity, null], FREE_SPACE = [0, null];
 const c0free = (nav, x, y) => nav.space(x, y)[0] === 0;
 const Nav = {
+  // execution failures: a move (type@x,y) that the follower couldn't carry out for 300 ticks is banned for a while so the next plan routes differently
+  bans: new Map(),
+  ban(x, y, t) { this.bans.set(x + ',' + y + ',' + t, G.tick + 8000); },
+  banned(x, y, t) { if (!this.bans.size) return false; const e = this.bans.get(x + ',' + y + ',' + t); return e !== undefined && e > G.tick; },
   // ----- cell queries -----
   pickPower() { const p = G.player; return Math.max(0, ...p.inv.map(s => s ? ITEMS[s.id].pick || 0 : 0)); },
   lava(x, y) { const w = G.world; return w.inb(x, y) && w.liquid[w.idx(x, y)] > 20 && w.ltype[w.idx(x, y)] === 1; },
@@ -80,6 +84,7 @@ const Nav = {
     gA[key(sx, sy)] = 0; gS[key(sx, sy)] = stamp; fromA[key(sx, sy)] = -1; mvA[key(sx, sy)] = 0; fallA[key(sx, sy)] = 0; vertA[key(sx, sy)] = 0;
     let expanded = 0, best = null, bestH = Infinity;
     const push = (x, y, cost, prevK, move) => {
+      if (this.bans.size && this.banned(x, y, move.t)) return;
       const k = key(x, y);
       if (gS[k] === stamp && gA[k] <= cost) return;
       // rows fallen since we last stood on something (the game hurts above 25): mid-air drop/fall chains must not exceed ~22
@@ -122,7 +127,7 @@ const Nav = {
           }
         }
         // jump up 2..4 onto a ledge (column above us must be clear)
-        for (let j = 2; j <= 4; j++) {
+        for (let j = 2; j <= 3; j++) {
           const [col] = this.space(x, y - 3, j - 1, 0); // rows y-2-j .. y-3: the air we rise through
           if (col !== 0) break;
           const [tc] = this.space(x + dx, y - j);
@@ -258,7 +263,7 @@ Object.assign(Bot, {
       if (!prev || Math.abs(p.cx - (prev.x * TS + 16)) > 20 || prev.y !== ny) { nav.offPath = (nav.offPath || 0) + 1; if (nav.offPath > 20) { nav.replan = true; nav.cooldown = 0; this.replanWhy = 'offpath'; return false; } }
     }
     if (nav.i >= nav.path.length) { nav.replan = true; nav.cooldown = 0; this.replanWhy = 'path-end'; return false; }
-    if (G.tick - nav.lastProgress > 300) { nav.replan = true; nav.cooldown = 0; this.replanWhy = 'no-progress'; this.stuckReplans = (this.stuckReplans || 0) + 1; if (this.stuckReplans > 5) { this.stuckReplans = 0; return 'fail'; } return false; }
+    if (G.tick - nav.lastProgress > 300) { const bm = nav.path[nav.i]; if (bm) Nav.ban(bm.x, bm.y, bm.move.t); nav.replan = true; nav.cooldown = 0; this.replanWhy = 'no-progress'; this.stuckReplans = (this.stuckReplans || 0) + 1; if (this.stuckReplans > 5) { this.stuckReplans = 0; return 'fail'; } return false; }
     const n = nav.path[nav.i], m = n.move;
     // 1) dig whatever blocks the next step
     for (const [dx, dy] of m.digs || []) {
