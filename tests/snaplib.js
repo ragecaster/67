@@ -10,7 +10,7 @@ async function capture(page, file) {
     for (const k of ['tiles', 'walls', 'frames', 'liquid', 'ltype', 'explored', 'surface']) world[k] = ser[k] ? b64(ser[k]) : null;
     return {
       world, player: Save.serializePlayer(p), pos: { x: p.x, y: p.y }, tick: G.tick,
-      bot: { houseSpot: Bot.houseSpot, base: Bot.base, milestones: Bot.milestones, houseFinished: Bot.houseFinished, badTiles: Bot.badTiles ? [...Bot.badTiles] : [], cooldowns: Bot.cooldowns || {}, fails: Bot.fails || {}, deaths: Bot.deaths },
+      bot: { houseSpot: Bot.houseSpot, base: Bot.base, milestones: Bot.milestones, houseFinished: Bot.houseFinished, badTiles: Bot.badTiles ? [...Bot.badTiles] : [], cooldowns: Bot.cooldowns || {}, fails: Bot.fails || {}, deaths: Bot.deaths, hell: Bot.hell },
     };
   });
   fs.writeFileSync(file, JSON.stringify(data));
@@ -26,7 +26,7 @@ async function restore(page, file) {
     G.start(p, w);
     p.x = data.pos.x; p.y = data.pos.y; p.vx = p.vy = 0; G.snapCamera();
     Bot.houseSpot = data.bot.houseSpot; Bot.base = data.bot.base; Bot.milestones = data.bot.milestones; Bot.houseFinished = data.bot.houseFinished;
-    Bot.badTiles = new Set(data.bot.badTiles); Bot.cooldowns = data.bot.cooldowns; Bot.fails = data.bot.fails; Bot.deaths = data.bot.deaths;
+    Bot.badTiles = new Set(data.bot.badTiles); Bot.cooldowns = data.bot.cooldowns; Bot.fails = data.bot.fails; Bot.deaths = data.bot.deaths; Bot.hell = data.bot.hell;
     Bot.start(1); Bot.verbose = false;
   }, data);
   return data.tick;

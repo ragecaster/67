@@ -15,10 +15,12 @@ const Bot = {
   hold(k) {
     if ((k === 'a' || k === 'd') && !this.allowDrop) {
       const p = G.player;
-      if (p.onGround && this.cliffAhead(k === 'd' ? 1 : -1)) return;
+      if (this.cliffAhead(k === 'd' ? 1 : -1)) return;   // (also in the air: a hop plus a held key carries us a dozen tiles)
     }
     Input.keys[k] = true;
   },
+  // hold a direction in a fight: never closer than 5 tiles to an open end (a hit knocks us ~4 tiles)
+  holdSafe(k) { const d = k === 'd' ? 1 : -1, e = this.edgeDist(d); if (e < 12 && e < 6) return; this.hold(k); },
   cliffAhead(dir) {
     // would the body, one tile further along, have nothing to stand on within a safe fall? (partial support from one column is fine)
     const p = G.player, w = G.world;
@@ -131,6 +133,12 @@ const Bot = {
     const h = this.houseSpot;
     return !!(h && this.milestones.house && x >= h[0] - 12 && x <= h[0] + 22 && y >= h[1] - 12 && y <= h[1] + 10);
   },
+  // is there a drop-off within n tiles on either side (the Ohio islands/bridges)? hops and chases are not worth it there
+  nearEdge(n) { const p = G.player, w = G.world, fy = Math.floor((p.y + p.h - 1) / TS), fx = Math.floor(p.cx / TS); for (const d of [-1, 1]) for (let k = 0; k <= n; k++) { let ground = false; for (let y = fy + 1; y <= fy + 14 && !ground; y++) if (w.solid(fx + d * k, y)) ground = true; if (!ground) return true; } return false; },
+  // standing on something with nothing but air under it (a bridge/island over the Ohio void)
+  floating() { const w = G.world, [fx, fy] = this.feet(); for (let j = 2; j <= 10; j++) if (w.solid(fx, fy + j) || w.solid(fx + 1, fy + j)) return false; return true; },
+  // tiles of floor left in direction dir from where we stand (stops at the first gap), capped at 12
+  edgeDist(dir) { const w = G.world, [fx, fy] = this.feet(); let n = 0; while (n < 12 && (w.solid(fx + dir * (n + 1), fy + 1) || w.solid(fx + dir * (n + 1) + 1, fy + 1))) n++; return n; },
   nearLava(x, y) { const w = G.world; for (let j = -2; j <= 1; j++) for (let i = -1; i <= 1; i++) if (w.liq(x + i, y + j) > 20 && w.ltype[w.idx(x + i, y + j)] === 1) return true; return false; },
 
   // ================= main tick =================
@@ -198,6 +206,8 @@ const Bot = {
     }
     // pick what to do
     if (!this.uiBusy) {
+      const wall = G.npcs.find(n => n.type === 'wall_of_flesh' && !n.dead);
+      if (wall) { this.why = 'wall'; this.wallFight(wall); return; }
       const enemy = this.findEnemy();
       if (enemy) {
         // badly hurt: run for the house instead of trading blows (resting is nearly free for a turbo bot, dying is not)
@@ -216,7 +226,8 @@ const Bot = {
         this.why = 'fight'; this.fight(enemy); return;
       }
       // nothing around and hurt: stand still and regenerate
-      if (p.life < p.lifeMax * (this.resting ? 0.9 : 0.6) && !p.dead && this.restTicks < 4000) {
+      const hostilesNear = G.npcs.some(n => !n.friendly && !n.town && !n.dead && dist(n.cx, n.cy, p.cx, p.cy) < 450) || G.projectiles.some(q => q.hostile && !q.dead && dist(q.cx, q.cy, p.cx, p.cy) < 300);
+      if (p.life < p.lifeMax * (this.resting ? 0.9 : 0.6) && !p.dead && this.restTicks < 4000 && !(hostilesNear && p.y / TS > G.world.hellLayer)) {
         this.resting = true; this.restTicks++; this.why = 'rest'; this.goal = 'resting (' + Math.round(p.life) + '/' + p.lifeMax + ')';
         return;
       }
@@ -329,28 +340,35 @@ const Bot = {
     if (ws > 9) { this.ensureHotbar(ws); return; }
     this.selectSlot(ws);
     const it = ITEMS[p.inv[ws].id];
-    const melee = it.use === 'swing' || it.use === 'thrust';
+    // weapons that fire a projectile on every swing (The 67) are shot from a distance like a bow
+    const melee = (it.use === 'swing' || it.use === 'thrust') && !it.shoot;
     const dx = n.cx - p.cx, dy = n.cy - p.cy, adx = Math.abs(dx), dist = Math.hypot(dx, dy);
     // --- movement ---
     let dodged = false;
-    if (n.boss) dodged = this.dodgeBoss(n);
+    // on a floating bridge, hits knock us ~5 tiles sideways: fight from well inside it, never next to an open end
+    if (this.floating()) {
+      const a = this.edgeDist(1), b = this.edgeDist(-1);
+      if (Math.min(a, b) < 6 && Math.max(a, b) > Math.min(a, b) + 2) { this.holdSafe(a < b ? 'a' : 'd'); dodged = true; }
+    }
+    if (!dodged && n.boss) dodged = this.dodgeBoss(n);
     if (!dodged) {
       if (melee) {
         const want = n.boss ? 60 : 34;
         // path to it only when it stands on reachable ground; a flyer far above is chased by walking underneath (A* to the sky wastes seconds)
         const reachable = Math.abs(n.cy - p.cy) < 160 && !(n.noGravity || (n.def && n.def.noGravity) || (n.def && (n.def.ai === 'flyer' || n.def.flying)));
         if (adx > want + 40 && !n.boss && reachable) this.moveTo(Math.floor(n.cx / TS), Math.floor((n.y + n.h - 1) / TS), 1);
-        else if (adx > want + 40 && !n.boss) this.hold(dx > 0 ? 'd' : 'a');
-        else if (adx > want) this.hold(dx > 0 ? 'd' : 'a');
+        else if (adx > want + 40 && !n.boss) this.holdSafe(dx > 0 ? 'd' : 'a');
+        else if (adx > want) this.holdSafe(dx > 0 ? 'd' : 'a');
       } else {
         // ranged: stay 140-280 px away, retreat when it closes in
-        if (dist < 140) this.hold(dx > 0 ? 'a' : 'd');
-        else if (dist > 280 && !n.boss) this.hold(dx > 0 ? 'd' : 'a');
-        else if (n.boss && adx > 220) this.hold(dx > 0 ? 'd' : 'a');
+        if (dist < 140) this.holdSafe(dx > 0 ? 'a' : 'd');
+        else if (dist > 280 && !n.boss) this.holdSafe(dx > 0 ? 'd' : 'a');
+        else if (n.boss && adx > 220) this.holdSafe(dx > 0 ? 'd' : 'a');
       }
     }
     // hop up at something standing above us (melee), or over a wall; never bunny-hop while shooting a hovering boss
-    if ((melee && n.cy < p.y - 10 && adx < 150 && !(n.boss && n.noGravity)) || (p.collidedX && p.onGround)) this.jump();
+    // (never on a floating platform: a hop plus a held direction carries us off the edge)
+    if (!this.nearEdge(8) && ((melee && n.cy < p.y - 10 && adx < 150 && !(n.boss && n.noGravity)) || (p.collidedX && p.onGround))) this.jump();
     // --- aim (lead moving targets with projectiles) and attack ---
     let ax = n.cx, ay = n.cy;
     if (!melee && it.use !== 'throw') {
@@ -522,6 +540,7 @@ const Bot = {
     const self = this;
     const junk = ['dirt_block', 'sand_block', 'clay_block', 'mud_block', 'ash_block', 'snow_block', 'ice_block', 'ebonstone_block', 'cobweb', 'mushroom', 'acorn', 'daybloom', 'blinkroot', 'cactus', 'sandstone_block', 'ebonsand_block', 'wallpaper_block', 'carpet_block', 'granite', 'marble', 'meme67_block', 'bone', 'stone_block', 'glass', 'gel', 'lens'];
     const keep = { dirt_block: 60, stone_block: 60, gel: 99, lens: 6, bone: 7, glass: 10 };
+    if (this.hell && this.hell.x0) Object.assign(keep, { dirt_block: 400, stone_block: 700, ash_block: 300 });   // the Wall runway is ~450 blocks
     this.goal = 'cleaning inventory';
     let step = 0;
     return {
@@ -856,56 +875,168 @@ const Bot = {
       },
     };
   },
+  // ---- Wall of Brainrot arena ----
+  // Ohio's cavern is a floorless void over a lava sea, the Wall sweeps the whole world at 1.3..3.9 px/tick, and Ohio's flyers ignore
+  // walls (so a rock tunnel is a death trap: nothing there can be shot). A human lands on one of the floating ash islands, lays a long
+  // block bridge along its row, then drops the doll off the island's edge into the lava and retreats along the bridge, shooting.
+  blockCount() { return ['stone_block', 'ash_block', 'dirt_block', 'mud_block', 'clay_block', 'sand_block'].reduce((n, id) => n + this.count(id), 0); },
+  // a floating platform >= 6 wide in the cavern with lava under the side the doll is dropped to and open runway on the other side
+  findIsland(fx) {
+    const w = G.world, lava = (x, y) => w.liq(x, y) > 100 && w.ltype[w.idx(x, y)] === 1;
+    const lavaBelow = (x, y) => { for (let j = y + 1; j < w.h - 1; j++) { if (w.solid(x, j)) return false; if (lava(x, j)) return true; } return false; };
+    const stand = (x, y) => { if (!w.solid(x, y + 1) || !w.solid(x + 1, y + 1)) return false; for (let j = 0; j < 3; j++) if (w.solid(x, y - j) || w.solid(x + 1, y - j)) return false; return true; };
+    let best = null;
+    for (let y = w.hellLayer + 20; y <= w.hellLayer + 50; y++) {
+      for (let x = 20; x < w.w - 22;) {
+        if (!stand(x, y)) { x++; continue; }
+        let x1 = x; while (stand(x1 + 1, y)) x1++;
+        if (x1 - x >= 5) {
+          let west = 0, east = 0;
+          for (let k = 3; k <= 9; k++) { if (lavaBelow(x - k, y)) west++; if (lavaBelow(x1 + 2 + k, y)) east++; }
+          for (const dir of [1, -1]) {
+            const lv = dir > 0 ? west : east, room = dir > 0 ? w.w - 40 - x1 : x - 40;
+            if (lv < 6 || room < 300) continue;
+            // standing column for the throw (the island edge the doll leaves from) and where the bridge ends
+            const col = dir > 0 ? x + 1 : x1, xEnd = col + dir * Math.min(room - 10, 320);
+            const cost = Math.abs(col - fx) + (y - w.hellLayer) * 0.5;
+            if (!best || cost < best.cost) best = { x0: x, x1, y, dir, col, xEnd, cost };
+          }
+        }
+        x = x1 + 1;
+      }
+    }
+    return best;
+  },
+  // lay a straight 1-block-wide runway along row Y heading `dir`: clear the way, keep two floor cells placed ahead while walking; true at xt
+  lineStep(dir, Y, xt) {
+    const w = G.world, p = this.p(), [fx, fy] = this.feet();
+    if (dir * (fx - xt) >= 0) return true;
+    if (fy !== Y) { const r = this.moveTo(fx, Y, 0); return r === 'fail' ? 'off' : false; }
+    for (const c of [fx + dir, fx + 2 * dir]) for (const r of [Y, Y - 1, Y - 2]) {
+      if (w.solid(c, r)) { if (this.dig(c, r) === 'fail') return 'bad'; return false; }
+    }
+    const need = [fx + dir, fx + 2 * dir, fx + 3 * dir].find(c => !w.solid(c, Y + 1));
+    if (need !== undefined) {
+      const PB = ['dirt_block', 'stone_block', 'mud_block', 'clay_block', 'sand_block', 'ash_block'];
+      let bs = -1; for (const id of PB) { bs = this.slotOf(it => it.id === id); if (bs >= 0) break; }
+      if (bs < 0) return 'noblocks';
+      if (bs > 9) { this.ensureHotbar(bs); return false; }
+      this.selectSlot(bs);
+      const occ = w.tile(need, Y + 1);
+      if (occ && !TILES[occ].solid && !TILES[occ].cut) { this.dig(need, Y + 1); return false; }
+      this.aimTile(need, Y + 1);
+      if (p.itemAnim === 0) this.clickOnce();
+      if (need === fx + dir) { if (Math.abs(p.vx) > 0.6) this.hold(p.vx > 0 ? 'a' : 'd'); return false; }   // no floor right ahead: wait for it
+    }
+    this.hold(dir > 0 ? 'd' : 'a');
+    return false;
+  },
+  // stand in column `col` (cx in its middle) on row Y; true when there
+  alignAt(col, Y) {
+    const p = this.p(), [fx, fy] = this.feet();
+    if (Math.abs(fx - col) > 3 || fy !== Y) { const r = this.moveTo(col, Y, 2); return r === 'fail' ? 'fail' : false; }
+    const mid = col * TS + 8;
+    if (fx === col && Math.abs(p.cx - mid) < 5 && Math.abs(p.vx) < 0.3) return true;
+    this.hold(p.cx < mid ? 'd' : 'a');
+    return false;
+  },
   taskHell() {
     const self = this, w = G.world;
     this.goal = 'going to Ohio';
-    let arrivalX = null, huntT = 0, throwTries = 0;
+    let huntT = 0, throwTries = 0, sub = null, bridgeFails = 0;
+    const H = this.hell = this.hell || {};
+    const fail = (t, why) => { self.log('Ohio plan failed: ' + why); H.fails = (H.fails || 0) + 1; t.done = true; self.cooldowns = self.cooldowns || {}; self.cooldowns['going to'] = G.tick + 9000; if (H.fails >= 3) { delete H.x0; H.fails = 0; } };
     return {
       step() {
         const p = self.p(), [fx, fy] = self.feet();
         if (w.flags.wall_of_flesh) { this.done = true; return; }
-        // 1) get down to the underworld
-        // (latched: the bot's y jitters by a row, and flipping between "descending" and "hunting" every few ticks resets the path each time)
-        if (!this.arrived && fy >= w.hellLayer + 24) { this.arrived = true; arrivalX = fx; }
-        if (!this.arrived) {
-          if (!this.descendX) this.descendX = fx + 4;
-          const r = self.moveTo(this.descendX, w.hellLayer + 26, 2);
-          if (r === 'fail') { this.fails = (this.fails || 0) + 1; if (this.fails > 3) this.done = true; }
-          self.goal = 'going to Ohio'; return;
+        // Ohio chews through ~0.1 life/tick and only 0.2/s regenerates while being hit: work in sorties, heal at home in between
+        if (p.life < p.lifeMax * 0.5 && H.ph !== 'prep') H.healing = true;
+        if (H.healing) {
+          if (p.life >= p.lifeMax * 0.92) H.healing = false;
+          else {
+            const bx = self.base[0], by = self.base[1];
+            if (Math.abs(fx - bx) < 10 && Math.abs(fy - by) < 8) { self.goal = 'resting at home before going back to Ohio'; return; }
+            self.goal = 'leaving Ohio to heal (' + Math.round(p.life) + '/' + p.lifeMax + ')'; self.moveTo(bx, by, 2); return;
+          }
         }
-        self.milestone('reached Ohio');
-        if (arrivalX === null) arrivalX = fx;
-        // 2) a doll in the bag: only Wall-of-Brainrot ready? then throw it into lava
+        if (!H.x0) {
+          const isl = self.findIsland(fx);
+          if (!isl) return fail(this, 'no island');
+          Object.assign(H, isl, { ph: 'prep' });
+          self.log('Ohio plan: island ' + isl.x0 + '-' + isl.x1 + '@' + isl.y + ', stand at ' + isl.col + ', bridge ' + (isl.dir > 0 ? 'east' : 'west') + ' to ' + isl.xEnd);
+        }
+        const dir = H.dir;
+        // 1) enough blocks for the whole runway
+        if (H.ph === 'prep') {
+          if (self.blockCount() >= Math.abs(H.xEnd - H.col) + 60) H.ph = 'descend';
+          else { sub = sub || self.taskMine('stone', () => self.blockCount() >= Math.abs(H.xEnd - H.col) + 120); sub.step(); if (sub.done) sub = null; self.goal = 'mining blocks for the Wall bridge'; return; }
+        }
+        // 2) down to the island (shaft from the surface, then a drop onto it)
+        if (H.ph === 'descend') {
+          self.goal = 'going to Ohio';
+          const r = self.moveTo(H.col, H.y, 1);
+          if (r === true || (fy === H.y && Math.abs(fx - H.col) <= 2)) { H.ph = 'bridge'; self.milestone('reached Ohio'); }
+          else { if (r === 'fail') { this.fails = (this.fails || 0) + 1; if (this.fails > 3) return fail(this, 'cannot reach the island'); } return; }
+        }
+        // 3) the runway: hop along in 24-tile legs, the nav lays a block under the front foot wherever there is none
+        if (H.ph === 'bridge') {
+          self.goal = 'bridging the Wall runway';
+          if (dir * (fx - H.xEnd) >= -2) { H.ph = 'wait'; self.milestone('Wall runway built'); }
+          else {
+            if (self.blockCount() < 30) { sub = sub || self.taskMine('stone', () => self.blockCount() >= 200); sub.step(); if (sub.done) sub = null; self.goal = 'mining blocks for the Wall bridge'; return; }
+            const r = self.lineStep(dir, H.y, H.xEnd);
+            if (r === 'noblocks') { sub = sub || self.taskMine('stone', () => self.blockCount() >= 200); sub.step(); if (sub.done) sub = null; self.goal = 'mining blocks for the Wall bridge'; return; }
+            if (r === 'off' || r === 'bad') { if (++bridgeFails > 40) return fail(this, 'runway ' + r + ' at ' + fx); }
+            return;
+          }
+        }
+        // 4) back at the island's edge: wait for a Voodoo Ohio Demon's doll, then drop it off the edge into the lava
         if (self.has('guide_voodoo_doll')) {
           if (!self.readyForWall()) { self.goal = 'got the voodoo doll, but not ready for the Wall (' + self.wallReadiness() + ')'; this.done = true; self.cooldowns = self.cooldowns || {}; self.cooldowns['got the'] = G.tick + 20000; return; }
-          const lava = self.nearestTile((t, x, y) => w.liq(x, y) > 100 && w.ltype[w.idx(x, y)] === 1 && !w.solid(x, y - 1), 60, 30);
-          if (!lava) { self.goal = 'looking for lava to throw the doll into'; const r = self.moveTo(arrivalX + (Math.floor(G.tick / 900) % 2 ? 40 : -40), w.hellLayer + 20, 4); if (r === 'fail') arrivalX += 15; return; }
+          if (!G.npcs.some(n => n.type === 'guide' && !n.dead)) { self.goal = 'no Guide alive: waiting at home'; self.moveTo(self.base[0], self.base[1], 2); return; }
           self.goal = 'throwing the voodoo doll into lava';
-          const side = fx < lava[0] ? -4 : 4;
-          const r = self.moveTo(lava[0] + side, lava[1] - 1, 2);
-          if (r === true || (Math.abs(fx - (lava[0] + side)) <= 3 && Math.abs(fy - (lava[1] - 1)) <= 3)) {
-            const s = self.slotOf(it => it.id === 'guide_voodoo_doll'); if (s > 9) { self.ensureHotbar(s); return; }
-            self.selectSlot(s);
-            self.aimWorld(lava[0] * TS + 8, lava[1] * TS - 24);   // face the lava (the throw goes the way we face)
-            if (p.dir !== (lava[0] > fx ? 1 : -1)) { Input.keys[lava[0] > fx ? 'd' : 'a'] = true; return; } // one-tick tap just to face it (bypasses the cliff guard: we stand 4 tiles back)
-            if (++throwTries > 3) { self.press('t'); self.milestone('threw the voodoo doll'); self.log('threw the voodoo doll toward ' + lava); }
-          }
+          const a = self.alignAt(H.col, H.y);
+          if (a === 'fail') return fail(this, 'cannot reach the throwing spot');
+          if (a !== true) return;
+          const s = self.slotOf(it => it.id === 'guide_voodoo_doll'); if (s > 9) { self.ensureHotbar(s); return; }
+          self.selectSlot(s);
+          self.aimWorld(p.cx - dir * 100, p.cy);
+          if (p.dir !== -dir) { Input.keys[dir > 0 ? 'a' : 'd'] = true; return; }
+          if (++throwTries > 3) { self.press('t'); self.milestone('threw the voodoo doll'); self.log('threw the voodoo doll off the island at ' + H.col); throwTries = 0; }
           return;
         }
-        // 3) hunt Voodoo Ohio Demons (they carry the doll and only spawn while the Guide lives)
         if (!G.npcs.some(n => n.type === 'guide' && !n.dead)) { self.goal = 'no Guide alive: demons carry no dolls, waiting at home'; self.moveTo(self.base[0], self.base[1], 2); return; }
         self.goal = 'hunting Voodoo Ohio Demons';
-        // wander the underworld floor around where we arrived; the generic fight code deals with whatever comes
-        if (G.tick - huntT > 900) { huntT = G.tick; this.wander = [arrivalX + (Math.floor(G.tick / 900) % 2 ? 45 : -45), w.hellLayer + 20]; }
-        const wt = this.wander || [arrivalX, w.hellLayer + 20];
-        const r = self.moveTo(wt[0], wt[1], 4);
+        // stay on the island: Ohio's flyers come to us in the open, and the patrol keeps the progress watchdog fed
+        if (G.tick - huntT > 600) { huntT = G.tick; this.patrol = H.col + dir * (Math.floor(G.tick / 600) % 2 ? 4 : 0); }
+        const r = self.alignAt(this.patrol || H.col, H.y);
         if (r === 'fail') huntT = 0;
       },
     };
   },
+  // the Wall: stay ahead of its face, keep firing The 67 at it, hop over eye lasers
+  wallFight(n) {
+    const p = this.p(), dir = n.ai[3] || 1;
+    const edge = dir > 0 ? n.x + n.w : n.x, gap = dir * (p.cx - edge);
+    const s = this.slotOf(it => it.id === 'the_67');
+    this.goal = 'fighting the Wall of Brainrot (gap ' + Math.round(gap) + ', ' + Math.round(n.life) + '/' + n.lifeMax + ')';
+    if (s >= 0 && s <= 9) this.selectSlot(s); else if (s > 9) { this.ensureHotbar(s); return; }
+    this.aimWorld(n.cx, n.cy);
+    if (gap > -40 && gap < 780 && p.itemAnim === 0) this.clickOnce();
+    // laser dodge: a laser is a 4px band at our chest height; being airborne when it passes clears it
+    let hop = false;
+    for (const pr of G.projectiles || []) {
+      if (pr.type !== 'eye_laser' || pr.dead) continue;
+      const dx = dir * (p.cx - pr.cx);
+      if (dx > 0 && dx < 110 && Math.abs(pr.cy - p.cy) < 40) hop = true;
+    }
+    if (hop && p.onGround) this.jump();
+    if (gap < 300) { this.hold(dir > 0 ? 'd' : 'a'); this.why = 'wall-retreat'; }
+  },
   // would a human attempt the Wall of Brainrot now? (it kills the Guide and chases you across the whole underworld)
   wallReadiness() { const p = this.p(); return 'life ' + p.lifeMax + ' def ' + p.calc.defense + ' the_67 ' + this.owns('the_67') + ' arrows ' + this.count('wooden_arrow'); },
-  readyForWall() { const p = this.p(); return p.lifeMax >= 300 && p.calc.defense >= 16 && this.owns('the_67') && this.has('guide_voodoo_doll') ; },
+  readyForWall() { const p = this.p(); return p.lifeMax >= 200 && p.calc.defense >= 10 && this.owns('the_67') && this.has('guide_voodoo_doll') ; },
   taskExplore() {
     const self = this;
     this.goal = 'exploring';

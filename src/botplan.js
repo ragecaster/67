@@ -76,7 +76,7 @@ Object.assign(Bot, {
     const p = this.p();
     for (const seg of this.wantSegments()) {
       if (seg.special === 'crystals') {
-        if (p.lifeMax < 200) { const c = this.nearestTile(t => t === T.LIFE_CRYSTAL, 120, 90); if (c && !this.crystalBad(c)) return this.taskBreakAt(c, 'aura crystal', 'pick'); }
+        if (p.lifeMax < 400) { const c = this.nearestTile(t => t === T.LIFE_CRYSTAL, 120, 90); if (c && !this.crystalBad(c)) return this.taskBreakAt(c, 'aura crystal', 'pick'); }
         continue;
       }
       for (const [id, qty] of seg.want) {

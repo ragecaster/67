@@ -316,16 +316,19 @@ Object.assign(Bot, {
       return false;
     }
     if (m.t === 'bridge') {
-      // stand at the edge, place a block in the cell under the leading foot, then step onto it
-      const dir = n.x > nx ? 1 : -1, col = dir > 0 ? n.x + 1 : n.x, row = n.y + 1;
-      const under = w.tile(col, row);
-      if (!(under && TILES[under].solid)) {
+      // fill every missing floor cell under the next node's two body columns, nearest to where we stand first (each one attaches to the last)
+      const dir = n.x > nx ? 1 : -1, row = n.y + 1;
+      const cols = dir > 0 ? [n.x, n.x + 1] : [n.x + 1, n.x];
+      const col = cols.find(c => !(w.tile(c, row) && TILES[w.tile(c, row)].solid));
+      if (col !== undefined) {
         const PB = ['dirt_block', 'stone_block', 'mud_block', 'clay_block', 'sand_block', 'ash_block', 'wood'];
         let bs = -1; for (const id of PB) { bs = this.slotOf(it => it.id === id); if (bs >= 0) break; }
         if (bs < 0) { nav.replan = true; this.replanWhy = 'no-blocks'; return false; }
         if (bs > 9) { this.ensureHotbar(bs); return false; }
         this.selectSlot(bs);
         this.aimTile(col, row);
+        // brake while the block goes in: we must not slide off the edge first
+        if (Math.abs(p.vx) > 0.6) this.hold(p.vx > 0 ? 'a' : 'd');
         if (p.itemAnim === 0) this.clickOnce();
         return false;
       }
