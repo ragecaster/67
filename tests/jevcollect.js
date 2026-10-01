@@ -13,12 +13,25 @@ run(async (page, errors) => {
   const CH = 20000;
   for (let done = 0; done < TICKS; done += CH) {
     const r = await page.evaluate((k) => {
-      for (let i = 0; i < k; i++) { Bot.wantsDraw = false; G.update(); if (Bot.wantsDraw || G.tick % 1200 === 0) G.draw(); Input.endFrame(); }
+      const W = window.__w = window.__w || { hist: [], alertedAt: -1e9 }, alerts = [];
+      for (let i = 0; i < k; i++) {
+        Bot.wantsDraw = false; G.update(); if (Bot.wantsDraw || G.tick % 1200 === 0) G.draw(); Input.endFrame();
+        if (G.tick % 100) continue;   // sample every 100 game ticks; STUCK = inside a 2-tile box for 3000 ticks, not resting/hiding
+        const p = G.player, s = { x: Math.floor(p.cx / TS), y: Math.floor((p.y + p.h - 1) / TS), g: Bot.goal || '' };
+        W.hist.push(s); if (W.hist.length > 30) W.hist.shift();
+        if (W.hist.length === 30 && !p.dead && G.tick - W.alertedAt > 3000) {
+          const xs = W.hist.map(q => q.x), ys = W.hist.map(q => q.y);
+          if (Math.max(...xs) - Math.min(...xs) <= 2 && Math.max(...ys) - Math.min(...ys) <= 2 && !W.hist.every(q => /^(resting|hiding|waiting|going home)/.test(q.g))) {
+            W.alertedAt = G.tick; alerts.push('STUCK t=' + G.tick + ' at ' + s.x + ',' + s.y + ' goal="' + s.g + '" why=' + Bot.why + ' | ' + (Bot.logLines.slice(-2).join(' / ')));
+          }
+        }
+      }
       const recs = TerraJev.records; TerraJev.records = [];
-      return { recs, t: G.tick, deaths: Bot.deaths, ms: Object.keys(Bot.milestones).length, goal: Bot.goal, life: G.player.life + '/' + G.player.lifeMax };
+      return { recs, alerts, t: G.tick, deaths: Bot.deaths, ms: Object.keys(Bot.milestones).length, goal: Bot.goal, life: G.player.life + '/' + G.player.lifeMax };
     }, CH);
     for (const rec of r.recs) { rec.seed = SEED; out.write(JSON.stringify(rec) + '\n'); }
     n += r.recs.length;
+    for (const al of r.alerts) console.log('  !!! ' + al);
     console.log(`t=${r.t} decisions=${n} deaths=${r.deaths} milestones=${r.ms} life=${r.life} | ${r.goal}`);
   }
   out.end();
