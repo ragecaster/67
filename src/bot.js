@@ -167,6 +167,17 @@ const Bot = {
     }
     if (this.unstick && this.unstick.until > G.tick && !UI.invOpen) { this.bruteForce(); return; }
     // survival reflexes
+    // long fall in progress (the game hurts above 25 tiles): drop a block right under our feet; it lands us and resets the fall
+    if (!p.onGround && p.vy > 4 && p.fallStart != null && (p.y - p.fallStart) / TS > 14 && !UI.invOpen) {
+      const w = G.world, fy2 = Math.floor((p.y + p.h) / TS);
+      const bs = this.slotOf((it, st) => ['dirt_block', 'stone_block', 'clay_block', 'mud_block', 'sand_block', 'ash_block'].includes(it.id));
+      if (bs >= 0 && bs <= 9) {
+        const col = Math.floor(p.cx / TS);
+        for (const cy of [fy2 + 1, fy2 + 2]) {
+          if (w.tile(col, cy) === 0 && (w.solid(col - 1, cy) || w.solid(col + 1, cy) || w.solid(col, cy + 1) || w.solid(col, cy - 1))) { this.selectSlot(bs); this.aimTile(col, cy); if (p.itemAnim === 0) this.clickOnce(); this.why = 'catch-fall'; break; }
+        }
+      }
+    }
     if (p.life < p.lifeMax * 0.45 && !p.buffs.potion_sickness && p.inv.some(s => s && ITEMS[s.id].heal && ITEMS[s.id].potion)) this.press('h');
     if (p.lavaWet || p.buffs.on_fire) { this.jump(); }
     if (p.breath < 80) this.jump();
@@ -876,7 +887,7 @@ const Bot = {
             const s = self.slotOf(it => it.id === 'guide_voodoo_doll'); if (s > 9) { self.ensureHotbar(s); return; }
             self.selectSlot(s);
             self.aimWorld(lava[0] * TS + 8, lava[1] * TS - 24);   // face the lava (the throw goes the way we face)
-            if (p.dir !== (lava[0] > fx ? 1 : -1)) { self.hold(lava[0] > fx ? 'd' : 'a'); return; }
+            if (p.dir !== (lava[0] > fx ? 1 : -1)) { Input.keys[lava[0] > fx ? 'd' : 'a'] = true; return; } // one-tick tap just to face it (bypasses the cliff guard: we stand 4 tiles back)
             if (++throwTries > 3) { self.press('t'); self.milestone('threw the voodoo doll'); self.log('threw the voodoo doll toward ' + lava); }
           }
           return;
