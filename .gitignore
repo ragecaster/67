@@ -8,3 +8,4 @@ tools/jev/models/
 tools/jev/data/
 __pycache__/
 tools/jev/old_v1/
+tools/jev/cand_*

@@ -146,8 +146,9 @@ const UI = {
       if (Bot.act && Bot.act.probs) {
         const nm = k => k.replace(/^(fight|kite):(\d+)$/, (m, a, u) => a + ' ' + ((G.npcs.find(n => n.uid == u) || {}).name || '?')).replace(/_/g, ' ');
         const top = Object.entries(Bot.act.probs).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, v]) => nm(k) + ' ' + Math.round(v * 100) + '%').join(' · ');
-        const trained = TerraJev.has('act');
-        txt(ctx, (trained ? '🧠 TerraJev: ' : '🎲 TerraJev (untrained, exploring): ') + top, vw / 2, vh - 116, trained ? '#ffd23a' : '#cfe8ff', 12, 'center');
+        const trained = TerraJev.has('act'), src = Bot.choiceSrc === 'teacher' ? ' (rules)' : Bot.choiceSrc === 'explore' ? ' (exploring)' : '';
+        if (Bot.plan) txt(ctx, '📋 plan: ' + Bot.plan.label, vw / 2, vh - 134, '#cfe8ff', 12, 'center');
+        txt(ctx, (trained ? '🧠 TerraJev' + src + ': ' : '📜 rules (TerraJev untrained): ') + top, vw / 2, vh - 116, trained ? '#ffd23a' : '#cfe8ff', 12, 'center');
       }
       if (Bot.vision) {
         const lines = SDK.summary(), bw = Math.min(vw - 40, 900);

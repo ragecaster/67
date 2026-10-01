@@ -20,15 +20,12 @@ import torch, torch.nn as nn, torch.nn.functional as F
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def reward(o, q='tactic'):
-    # one number per decision: hurting is bad, dying is very bad, killing/progress is good
-    base = (-3.0 * o['taken'] - 6.0 * o['died'] + 0.3 * o['kills'] + 0.002 * o['dealt']
-            + 0.15 * math.log1p(o['gain'] / 100.0) + 0.5 * o['ms']
+def reward(o, q='act'):
+    # one number per decision, measured over that decision's own window (until the next decision, 300..1500 ticks)
+    return (-3.0 * o['taken'] - 6.0 * o['died'] + 0.3 * o['kills'] + 0.002 * o['dealt']
+            + 0.3 * math.log1p(o['gain'] / 100.0) + 1.5 * o['ms'] + 0.3 * o.get('dDef', 0) + 0.02 * o.get('dLife', 0) + 0.05 * o.get('dPick', 0)
             # the end goal: all four bosses dead. A first kill outweighs any death, and damage on a boss earns partial credit
             + 15.0 * o.get('boss', 0) + 0.003 * o.get('bossDealt', 0))
-    if q in ('task', 'act'):  # long horizon: progress dominates (gear, life, pick power, milestones)
-        base += 1.0 * o['ms'] + 0.3 * o.get('dDef', 0) + 0.02 * o.get('dLife', 0) + 0.05 * o.get('dPick', 0) + 0.3 * math.log1p(o['gain'] / 100.0)
-    return base
 
 
 class TerraJev(nn.Module):
@@ -62,13 +59,16 @@ class TerraJev(nn.Module):
         return logits, val
 
 
-def load(paths, q='tactic'):
+def load(paths, q='act'):
     rows = []
     for p in paths:
         for line in open(p):
             r = json.loads(line)
             if r.get('q') == q and 'outcome' in r and len(r['cands']) > 1:
                 rows.append(r)
+    if rows:  # only the newest feature layout (older rollouts used different features)
+        dims = (len(rows[-1]['state']), len(rows[-1]['feats'][0]))
+        rows = [r for r in rows if (len(r['state']), len(r['feats'][0])) == dims]
     return rows
 
 
@@ -120,7 +120,7 @@ def train_one(q, paths, a):
     torch.manual_seed(0)
     model = TerraJev(S.shape[1], C.shape[2])
     init = ROOT / 'tools' / 'jev' / f'terrajev_{q}.pt'
-    if a.resume and init.exists():
+    if a.resume and init.exists():  # resume from the promoted (incumbent) model
         try: model.load_state_dict(torch.load(init))
         except Exception as e: print('    (could not resume:', e, ')')
     opt = torch.optim.AdamW(model.parameters(), lr=2e-3, weight_decay=1e-4)
@@ -128,13 +128,13 @@ def train_one(q, paths, a):
     for ep in range(a.epochs):
         model.train()
         perm = torch.randperm(len(S))
-        for i in range(0, len(S), 512):
-            b = perm[i:i + 512]
+        for i in range(0, len(S), 256):
+            b = perm[i:i + 256]
             logits, val_pred = model(S[b], C[b], M[b])
             logp = logits.log_softmax(-1)
             has_t = Tt[b] >= 0
             bc = -(logp[has_t, Tt[b][has_t]]).mean() if has_t.any() else torch.tensor(0.)
-            adv = ((R[b] - val_pred.detach()) / rstd).clamp(-3, 3)
+            adv = R[b] - val_pred.detach(); adv = ((adv - adv.mean()) / (adv.std() + 1e-6)).clamp(-3, 3)
             w = torch.exp(adv / a.beta).clamp(max=10)
             awr = -(w * logp[torch.arange(len(b)), A[b]]).mean()
             ent = -(logp.exp() * logp.masked_fill(~M[b], 0)).sum(-1).mean()
@@ -148,8 +148,11 @@ def train_one(q, paths, a):
         # how much better than the logged choices does the model expect to do? (advantage of argmax vs chosen, by value)
         pred = lg.argmax(-1)
         same = (pred == vA).float().mean().item()
-    print(f'    value mse {vl:.3f}; model keeps the logged choice {same * 100:.0f}% of the time')
-    torch.save(model.state_dict(), init)
+        ht = vT >= 0
+        teach = (pred[ht] == vT[ht]).float().mean().item() if ht.any() else float('nan')
+        ev = 1 - vl / max(vR.var().item(), 1e-6)
+    print(f'    value explained variance {ev:.2f}; agrees with the teacher {teach * 100:.0f}%, with the logged choice {same * 100:.0f}%')
+    torch.save(model.state_dict(), a.pt or init)
     return model, {'stateDim': S.shape[1], 'candDim': C.shape[2], 'decisions': len(rows)}
 
 
@@ -160,7 +163,8 @@ def main():
     ap.add_argument('--rl', type=float, default=1.0)
     ap.add_argument('--beta', type=float, default=1.0)
     ap.add_argument('--ent', type=float, default=0.01)
-    ap.add_argument('--epochs', type=int, default=30)
+    ap.add_argument('--epochs', type=int, default=8)
+    ap.add_argument('--pt', default=None, help='where to save the trained network (default: overwrite the incumbent)')
     ap.add_argument('--resume', action='store_true')
     ap.add_argument('--questions', default='act')
     ap.add_argument('--out', default=str(ROOT / 'src' / 'terrajev_weights.js'))

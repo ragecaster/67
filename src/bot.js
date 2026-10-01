@@ -79,7 +79,8 @@ const Bot = {
       // a sword can't reach something hovering well above us
       const high = enemy && enemy.cy < this.p().cy - 90 && (enemy.noGravity || (enemy.def && enemy.def.noGravity) || enemy.boss);
       // bosses: shooting from range beats trading blows (and doesn't flip-flop with every dash)
-      const v = Math.max(1, dmg - def * 0.5) * 60 / (it.useAnim || it.useTime) * (melee && high ? 0.12 : 1) * (!melee && enemy && enemy.boss ? 1.6 : 1) + (melee ? 2 : 0);
+      // expected damage that lands: measured hit rates are ~0.9 for melee swings and ~0.4 for arrows on a moving boss
+      const v = Math.max(1, dmg - def * 0.5) * 60 / (it.useAnim || it.useTime) * (melee ? (high ? 0.12 : 0.9) : 0.4) + (melee ? 2 : 0);
       if (v > bv) { bv = v; bi = i; }
     });
     return bi;
@@ -190,7 +191,7 @@ const Bot = {
         }
       }
     }
-    if (p.life < p.lifeMax * (TerraJev.ready ? 0.2 : 0.45) && !p.buffs.potion_sickness && p.inv.some(s => s && ITEMS[s.id].heal && ITEMS[s.id].potion)) this.press('h');
+    if (p.life < p.lifeMax * 0.4 && !p.buffs.potion_sickness && p.inv.some(s => s && ITEMS[s.id].heal && ITEMS[s.id].potion)) this.press('h');
     if (p.lavaWet || p.buffs.on_fire) { this.jump(); }
     if (p.breath < 80) this.jump();
     // finish an in-progress hotbar move before doing anything else (it's a multi-click UI action)
@@ -217,7 +218,7 @@ const Bot = {
     // watchdog: abandon tasks that make no progress (no movement, no inventory change)
     const sig = Math.round(p.x / 48) + ',' + Math.round(p.y / 48) + '|' + p.inv.reduce((n, s) => n + (s ? s.count : 0), 0);
     if (sig !== this.progSig) { this.progSig = sig; this.progAt = G.tick; }
-    if (this.task && G.tick - this.progAt > 2400) {
+    if (this.task && G.tick - this.progAt > 2400 && !/^(hiding|resting|waiting)/.test(this.goal || '')) {   // standing still is the point of these
       this.log('watchdog: abandoning "' + this.goal + '" (no progress)');
       this.cooldowns = this.cooldowns || {}; this.cooldowns[this.lastTaskId || this.goal] = G.tick + 3600;
       this.task = null; this.nav = null; this.progAt = G.tick; this.watchdogs = (this.watchdogs || 0) + 1;
@@ -269,11 +270,18 @@ const Bot = {
       if (up) { this.setAct({ id: 'equip:' + up, kind: 'reflex' }, this.taskEquip(up), foes); return; }
       if (p.inv.slice(10).filter(s => !s).length < 4 && !(this.cooldowns && this.cooldowns.trash > G.tick)) { (this.cooldowns = this.cooldowns || {}).trash = G.tick + 1800; this.setAct({ id: 'trash', kind: 'reflex' }, this.taskTrash(), foes); return; }
     }
+    const forced = this.survivalReflex(foes);
+    if (forced === 'flee' && (!this.act || this.act.id !== 'flee')) { this.log('reflex: low life, retreating home'); this.setAct({ id: 'flee', kind: 'flee' }, this.skillFlee(), foes); return; }
+    if (forced && this.act && this.act.id === forced) return;
     const cands = this.actionCandidates(foes);
+    this.plan = this.planFrontier(cands);
     const state = jevStateFeatures(this, foes[0] || null);
     const cur = this.act && this.task && !this.task.done ? this.act.id : null;
-    const ans = TerraJev.decide({ id: 'act', state, candidates: cands.map(c => ({ id: c.id, group: c.kind, features: jevActFeatures(this, c, cur) })) });
+    const teacher = this.teacherPick(cands, foes);
+    TerraJev.closeWindows();
+    const ans = TerraJev.decide({ id: 'act', state, teacher, candidates: cands.map(c => ({ id: c.id, group: c.kind, features: jevActFeatures(this, c, cur) })) });
     const pick = cands[ans.idx];
+    this.choiceSrc = ans.src;
     // same action as now: keep its progress. An interrupted task is parked and resumed if it's picked again soon.
     if (pick.id === cur) { this.act.at = G.tick; this.act.life = p.life; this.act.probs = ans.probabilities; foes.forEach(n => this.act.seen.add(n.uid)); return; }
     if (cur && this.task && !this.task.done && !ACT_COMBAT.includes(this.act.kind)) (this.parked = this.parked || {})[cur] = { task: this.task, at: G.tick };
@@ -294,16 +302,20 @@ const Bot = {
     const potions = p.inv.some(s => s && ITEMS[s.id].heal && ITEMS[s.id].potion) && !p.buffs.potion_sickness;
     const ranged = this.rangedSlot() >= 0;
     const boss = foes.find(n => n.boss);
+    const [fx0, fy0] = this.feet(), canFlee = this.base && !boss && Math.abs(fx0 - this.base[0]) + Math.abs(fy0 - this.base[1]) > 6;
     for (const n of foes) {
-      out.push({ id: 'fight:' + n.uid, kind: 'fight', enemy: n, make: () => this.skillFight(n, false) });
-      if (ranged) out.push({ id: 'kite:' + n.uid, kind: 'kite', enemy: n, make: () => this.skillFight(n, true) });
+      // the combat simulator gates fights: only winnable ones are offered (unless it's a boss, we're cornered, or can't run)
+      const odds = this.fightOdds(n), close = dist(n.cx, n.cy, p.cx, p.cy) < 50;
+      if (!(odds.ok || n.boss || close || !canFlee || (this.fledFrom && this.fledFrom[n.uid] >= 2))) continue;
+      out.push({ id: 'fight:' + n.uid, kind: 'fight', enemy: n, odds: odds.margin, make: () => this.skillFight(n, false) });
+      if (ranged) out.push({ id: 'kite:' + n.uid, kind: 'kite', enemy: n, odds: odds.margin, make: () => this.skillFight(n, true) });
     }
     if (potions && p.life < p.lifeMax * 0.7) out.push({ id: 'heal', kind: 'heal', make: () => this.skillHeal() });
     if (boss) return out;   // a boss fight is not the time to chop trees
     const [fx, fy] = this.feet(), home = this.base;
     const dHome = home ? Math.abs(fx - home[0]) + Math.abs(fy - home[1]) : 0;
     if (foes.length && home && dHome > 6) out.push({ id: 'flee', kind: 'flee', dist: dHome, make: () => this.skillFlee() });
-    if (!foes.length && p.life < p.lifeMax * 0.9) out.push({ id: 'rest', kind: 'rest', make: () => this.skillRest() });
+    if (!foes.length && p.life < p.lifeMax * 0.9 && (!home || dHome < 15)) out.push({ id: 'rest', kind: 'rest', make: () => this.skillRest() });   // rest at home only
     if (G.isNight() && this.houseValid() && fy < G.world.worldSurface + 5 && home) out.push({ id: 'shelter', kind: 'shelter', dist: dHome, make: () => this.skillShelter() });
     return out.concat(this.taskCandidates());
   },
@@ -487,6 +499,7 @@ const Bot = {
       if (w.flags[key] || !this.houseValid()) continue;
       const B = BOSS_SUMMON[key], needs = this.rawNeeds(B.item, 1);
       const total = Object.values(needs).reduce((a, b) => a + b, 0) || 1, have = this.has(B.item) ? total : Object.entries(needs).reduce((a, [k, v]) => a + Math.min(v, this.count(k)), 0);
+      if (this.has(B.item) && !this.bossReady(key)) continue;   // readiness gate: holding the summon isn't enough
       add('boss:' + key, 'boss', () => this.taskBoss(key), { ready: have / total, boss: key, value: BOSS_TYPES[key].life / 4000 });
     }
     if (w.flags.eye_of_cthulhu && !this.hasBetterPick(65)) add('brainrot', 'brainrot', () => this.taskBrainrot(), { ready: Math.min(1, this.count('rotten_chunk') / 6) });
@@ -917,6 +930,7 @@ const Bot = {
           if (!nightOk) { self.goal = 'waiting for night to summon ' + name; self.moveTo(home[0] - 6, home[1], 3); return; }
           if (Math.abs(fx - home[0]) > 25 || Math.abs(fy - home[1]) > 12) { self.goal = 'heading home to summon ' + name; self.moveTo(home[0] - 6, home[1], 3); return; }
           if (p.life < p.lifeMax * 0.85) { self.goal = 'healing up before ' + name; return; }
+          if (!self.bossReady(key)) { self.log('not ready for ' + name + ' yet'); this.done = true; return; }
           const s = SDK.slotOf(B.item);
           if (s > 9) { self.ensureHotbar(s); return; }
           if (this.summonedAt && G.tick - this.summonedAt < 300) return;   // the item takes a moment to be used and the boss to appear

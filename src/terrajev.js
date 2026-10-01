@@ -54,40 +54,45 @@ const TerraJev = {
 
   // decide(question) -> { choice, probabilities, idx }
   //   q = { id, state: number[], candidates: [{ id, features: number[] }], teacher?: id }
+  // policy: 'jev' = the model, falling back to the scripted teacher when it is untrained or unsure; 'teacher' = rules only
+  mode: 'jev', confidence: 0.3,
   decide(q) {
-    let probs;
     // exploration is uniform over kinds of action first (fight / flee / craft / mine ...), then over the options of that kind,
     // so twenty craftable items don't drown out the one 'fight' option
     const grp = q.candidates.map(c => c.group || c.id), size = {};
     for (const g of grp) size[g] = (size[g] || 0) + 1;
     const ng = Object.keys(size).length, uni = grp.map(g => 1 / (ng * size[g]));
-    if (this.has(q.id, q.candidates[0] && q.candidates[0].features.length)) {
+    const trained = this.has(q.id, q.candidates[0] && q.candidates[0].features.length);
+    let probs = uni;
+    if (trained) {
       const logits = this.forward(q.state, q.candidates.map(c => c.features), q.id);
       const T = this.temperature, mx = Math.max(...logits);
       const e = logits.map(z => Math.exp((z - mx) / T)), sum = e.reduce((a, b) => a + b, 0);
       probs = e.map(v => v / sum);
-    } else {
-      // no trained network for this question yet: explore (that's how it learns)
-      probs = uni;
     }
-    const untrained = !this.has(q.id, q.candidates[0] && q.candidates[0].features.length);
-    // exploration for training rollouts: with probability epsilon try a random allowed option
-    const eps = this.epsilon || 0;
-    if (eps > 0) probs = probs.map((v, i) => (1 - eps) * v + eps * uni[i]);
-    let idx = 0;
-    if (this.sample || eps > 0 || untrained) { let r = Math.random(), acc = 0; idx = probs.length - 1; for (let i = 0; i < probs.length; i++) { acc += probs[i]; if (r <= acc) { idx = i; break; } } }
-    else idx = probs.indexOf(Math.max(...probs));
-    const out = { id: q.id, choice: q.candidates[idx].id, idx, probabilities: Object.fromEntries(q.candidates.map((c, i) => [c.id, probs[i]])) };
+    const tIdx = q.teacher != null ? q.candidates.findIndex(c => c.id === q.teacher) : -1;
+    const draw = pr => { let r = Math.random(), acc = 0; for (let i = 0; i < pr.length; i++) { acc += pr[i]; if (r <= acc) return i; } return pr.length - 1; };
+    let idx, src;
+    if (this.epsilon > 0 && Math.random() < this.epsilon) { idx = draw(uni); src = 'explore'; }
+    else if ((!trained || this.mode === 'teacher') && tIdx >= 0) { idx = tIdx; src = 'teacher'; }
+    else if (!trained) { idx = draw(uni); src = 'explore'; }
+    else if (this.sample) { idx = draw(probs); src = 'model'; }
+    else {
+      idx = probs.indexOf(Math.max(...probs)); src = 'model';
+      if (probs[idx] < this.confidence && tIdx >= 0) { idx = tIdx; src = 'teacher'; }   // unsure: do what the rules would do
+    }
+    const out = { id: q.id, choice: q.candidates[idx].id, idx, src, probabilities: Object.fromEntries(q.candidates.map((c, i) => [c.id, probs[i]])) };
     if (this.logging) this.record(q, out, probs);
     this.last = out;
     return out;
   },
 
   // ---------- rollout logging for training (outcome measured over the next H ticks) ----------
-  H: 240, HQ: { act: 1500 },
+  H: 1500, MIN_WINDOW: 300,
+  closeWindows() { for (const r of this.pending) if (r.endAt == null) r.endAt = Math.max(G.tick, r.t + this.MIN_WINDOW); },
   record(q, out, probs) {
     const m = this.metrics();
-    this.pending.push({ t: G.tick, q: q.id, state: q.state, cands: q.candidates.map(c => c.id), feats: q.candidates.map(c => c.features), chosen: out.idx, mu: probs[out.idx], teacher: q.candidates.findIndex(c => c.id === q.teacher), m0: m });
+    this.pending.push({ t: G.tick, q: q.id, state: q.state, cands: q.candidates.map(c => c.id), feats: q.candidates.map(c => c.features), chosen: out.idx, src: out.src, mu: probs[out.idx], teacher: q.candidates.findIndex(c => c.id === q.teacher), m0: m });
     if (this.pending.length > 8000) this.pending.shift();
   },
   // running counters the reward is built from (filled by bot/npc hooks)
@@ -104,14 +109,14 @@ const TerraJev = {
     this.wasDead = p.dead;
     for (let i = 0; i < this.pending.length; i++) {
       const r = this.pending[i];
-      if (G.tick - r.t < (this.HQ[r.q] || this.H)) continue;
+      if (G.tick < (r.endAt != null ? r.endAt : r.t + this.H)) continue;
       this.pending.splice(i--, 1);
       const m = this.metrics(), m0 = r.m0;
       r.outcome = {
         taken: (m.taken - m0.taken) / Math.max(100, m0.lifeMax), died: m.deaths - m0.deaths, kills: m.kills - m0.kills,
         dealt: m.dealt - m0.dealt, gain: Math.max(0, m.value - m0.value), ms: m.ms - m0.ms,
         dDef: m.def - m0.def, dLife: m.lifeMax - m0.lifeMax, dPick: m.pick - m0.pick,
-        boss: m.bosses - (m0.bosses || 0), bossDealt: m.bossDealt - (m0.bossDealt || 0),
+        boss: m.bosses - (m0.bosses || 0), bossDealt: m.bossDealt - (m0.bossDealt || 0), dur: G.tick - r.t,
       };
       delete r.m0;
       this.records.push(r);
@@ -173,12 +178,13 @@ function jevActFeatures(bot, c, cur) {
     last ? Math.min(G.tick - last, 6000) / 3000 : 2);
   for (const b of TerraJev.BOSSES) v.push(c.boss === b || (c.kind === 'hell' && b === 'wall_of_flesh') || (n && n.boss && n.type === b) ? 1 : 0);
   v.push(TerraJev.BOSSES.filter(b => !w.flags[b]).length / 4);
+  v.push(bot.plan && bot.plan.test(c) ? 1 : 0, c.odds == null ? 0 : clamp(c.odds, -2, 2));
   if (n) {
     const dx = n.cx - p.cx, dy = n.cy - p.cy, ws = bot.bestWeaponSlot(n), it = ws >= 0 ? ITEMS[p.inv[ws].id] : null;
     const dps = it ? Math.max(1, (it.fixedDamage ? 67 : it.damage) - (n.defense || 0) * 0.5) * 60 / Math.max(6, it.useTime) : 1;
     v.push(1, Math.min(Math.hypot(dx, dy), 900) / 300, clamp(dy / 300, -3, 3), n.life / n.lifeMax, Math.max(1, n.damage - p.calc.defense * 0.5) / Math.max(20, p.life),
       n.boss ? 1 : 0, (n.def.noGravity || ['flyer', 'bat', 'smiler'].includes(n.def.ai)) ? 1 : 0, Math.min(n.life / dps, 30) / 10);
   } else v.push(0, 0, 0, 0, 0, 0, 0, 0);
-  return v; // 17 + 10 + 4 + 1 + 8 = 40
+  return v; // 17 + 10 + 4 + 1 + 2 (plan, fight odds) + 8 = 42
 }
 if (typeof TERRAJEV_WEIGHTS !== 'undefined') TerraJev.load(TERRAJEV_WEIGHTS);

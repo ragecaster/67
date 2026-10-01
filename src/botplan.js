@@ -17,6 +17,7 @@ const ORE_TILE = { copper_ore: 'COPPER', iron_ore: 'IRON', silver_ore: 'SILVER',
 const JEV_GOALS = [
   ['furnace', 1], ['iron_anvil', 1], ['torch', 30], ['wooden_arrow', 300], ['lesser_healing_potion', 5], ['mana_crystal', 1],
   ['copper_pickaxe', 1], ['iron_pickaxe', 1], ['silver_pickaxe', 1], ['gold_pickaxe', 1], ['nightmare_pickaxe', 1], ['molten_pickaxe', 1],
+  ['copper_broadsword', 1], ['iron_broadsword', 1], ['silver_broadsword', 1], ['gold_broadsword', 1], ['wood_helmet', 1], ['wood_greaves', 1],
   ['the_67', 1], ['gold_bow', 1], ['iron_bow', 1], ['demon_bow', 1], ['molten_fury', 1], ['lights_bane', 1], ['fiery_greatsword', 1], ['nights_edge', 1],
   ['copper_helmet', 1], ['copper_chainmail', 1], ['copper_greaves', 1], ['iron_helmet', 1], ['iron_chainmail', 1], ['iron_greaves', 1],
   ['silver_helmet', 1], ['silver_chainmail', 1], ['silver_greaves', 1], ['gold_helmet', 1], ['gold_chainmail', 1], ['gold_greaves', 1],
