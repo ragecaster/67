@@ -14,6 +14,7 @@ module.exports = async function run(fn, opts = {}) {
     const keys = () => { const o = []; for (const [f, names] of Object.entries(ASSET_MANIFEST)) if (f !== 'music' && f !== 'sfx') for (const n of names) o.push(f + '/' + n.replace(/\.[^.]+$/, '')); return o; };
     window.ASSET_DATA = new Proxy({}, { ownKeys: keys, getOwnPropertyDescriptor: () => ({ value: url, enumerable: true, configurable: true }), get: () => url });
   });
+  await page.addInitScript(() => { let a = 0x9e3779b9; Math.random = () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; });
   await page.goto('file://' + require('path').resolve(__dirname, '..', 'index.html'));
   await page.waitForFunction(() => typeof G !== 'undefined' && G.state === 'menu', null, { timeout: 30000 });
   await page.evaluate(() => { SETTINGS.tts = false; SETTINGS.sfx = 0; SETTINGS.music = 0; window.speechSynthesis && (window.speechSynthesis.speak = () => {}); });

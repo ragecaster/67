@@ -1,8 +1,8 @@
 const run = require('./harness');
 run(async (page) => {
-  await page.newGame('bot67');
+  await page.newGame('bot67'); await page.evaluate(() => { window.NOMEMO = false; });
   const r = await page.evaluate(() => {
-    const w = G.world, p = G.player; p.inv[9] = { id: 'dirt_block', count: 200 };
+    Nav.noMemo = !!window.NOMEMO; const w = G.world, p = G.player; p.inv[9] = { id: 'dirt_block', count: 200 };
     const out = [];
     for (const [sx, sy] of [[w.spawnX + 60, w.worldSurface + 30], [w.spawnX - 80, w.rockLayer + 10], [w.spawnX + 10, w.worldSurface + 5]]) {
       const t0 = performance.now();

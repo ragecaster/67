@@ -1,6 +1,7 @@
 // ---------- BotSigma navigation: A* over the tile grid for a 2-wide, 3-tall Terraria body ----------
 // Node (x, y): the player's two columns are x and x+1, feet row is y (body rows y-2..y).
 // Moves: walk, step up, jump up (<=4), drop (safe heights), dig through, dig down, pillar up, swim, doors.
+const NO_SPACE = [Infinity, null], FREE_SPACE = [0, null];
 const Nav = {
   // ----- cell queries -----
   pickPower() { const p = G.player; return Math.max(0, ...p.inv.map(s => s ? ITEMS[s.id].pick || 0 : 0)); },
@@ -10,6 +11,17 @@ const Nav = {
   cellCost(x, y) {
     const w = G.world;
     if (!w.inb(x, y)) return Infinity;
+    // per-plan memo (stamp array avoids clearing): the world doesn't change during one A* run
+    const i = y * w.w + x;
+    if (!this.cc || this.cc.length !== w.w * w.h) { this.cc = new Float32Array(w.w * w.h); this.cs = new Uint32Array(w.w * w.h); }
+    if (this.cs[i] === this.stamp) return this.cc[i];
+    const c = this.cellCostRaw(x, y);
+    if (this.noMemo) return c;
+    this.cc[i] = c; this.cs[i] = this.stamp;
+    return c;
+  },
+  cellCostRaw(x, y) {
+    const w = G.world;
     if (this.lava(x, y)) return Infinity;
     const t = w.tile(x, y);
     if (!t) return 0;
@@ -34,40 +46,47 @@ const Nav = {
   wet(x, y) { const w = G.world; return w.liq(x, y) > 100 || w.liq(x + 1, y) > 100 || w.liq(x, y - 1) > 100; },
   // cost to have the body at (x,y) with the given extra rows; returns [cost, digList]
   space(x, y, rowsUp = 2, rowsDown = 0) {
-    let cost = 0; const digs = [];
+    let cost = 0, digs = null;
     for (let yy = y - rowsUp; yy <= y + rowsDown; yy++) for (let xx = x; xx <= x + 1; xx++) {
       const c = this.cellCost(xx, yy);
-      if (c === Infinity) return [Infinity, null];
-      if (c > 1) { cost += c; digs.push([xx, yy]); }
+      if (c === Infinity) return NO_SPACE;
+      if (c > 1) { cost += c; (digs || (digs = [])).push([xx, yy]); }
       else cost += c;
     }
-    return [cost, digs];
+    return digs ? [cost, digs] : (cost === 0 ? FREE_SPACE : [cost, null]);
   },
 
   // ----- A* -----
   plan(sx, sy, goalFn, heur, maxNodes = 16000) {
+    this.stamp = (this.stamp || 0) + 1;
     this.power = this.pickPower();
     this.blocks = G.player.inv.reduce((n, s) => n + (s && ['dirt_block', 'stone_block', 'wood', 'mud_block', 'clay_block', 'sand_block', 'ash_block'].includes(s.id) ? s.count : 0), 0);
-    const key = (x, y) => y * 65536 + x;
+    const w = G.world, WW = w.w, N = WW * w.h;
+    if (!this.gA || this.gA.length !== N) { this.gA = new Float64Array(N); this.gS = new Uint32Array(N); this.fromA = new Int32Array(N); this.mvA = new Uint8Array(N); }
+    const gA = this.gA, gS = this.gS, fromA = this.fromA, mvA = this.mvA, stamp = this.stamp;
+    const MV = ['walk', 'up', 'drop', 'jump', 'down', 'fall', 'swim', 'pillar'];
+    const digMap = new Map();
+    const key = (x, y) => y * WW + x;
     // binary min-heap of [f, cost, x, y]
     const heap = [];
     const hpush = (e) => { heap.push(e); let i = heap.length - 1; while (i > 0) { const pi = (i - 1) >> 1; if (heap[pi][0] <= e[0]) break; heap[i] = heap[pi]; i = pi; } heap[i] = e; };
     const hpop = () => { const top = heap[0], last = heap.pop(); if (heap.length) { let i = 0; const n = heap.length; for (;;) { let c = 2 * i + 1; if (c >= n) break; if (c + 1 < n && heap[c + 1][0] < heap[c][0]) c++; if (heap[c][0] >= last[0]) break; heap[i] = heap[c]; i = c; } heap[i] = last; } return top; };
-    const W = 2.5; // weighted A*: greedy toward the goal (dig costs make the plain heuristic far too optimistic)
+    const W = this.W || 4; // weighted A*: greedy toward the goal (dig costs make the plain heuristic far too optimistic)
     hpush([heur(sx, sy) * W, 0, sx, sy]);
     const open = heap;
-    const g = new Map([[key(sx, sy), 0]]), from = new Map();
+    gA[key(sx, sy)] = 0; gS[key(sx, sy)] = stamp; fromA[key(sx, sy)] = -1;
     let expanded = 0, best = null, bestH = Infinity;
     const push = (x, y, cost, prevK, move) => {
       const k = key(x, y);
-      if (g.has(k) && g.get(k) <= cost) return;
-      g.set(k, cost); from.set(k, [prevK, move]);
+      if (gS[k] === stamp && gA[k] <= cost) return;
+      gA[k] = cost; gS[k] = stamp; fromA[k] = prevK; mvA[k] = MV.indexOf(move.t);
+      if (move.digs) digMap.set(k, move.digs); else digMap.delete(k);
       hpush([cost + heur(x, y) * W, cost, x, y]);
     };
     while (open.length && expanded < maxNodes) {
       const [f, cost, x, y] = hpop();
       const k = key(x, y);
-      if (cost > g.get(k)) continue;
+      if (cost > gA[k]) continue;
       expanded++;
       const h = heur(x, y);
       if (h < bestH) { bestH = h; best = k; }
@@ -80,7 +99,7 @@ const Nav = {
         // step up 1 (needs head room above us too)
         [c, d] = this.space(x + dx, y - 1, 2, 0);
         const [hc, hd] = this.space(x, y - 3, 0, 0);
-        if (c < Infinity && hc < Infinity && (this.standable(x + dx, y - 1) || inWater)) push(x + dx, y - 1, cost + 1.5 + c + hc, k, { t: 'up', digs: hd.concat(d) });
+        if (c < Infinity && hc < Infinity && (this.standable(x + dx, y - 1) || inWater)) push(x + dx, y - 1, cost + 1.5 + c + hc, k, { t: 'up', digs: hd ? (d ? hd.concat(d) : hd) : d });
         // drop off a ledge (no digging, up to a safe height)
         const [c0] = this.space(x + dx, y);
         if (c0 === 0 && !this.standable(x + dx, y)) {
@@ -115,9 +134,9 @@ const Nav = {
     // rebuild
     const path = [];
     let k = best;
-    while (from.has(k)) { const [pk, move] = from.get(k); path.push({ x: k % 65536, y: Math.floor(k / 65536), move }); k = pk; }
+    while (fromA[k] !== -1 && gS[k] === stamp) { path.push({ x: k % WW, y: Math.floor(k / WW), move: { t: MV[mvA[k]], digs: digMap.get(k) || [] } }); k = fromA[k]; }
     path.reverse();
-    return { path, reached: goalFn(best % 65536, Math.floor(best / 65536)), expanded };
+    return { path, reached: goalFn(best % WW, Math.floor(best / WW)), expanded };
   },
 
   // ----- player <-> node -----
@@ -133,12 +152,18 @@ Object.assign(Bot, {
     const goalFn = (x, y) => Math.abs(x + 0.5 - tx) <= tol + 0.5 && Math.abs(y - ty) <= Math.max(1, tol);
     if (goalFn(nx, ny) && (p.onGround || p.wet)) { this.nav = null; return true; }
     const ng = this.nav;
-    const needPlan = !ng || Math.abs(ng.tx - tx) > 2 || Math.abs(ng.ty - ty) > 2 || ng.tol !== tol || ng.replan || (G.tick - ng.at > 900);
+    const moved = !ng || Math.abs(ng.tx - tx) > 2 || Math.abs(ng.ty - ty) > 2 || ng.tol !== tol;
+    // a moving goal (chasing an enemy) must not trigger a full A* every tick
+    const needPlan = !ng || (moved && (G.tick - ng.at >= 25 || Math.abs(ng.tx - tx) + Math.abs(ng.ty - ty) > 12)) || ng.replan || (G.tick - ng.at > 900);
     if (needPlan) {
       if (ng && ng.cooldown > G.tick && Math.abs(ng.tx - tx) <= 2 && Math.abs(ng.ty - ty) <= 2) { this.nav.replan = false; }
       else {
         const heur = (x, y) => Math.abs(x + 0.5 - tx) + Math.abs(y - ty) * 1.3;
-        const res = Nav.plan(nx, ny, goalFn, heur);
+        const t0 = performance.now();
+        // far goals (the way home from deep caves) need far more than 16k nodes: dig-through-rock detours are expensive to prove
+        const far = Math.abs(nx - tx) + Math.abs(ny - ty) * 1.3;
+        const res = Nav.plan(nx, ny, goalFn, heur, Math.min(220000, Math.max(16000, Math.round(far * 1100))));
+        this.planMs = (this.planMs || 0) + performance.now() - t0; this.planCount = (this.planCount || 0) + 1;
         this.navFails = res && res.path.length ? 0 : (this.navFails || 0) + 1;
         if (!res || !res.path.length) { this.nav = { tx, ty, tol, at: G.tick, path: [], i: 0, cooldown: G.tick + 60 }; if (this.navFails > 3) { this.navFails = 0; return 'fail'; } return false; }
         this.nav = { tx, ty, tol, at: G.tick, path: res.path, i: 0, partial: !res.reached, lastProgress: G.tick, cooldown: G.tick + 30 };

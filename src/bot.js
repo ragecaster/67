@@ -79,6 +79,7 @@ const Bot = {
     this.wasDown = Input.mDown;
     this.resetInputs();
     if (Input.typing) Input.typing = null;
+    if (!UI.invOpen && !this.uiBusy) UI.mouseOverUI = false; // the flag is only refreshed on draw, which turbo skips
     this.why = '';
     if (p.dead) { this.task = null; this.nav = null; this.plan = []; if (!this.deadLogged) { this.deaths++; this.log('died (' + (G.deathMessage || '') + ')'); this.deadLogged = true; } return; }
     this.deadLogged = false;
