@@ -13,7 +13,7 @@ The architecture mirrors terrajev.js exactly (Jev-style candidate-set head with 
 
 usage: tools/jev/.venv/bin/python tools/jev/train_terrajev.py tools/jev/data/*.jsonl [--bc 1.0 --rl 1.0 --epochs 30]
 """
-import argparse, glob, json, math, random, sys
+import argparse, glob, gzip, json, math, random, sys
 from pathlib import Path
 import torch, torch.nn as nn, torch.nn.functional as F
 
@@ -62,7 +62,7 @@ class TerraJev(nn.Module):
 def load(paths, q='act'):
     rows = []
     for p in paths:
-        for line in open(p):
+        for line in (gzip.open(p, 'rt') if p.endswith('.gz') else open(p)):
             r = json.loads(line)
             if r.get('q') == q and 'outcome' in r and len(r['cands']) > 1:
                 rows.append(r)

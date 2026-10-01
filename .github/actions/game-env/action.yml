@@ -1,0 +1,12 @@
+# Node + Playwright's headless Chromium for the headless game harness (tests/harness.js runs without the art assets)
+name: game-env
+description: set up the headless game harness
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with: { node-version: '22' }
+    - uses: actions/cache@v4
+      with: { path: ~/.cache/ms-playwright, key: 'pw-${{ runner.os }}-1' }
+    - shell: bash
+      run: cd tests && npm install --no-audit --no-fund && npx playwright install --with-deps chromium

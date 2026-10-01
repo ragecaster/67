@@ -1,0 +1,143 @@
+# TerraJev training on GitHub Actions: one round per run, then it dispatches the next round.
+#   collect: N worlds in parallel, each plays one rollout with the current model (+15% exploration)
+#   train:   one job trains a candidate on the rollout buffer (all recent rounds, kept in the Actions cache)
+#   eval:    candidate and incumbent each play the fixed eval seeds greedily, in parallel
+#   promote: the candidate replaces the incumbent on main only if its summed score is higher
+# Start it from the Actions tab or: gh workflow run train-bot.yml -f rounds=5 -f worlds=12
+name: train-bot
+on:
+  workflow_dispatch:
+    inputs:
+      rounds: { description: 'rounds to run (this one included)', default: '3' }
+      worlds: { description: 'parallel rollout worlds', default: '12' }
+      ticks: { description: 'game ticks per rollout', default: '150000' }
+      eval_ticks: { description: 'game ticks per eval game', default: '150000' }
+permissions:
+  contents: write
+  actions: write
+concurrency: { group: train-bot, cancel-in-progress: false }
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      worlds: ${{ steps.w.outputs.worlds }}
+    steps:
+      - id: w
+        run: echo "worlds=$(python3 -c 'import json,sys; print(json.dumps(list(range(1, int(sys.argv[1]) + 1))))' ${{ inputs.worlds }})" >> "$GITHUB_OUTPUT"
+
+  collect:
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix: { world: '${{ fromJSON(needs.setup.outputs.worlds) }}' }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/game-env
+      - name: play one rollout
+        run: |
+          cd tests
+          node jevcollect.js ${{ inputs.ticks }} gh${{ github.run_id }}w${{ matrix.world }} 0.15 ../r${{ github.run_id }}_${{ matrix.world }}.jsonl 0 | tee ../collect.log
+          gzip ../r${{ github.run_id }}_${{ matrix.world }}.jsonl
+      - uses: actions/upload-artifact@v4
+        with: { name: 'rollout-${{ matrix.world }}', path: 'r${{ github.run_id }}_${{ matrix.world }}.jsonl.gz', retention-days: 3 }
+      - uses: actions/upload-artifact@v4
+        with: { name: 'collectlog-${{ matrix.world }}', path: collect.log, retention-days: 3 }
+
+  train:
+    needs: collect
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install --index-url https://download.pytorch.org/whl/cpu torch
+      - name: restore the rollout buffer
+        uses: actions/cache/restore@v4
+        with: { path: buffer, key: 'rollouts-${{ github.run_id }}', restore-keys: 'rollouts-' }
+      - uses: actions/download-artifact@v4
+        with: { pattern: 'rollout-*', path: buffer, merge-multiple: true }
+      - name: keep the newest 240 rollouts
+        run: mkdir -p buffer && ls buffer/*.jsonl.gz | sort -V | head -n -240 | xargs -r rm -f; ls buffer | wc -l
+      - uses: actions/cache/save@v4
+        with: { path: buffer, key: 'rollouts-${{ github.run_id }}' }
+      - name: train a candidate (starts from the incumbent)
+        run: python tools/jev/train_terrajev.py buffer/*.jsonl.gz --resume --pt tools/jev/cand_act.pt --out tools/jev/cand_weights.js | tee train.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate
+          retention-days: 7
+          path: |
+            tools/jev/cand_act.pt
+            tools/jev/cand_weights.js
+            train.log
+
+  eval:
+    needs: train
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: [evalA, evalB, evalC, evalD, evalE, evalF]
+        model: [incumbent, candidate]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/game-env
+      - uses: actions/download-artifact@v4
+        with: { name: candidate, path: cand }
+      - name: play the eval seed greedily
+        run: |
+          W=""; if [ "${{ matrix.model }}" = candidate ]; then W="$PWD/cand/tools/jev/cand_weights.js"; fi
+          if [ "${{ matrix.model }}" = candidate ] && ! grep -q '"act"' "$W"; then echo "SCORE -999" > score.txt; exit 0; fi
+          cd tests && node jeveval.js ${{ inputs.eval_ticks }} jev ${{ matrix.seed }} $W | tee ../eval.log
+          grep '^SCORE' ../eval.log > ../score.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 'score-${{ matrix.model }}-${{ matrix.seed }}'
+          retention-days: 7
+          path: |
+            score.txt
+            eval.log
+
+  promote:
+    needs: eval
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { pattern: 'score-*', path: scores }
+      - uses: actions/download-artifact@v4
+        with: { name: candidate, path: cand }
+      - uses: actions/download-artifact@v4
+        with: { pattern: 'collectlog-*', path: logs }
+      - name: compare and promote
+        env: { GH_TOKEN: '${{ github.token }}' }
+        run: |
+          sum() { cat scores/score-$1-*/score.txt | awk '{s += $2} END {print s + 0}'; }
+          INC=$(sum incumbent); CAND=$(sum candidate)
+          {
+            echo "## TerraJev round (run ${{ github.run_id }})"
+            echo "incumbent **$INC** vs candidate **$CAND** over 6 eval seeds"
+            echo '```'; grep -h -A1 'act\]' cand/train.log; for f in scores/*/eval.log; do grep -h '^\(jev\|teacher\)' $f; done; echo '```'
+            echo '### rollouts'; echo '```'; for f in logs/*/collect.log; do grep -h '^t=' $f | tail -1; grep -h 'STUCK' $f | head -2; done; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$CAND" -gt "$INC" ]; then
+            cp cand/tools/jev/cand_weights.js src/terrajev_weights.js
+            cp cand/tools/jev/cand_act.pt tools/jev/terrajev_act.pt
+            git config user.name "terrajev-trainer"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add src/terrajev_weights.js tools/jev/terrajev_act.pt
+            git commit -m "TerraJev: promote candidate ($CAND > $INC on 6 eval seeds, run ${{ github.run_id }})"
+            for i in 1 2 3; do git pull --rebase -q && git push -q && break; sleep 5; done
+            echo "PROMOTED" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "kept incumbent" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: next round
+        if: ${{ fromJSON(inputs.rounds) > 1 }}
+        env: { GH_TOKEN: '${{ github.token }}' }
+        run: gh workflow run train-bot.yml --ref main -f rounds=$(( ${{ inputs.rounds }} - 1 )) -f worlds=${{ inputs.worlds }} -f ticks=${{ inputs.ticks }} -f eval_ticks=${{ inputs.eval_ticks }}
