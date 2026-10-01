@@ -58,7 +58,8 @@ Object.assign(Bot, {
   },
   // The ordered list of things a player wants, as [item, qty]. Segments stop the list early (e.g. "iron tier first").
   wantSegments() {
-    const tier = (k) => [[k + '_pickaxe', 1], [k + '_broadsword', 1], [k + '_bow', 1], [k + '_helmet', 1], [k + '_chainmail', 1], [k + '_greaves', 1]];
+    // armor before weapons: most early deaths are the bot trading blows with nothing on
+    const tier = (k) => [[k + '_pickaxe', 1], [k + '_chainmail', 1], [k + '_greaves', 1], [k + '_helmet', 1], [k + '_broadsword', 1], [k + '_bow', 1]];
     return [
       { name: 'stations', want: [['furnace', 1], ['iron_anvil', 1]] },
       { name: 'iron', want: tier('iron') },

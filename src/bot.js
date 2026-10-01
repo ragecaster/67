@@ -144,7 +144,8 @@ const Bot = {
     if (Input.typing) Input.typing = null;
     if (!UI.invOpen && !this.uiBusy) UI.mouseOverUI = false; // the flag is only refreshed on draw, which turbo skips
     this.why = '';
-    if (p.dead) { this.task = null; this.nav = null; this.plan = []; if (!this.deadLogged) { this.deaths++; (this.deathLog = this.deathLog || []).push(G.tick + ' ' + G.clockString() + ' ' + G.deathCause); this.log('died of ' + G.deathCause + ' at ' + this.feet() + ' depth ' + (this.feet()[1] - G.world.worldSurface) + ' lifeMax ' + p.lifeMax + ' def ' + p.calc.defense + ' near: ' + G.npcs.filter(n => !n.friendly && !n.town && dist(n.cx, n.cy, p.cx, p.cy) < 400).map(n => n.name).slice(0, 5).join(',') + ' task: ' + (this.lastGoal || this.goal)); this.deadLogged = true; } return; }
+    if (p.dead) { this.task = null; this.nav = null; this.plan = []; if (!this.deadLogged) { this.deaths++; (this.deathLog = this.deathLog || []).push(G.tick + ' ' + G.clockString() + ' ' + G.deathCause);
+      this.registerDeath(G.deathCause); this.log('died of ' + G.deathCause + ' at ' + this.feet() + ' depth ' + (this.feet()[1] - G.world.worldSurface) + ' lifeMax ' + p.lifeMax + ' def ' + p.calc.defense + ' near: ' + G.npcs.filter(n => !n.friendly && !n.town && dist(n.cx, n.cy, p.cx, p.cy) < 400).map(n => n.name).slice(0, 5).join(',') + ' task: ' + (this.lastGoal || this.goal)); this.deadLogged = true; } return; }
     this.deadLogged = false;
     // close menus the bot didn't open
     if (UI.talk) UI.closeTalk();
@@ -177,7 +178,9 @@ const Bot = {
       const enemy = this.findEnemy();
       if (enemy) {
         // badly hurt: run for the house instead of trading blows (resting is nearly free for a turbo bot, dying is not)
-        const lowLife = p.life < p.lifeMax * (this.fleeing ? 0.7 : 0.33);
+        // flee earlier from things that hit hard: three of its hits is the line, whatever our max life
+        const hit = Math.max(8, ((enemy.def && enemy.def.damage) || enemy.damage || 20) - p.calc.defense * 0.5);
+        const lowLife = p.life < (this.fleeing ? p.lifeMax * 0.7 : Math.min(p.lifeMax * 0.6, Math.max(p.lifeMax * 0.33, hit * 3)));
         this.fleeing = lowLife && !p.buffs.him;
         if (this.fleeing && !enemy.boss && this.houseSpot) {
           this.why = 'flee'; this.goal = 'retreating (' + Math.round(p.life) + '/' + p.lifeMax + ')';
@@ -225,6 +228,23 @@ const Bot = {
         }
       } else if (this.task && !this.task.done) this.instantDone = 0;
       if (this.task) this.taskAge++;
+    }
+  },
+
+  // Dying over and over in the same place means the plan walks into the same trap each respawn: stay out of that area for a while
+  registerDeath(cause) {
+    const [fx, fy] = this.feet(), now = G.tick;
+    const hist = this.deathHist = (this.deathHist || []).filter(d => now - d.t < 9000);
+    hist.push({ t: now, cause: String(cause).split(':')[0], x: fx, y: fy });
+    const near = hist.filter(d => Math.abs(d.x - fx) < 60 && Math.abs(d.y - fy) < 60);
+    if (near.length >= 3) {
+      const [bx, by] = this.base || [fx, fy];
+      if (Math.abs(fx - bx) < 40 && Math.abs(fy - by) < 30) return;      // dying at home isn't about the route
+      this.avoidZone = { x: fx, y: fy, r: 30, until: now + 25000 };
+      const key = this.lastGoal ? this.lastGoal.split(' ').slice(0, 2).join(' ') : null;
+      if (key) { this.cooldowns = this.cooldowns || {}; this.cooldowns[key] = now + 12000; }
+      this.log('death loop (' + near.length + 'x ' + hist[hist.length - 1].cause + ' near ' + fx + ',' + fy + '): avoiding the area, cooling down "' + key + '"');
+      this.deathHist = [];
     }
   },
 

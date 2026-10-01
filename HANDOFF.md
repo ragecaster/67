@@ -3,49 +3,62 @@
 This is a Terraria clone with Gen Z / Gen Alpha brainrot memes. It runs in the browser with plain JS and a canvas, and there's no build step. It's live at https://ragecaster.github.io/67/ (GitHub Pages deploys from `main`, root).
 Watch the playtest bot at https://ragecaster.github.io/67/?bot&turbo=4. In the game, F8 toggles the bot and F9 cycles its speed from 1x to 64x.
 
-## Current focus: the playtest bot (`src/bot.js`, `src/botnav.js`)
+## Current focus: the playtest bot (`src/bot.js`, `src/botnav.js`, `src/botplan.js`)
 
 The owner asked for a bot that plays through the whole game **using only the same inputs a human uses**: held keys, mouse position, clicks, key presses and inventory UI clicks. It must not teleport or edit the world. The point is to find bugs, and it runs fast via turbo.
-Current state: it's **not good enough yet**. The owner's words were "it keeps getting stuck in a cave … this aint it". Continue here first.
 
-### What works
-- Chops trees, crafts a Work Bench **by clicking the recipe in the real crafting UI**, places it, then crafts walls, a door and a chair and builds a valid house. The Guide moves in.
-- Mines stone and copper ore and crafts a Furnace.
-- Fights enemies and gives up on ones it can't reach. Shelters in the house at night while it has no armor. Escapes the Backrooms by walking to the EXIT sign.
-- Status banner in the HUD shows its goal and milestones. `Bot.logLines` holds a readable log.
+### State at the end of the second session
+It now plays the early and middle game on its own, in long headless runs (500k+ ticks): wood → valid house (door, bench, chair, walkable doorstep) → furnace/anvil → iron pickaxe → iron armor → aura (life) crystals → gold pickaxe → gold gear, it summons the Eye of Ohio at night and, in the staged test (`FORCE=taskEye node tests/fightlog.js eyefight`), **kills it** with a gold bow, gold armor and 300 life (it is close: it ends the fight with <20 life). It still dies a lot underground, the Eye fight is marginal, and everything after the Eye (Brainrot pickaxe, Ohio, voodoo doll, Wall of Brainrot) has only been exercised in isolated stages, never in one continuous run. See "Known bot problems".
+
+### What changed in session 2 (root causes found, so they don't come back)
+- **House builder** (`taskBuildHouse`): per-step try counter never reset (every second plan step was skipped); the work bench landed on a grass bump and "can't mine a block under an object" froze the clear step; the door gap was built first so nothing could attach above it; a *valid room is not a finished house* (door/bench/chair/doorstep come after) → `Bot.houseFinished`. Stations are no longer placed on the doorstep (footprint check, `onDoorstep`). The doorstep and the ground in front of the door are dug/filled at the end.
+- **Stale `UI.mouseOverUI`**: the flag is only refreshed on draw, which turbo skips, so placing/digging silently did nothing. `Bot.tick` resets it.
+- **Jump needs a fresh key press** (`Player.jumpHeld`). Holding space after landing never jumps again: use `Bot.jump()`, never `hold(' ')`.
+- **Navigation** (`botnav.js`): typed-array A* with a per-plan cell-cost memo (Float64 costs! Float32 rounding broke the stale-entry check), dig-aware heuristic (up costs 6/row, down 2/row; the plain 1.3/row floods every cavern), distance-scaled node budget (up to 300k, doubles after a partial plan), a hierarchical "ascend to open sky at the goal's ground level" stage for far goals deep underground, chained pillars in open air, `leap` over 1–3 tile gaps, fall/vertical-run limits (the game hurts above 25 tiles; stair-step instead of a 50-deep shaft), `Bot.badTiles` and the death-loop `avoidZone` honoured by `cellCost`, replan storms throttled (moving goals replan at most every 25 ticks; same plan repeated >3× backs off). The yard around the house costs +40 per dug tile, the house box is Infinity.
+- **Pillar** (`followPath`): place the block as soon as the feet clear the target cell (a held jump rises 6 tiles = out of build reach), in a body column that has something solid below (the game only places a block next to another tile), breaking furniture standing in the cell first.
+- **Direct walking is cliff-safe** (`Bot.hold` → `cliffAhead`): the body one tile ahead must have ground within 14 rows. A* moves that intend to leave the ground set `allowDrop`.
+- **Progression planner** (`botplan.js`): recipe-driven. `wantSegments()` is the ordered shopping list (stations → iron tier → ammo → crystals → gold tier); `resolve(item, qty)` walks the recipe tree to the first missing thing; `taskForStep` turns it into craft/gather tasks. This replaced the old hard-coded ladder that hoarded 500 copper bars and never finished an armor set. Armor comes before weapons.
+- **Mining** (`taskMine`): `tiles` argument targets one ore (iron for iron, gold for gold, demonite for the Brainrot pickaxe); `pickMineTarget` scores candidates by distance + solid cells to dig − vein size; wander targets are kept until reached.
+- **Combat**: weapon chosen against the target's defense and reach (a sword can't hit a boss hovering 230 px up), ranged preferred against bosses, no weapon flip-flopping; bows only fire on a fresh click (`autoReuse` is false); aim leads moving targets; boss targeting ignores minions unless one is adjacent; Eye-of-Ohio dash dodging (`dodgeBoss`, side chosen once per charge); flee to the house below ~3 enemy hits of life, rest to ~90% afterwards (resting is nearly free for a turbo bot, dying is not); death-cause logging (`Bot.deathLog`) and death-loop breaker (`registerDeath`).
+- Task-loop guard: a task that is already `done` the tick it was created 8× in a row is put on cooldown (this was an infinite 0-tick loop in one run).
 
 ### Architecture
 - `Bot.tick()` runs at the start of `G.update()` when `Bot.active`. Every tick it resets inputs, then sets `Input.keys`, `Input.mx/my`, `mDown/mClick/rClick` and `Input.pressed[...]`.
-- Priority order inside `tick()`: an in-progress hotbar move (`this.hb`) → close the inventory if it's open → escape the Backrooms → fight the nearest enemy → shelter at night → watchdog → the current task.
-- Tasks are objects with `step()` and `done`, made by `taskChop`, `taskBuildHouse`, `taskCraftAtBase`, `taskMine`, `taskPlaceItem`, `taskEquip`, `taskTrash`, `taskEye`, `taskBrainrot`, `taskHell` and `taskExplore`. `nextTask()` is the progression planner.
-- UI clicks use real UI geometry: `Bot.slotPos(i)` for inventory slots and `UI.recipeSlots` (filled by `UI.drawCrafting`) for recipe positions. UI clicks set `Bot.wantsDraw` so the turbo loop draws that tick. The immediate-mode UI handles clicks while drawing, so a click only counts if a draw happens.
+- Priority order inside `tick()`: an in-progress hotbar move (`this.hb`) → close the inventory if it's open → escape the Backrooms → fight / flee / rest → shelter at night (not while mining/crafting) → watchdog → the current task.
+- Tasks are objects with `step()` and `done`: `taskChop`, `taskBuildHouse`, `taskCraftAtBase`, `taskMine`, `taskPlaceItem`, `taskEquip`, `taskTrash`, `taskBreakAt`, `taskEye`, `taskBrainrot`, `taskHell`, `taskExplore`. `nextTask()` → misc crafts → `progressionTask()` (botplan.js) → Eye → Brainrot → Hell.
+- UI clicks use real UI geometry: `Bot.slotPos(i)` and `UI.recipeSlots`. UI clicks set `Bot.wantsDraw` so the turbo loop draws that tick (the immediate-mode UI handles clicks while drawing).
 - The turbo loop is in `G.init`'s frame loop: when `Bot.active`, it runs `Bot.turbo` updates per animation frame.
-- **Navigation (`botnav.js`)**: weighted A* with a binary heap. A node is `(x, y)`: the body occupies columns x and x+1 and rows y-2..y. **The player is 20 px wide, so it needs 2-wide tunnels.** That was the original stuck-in-caves bug.
-  - Moves: walk, step up, jump up 2–4, drop, dig down, fall, swim and pillar (place blocks under itself). Dig costs come from `Nav.cellCost`: Infinity for lava-adjacent, unbreakable, too-hard, protected (house) and tiles holding up objects.
-  - `Bot.moveTo(tx, ty, tol)` plans with a cooldown and caching and returns `true`, `false` or `'fail'`. `followPath()` resyncs to the nearest path node, digs the blocking cells, then walks or jumps.
-- Watchdog: if position and inventory size don't change for 2400 ticks, it abandons the task and puts that goal key on cooldown.
+- **Navigation**: a node is `(x, y)`: the body occupies columns x and x+1 and rows y-2..y (**the player is 20 px wide, so it needs 2-wide tunnels**). Moves: walk, up, jump 2–4, drop (≤18), dig down, fall, swim, pillar, leap. `Bot.moveTo(tx, ty, tol)` returns `true`, `false` or `'fail'`; `followPath()` resyncs to the path, digs blockers, walks/jumps.
+- Watchdog: no position/inventory change for 2400 ticks → abandon the task, cool its goal key down.
 
 ### Known bot problems (next steps, roughly in order)
-1. **Long-distance returns fail.** When it wanders ~100 tiles away or deep underground, getting back to base often fails. The house task then marches through its plan without building. Ideas: use hierarchical waypoints (plan to an intermediate point every 30–40 tiles); raise `maxNodes` for far goals; remember the tunnel it dug on the way down and follow it back; build a "hellevator" (a 2-wide vertical shaft next to the base) early and always use it.
-2. Planning takes ~80–100 ms when the goal is unreachable (mid-air targets use the whole 16k node budget). Validate goals: snap them to a standable node near the target before planning.
-3. `taskMine` target choice: prefer targets next to existing caves or air, and blacklist more aggressively.
-4. The progression after the furnace (bars → anvil → pickaxes and armor → life crystals → lenses → Eye of Ohio → Brainrot pickaxe → Ohio/hell → voodoo doll → Wall of Brainrot) is written but **barely exercised**. Expect bugs there.
-5. Combat is basic. Bosses need kiting and the bot needs potions (it presses H below 45% life).
-6. The house builder assumes fairly flat ground. It now clears a doorstep, but it could still level the ground first.
+1. **Deaths.** ~5–10 per 100k ticks underground (skeletons, bats, Ballerina, falls into the Brainrot chasms). Falls: unplanned falls (knockback off a pillar, walking into a pit) are the worst; there is no way to catch yourself. Ideas: craft healing potions (bottle station + gel + mushrooms), more aura crystals before going deep, avoid pillaring in wide open chasms.
+2. **The Eye fight is marginal** (needs ~30k ticks of arrows; ~1000 arrows; phase 2 hits hard). Better weapons (demon bow, Light's Bane) come only after the Eye/Brainrot. Tung Tung Sahur spawns at 3 AM on its own once `lifeMax >= 200`; the bot has no special handling beyond generic ranged kiting (`dodgeBoss` just keeps distance).
+3. **Everything after the Eye is only exercised in stages** (`tests/stage.js`): `taskBrainrot` (hunts Doomscrollers on the surface in the Brainrot biome, then mines demonite), the Brainrot pickaxe craft, `taskHell` (needs hellstone/obsidian for the forge, a voodoo doll from a Voodoo Ohio Demon — only spawns while the Guide lives —, then throw it into lava) and the Wall of Brainrot fight (8000 HP, needs a long flat bridge and kiting) have never run end to end.
+4. Mining throughput is OK when nothing goes wrong (~7–11 ore per 1000 ticks) but the trips are long (deep ore, 190-row pillar climbs ≈ 10k ticks). A real hellevator/rope would help.
+5. The house builder still assumes fairly flat ground (it levels only by clearing above and filling the floor row).
 
-### How to run the bot headless (the fast feedback loop)
+### Headless tooling (all in `tests/`, deterministic: seeded RNG, draws tied to `G.tick`)
 ```sh
 cd tests && npm install && npx playwright install chromium   # once
-# assets: the game needs src/assets_data.js (git-ignored). From the repo root:
-python3 tools/setup.py        # downloads the Terraria wiki assets (~80 MB incl. music), packs them
-cd tests
-node botrun.js 60000 bot67 6000   # ticks, world seed, sample interval -> status + bot log each sample, botrun.png at the end
-node navtest.js                   # isolated navigation test: random cave starts, try to path home
-node navperf.js                   # A* planning time
-node t9.js                        # every usable item gets used (catches crashes)
-node mp2.js                       # two browsers: host + join, checks tiles/drops/damage/chat/bosses sync
+# assets: without src/assets_data.js (git-ignored) the harness runs with placeholder sprites (NO_ASSETS mode) – fine for bot work.
+# With real assets: python3 tools/setup.py (downloads ~80 MB from the Terraria wiki)
+node botrun.js 500000 bot67 50000      # full natural run; samples + DEATHS + last log; SNAPEND=/tmp/x.json saves the final situation
+node until.js "<log text>|js:<expr>" 100000 bot67 14   # run until a log line / JS condition, dump ASCII map + plan probes; SNAP=/tmp/x.json, STAGE=eyefight
+node replay.js /tmp/x.json 3000 300    # thaw a snapshot and let the bot play on (per-sample goal/position/nav)
+node replay2.js / replay3.js           # per-tick trace / map dump after a snapshot
+node goto.js /tmp/x.json X Y 3000 2    # thaw + walk to a tile with the real Bot.tick loop (nav debugging)
+node homewalk.js                       # scenario: after the house is built, walk home from 6 surface offsets
+node navtest.js 6 5 [k]                # random cave starts → walk home (k: trace one start)
+node navfar.js / navperf.js            # A* heuristic/budget experiments and timings
+node minebench.js IRON 40000 gold      # mining throughput benchmark
+node stage.js eyefight 60000 10000     # start from a mid-game inventory (test shortcut only); FORCE=taskEye forces a task
+node fightlog.js eyefight 200000       # boss-fight telemetry (START=/STEP= env to zoom in)
+node dpstest.js gold_bow eye_of_cthulhu 2400   # controlled DPS test
+node speed.js / planlog.js             # ms per 2000 ticks / last A* plans (replan storms show up here)
+node t9.js / mp2.js                    # item-use crash test / two-browser multiplayer sync test
 ```
-Set `CHROME_PATH=/path/to/chrome` if Playwright's bundled browser isn't available. `tests/harness.js` gives you `page.newGame(seed)` and `page.ticks(n)`. It mutes audio and turns off TTS, because the game's TTS "six seven" voice plays through the speakers otherwise.
+Set `CHROME_PATH=/path/to/chrome` if Playwright's bundled browser isn't available (the harness also tries `/opt/pw-browsers/chromium-1194`). Never `pkill -f` something whose name appears in your own shell command line (it kills the shell). `tests/harness.js` mutes audio and turns off TTS, because the game's TTS "six seven" voice plays through the speakers otherwise. **Debugging trap:** test drivers that bypass `Bot.tick` (calling `moveTo`/`dig` directly with `G.update`) miss the hotbar/mouseOverUI handling and produce phantom bugs (the "chair can't be broken", "block can't be placed" ones). Drive the bot through `Bot.tick` with a pseudo-task, as `goto.js` does now.
 
 ## Game overview (what already exists)
 - **Assets**: Terraria sprites, sounds and music come from the Terraria Wiki (Fandom mirror) and are **not committed**. On GitHub Pages, `src/assets_remote.js` downloads them into the browser and caches them in IndexedDB. It needs `referrerPolicy: 'no-referrer'` because Fandom rejects hotlinks. Locally, `tools/setup.py` builds `src/assets_data.js`. The list is `tools/manifest.txt` → `src/asset_manifest.js`.

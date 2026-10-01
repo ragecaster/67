@@ -24,6 +24,7 @@ const Nav = {
   cellCostRaw(x, y) {
     const w = G.world;
     if (this.lava(x, y)) return Infinity;
+    const az = Bot.avoidZone; if (az && az.until > G.tick && Math.abs(x - az.x) < az.r && Math.abs(y - az.y) < az.r) return Infinity; // see Bot.registerDeath
     const t = w.tile(x, y);
     if (!t) return 0;
     const td = TILES[t];
