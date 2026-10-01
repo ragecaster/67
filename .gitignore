@@ -6,3 +6,4 @@ node_modules/
 tools/jev/.venv/
 tools/jev/models/
 tools/jev/data/
+__pycache__/
