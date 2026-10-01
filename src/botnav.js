@@ -220,6 +220,11 @@ Object.assign(Bot, {
         if (ny - sa > 12) budget = Math.max(budget, 90000);
         const gkey = tx + ',' + ty, lastB = this.lastBudget && this.lastBudget.key === gkey && this.lastBudget.partial ? this.lastBudget.n * 2 : 0;
         budget = Math.min(300000, Math.max(budget, lastB));
+        // safety valve: the same plan over and over within a few ticks means the follower keeps rejecting it; back off instead of burning the CPU
+        const pk = nx + ',' + ny + '>' + tx + ',' + ty;
+        if (this.lastPk === pk && G.tick - this.lastPkAt < 45) { this.pkRepeat = (this.pkRepeat || 0) + 1; } else this.pkRepeat = 0;
+        this.lastPk = pk; this.lastPkAt = G.tick;
+        if (this.pkRepeat > 3) { this.pkRepeat = 0; this.nav = { tx, ty, tol, at: G.tick, path: [], i: 0, cooldown: G.tick + 90 }; this.replanStorms = (this.replanStorms || 0) + 1; return false; }
         const t0 = performance.now();
         const res = Nav.plan(nx, ny, gf, heur, budget);
         this.lastBudget = { key: gkey, n: budget, partial: !res || !res.reached };
@@ -239,7 +244,7 @@ Object.assign(Bot, {
     const [nx, ny] = Nav.nodeOf(p);
     const settled = p.onGround || p.wet;
     // a path that doesn't start next to us is stale (respawned, knocked back, fell): plan again
-    if (nav.i === 0 && settled && (Math.abs(nav.path[0].x - nx) > 2 || nav.path[0].y - ny > 20 || ny - nav.path[0].y > 5)) { nav.replan = true; nav.cooldown = 0; this.replanWhy = 'stale-start'; return false; }
+    if (nav.i === 0 && settled && (Math.abs(nav.path[0].x - nx) > 5 || nav.path[0].y - ny > 20 || ny - nav.path[0].y > 5)) { nav.replan = true; nav.cooldown = 0; this.replanWhy = 'stale-start'; return false; }
     // resync: find where we are on the path (we may have skipped ahead or fallen off)
     let found = -1;
     for (let j = Math.max(0, nav.i - 2); j < Math.min(nav.path.length, nav.i + 8); j++) {
@@ -268,9 +273,21 @@ Object.assign(Bot, {
     // 2) move the body there
     const targetCx = n.x * TS + 16, dxp = targetCx - p.cx;
     // moves that deliberately leave the ground (drop/fall/leap/jump) may walk off an edge; plain walks may not
-    this.allowDrop = m.t === 'drop' || m.t === 'fall' || m.t === 'leap' || m.t === 'jump' || m.t === 'swim' || m.t === 'down';
+    this.allowDrop = m.t === 'drop' || m.t === 'fall' || m.t === 'leap' || m.t === 'jump' || m.t === 'swim' || m.t === 'down' || m.t === 'pillar' || m.t === 'up';
     if (m.t === 'pillar') {
       if (Math.abs(dxp) > 5) { this.hold(dxp > 0 ? 'd' : 'a'); return false; }
+      const row = n.y + 1, cands = [Math.floor(p.cx / TS), Math.floor((p.x + 1) / TS), Math.floor((p.x + p.w - 1) / TS)];
+      // the game only lets a block attach to a neighbour: use the body column that has something solid right below the target cell
+      let col = this.pillarCol;
+      if (col === undefined || !(cands.includes(col) && (w.solid(col, row + 1) || w.tile(col, row + 1) === T.PLATFORM))) {
+        col = cands.find(c => w.solid(c, row + 1) || w.tile(c, row + 1) === T.PLATFORM);
+        if (col === undefined) col = cands.find(c => w.solid(c - 1, row) || w.solid(c + 1, row)); // or a wall beside it
+        if (col === undefined) col = cands[0];
+      }
+      this.pillarCol = col;
+      // furniture/objects standing in the cell (a chair, a pot...) block placement: break them first, while we still stand there
+      const occ = w.tile(col, row);
+      if (occ && !TILES[occ].solid && !TILES[occ].cut) { if (this.dig(col, row) === 'fail') { nav.replan = true; this.replanWhy = 'pillar-blocked'; } return false; }
       const PB = ['dirt_block', 'stone_block', 'mud_block', 'clay_block', 'sand_block', 'ash_block', 'wood'];
       let bs = -1; for (const id of PB) { bs = this.slotOf(it => it.id === id); if (bs >= 0) break; } // wood last: it's for the house
       if (bs < 0) { nav.replan = true; this.replanWhy = 'no-blocks'; return false; }
@@ -278,18 +295,7 @@ Object.assign(Bot, {
       this.selectSlot(bs);
       // jump, then drop the block under us as soon as our feet clear the target cell (a held jump rises ~6 tiles: out of build reach)
       if (p.onGround) this.jump();
-      else if (p.y + p.h < (n.y + 1) * TS - 2) {
-        // the game only lets a block attach to a neighbour: use the body column that has something solid right below the target cell
-        const row = n.y + 1, cands = [Math.floor(p.cx / TS), Math.floor((p.x + 1) / TS), Math.floor((p.x + p.w - 1) / TS)];
-        let col = this.pillarCol;
-        if (col === undefined || !(cands.includes(col) && (w.solid(col, row + 1) || w.tile(col, row + 1) === T.PLATFORM))) {
-          col = cands.find(c => w.solid(c, row + 1) || w.tile(c, row + 1) === T.PLATFORM);
-          if (col === undefined) col = cands.find(c => w.solid(c - 1, row) || w.solid(c + 1, row)); // or a wall beside it
-          if (col === undefined) col = cands[0];
-        }
-        this.pillarCol = col;
-        this.aimTile(col, row); this.clickOnce();
-      }
+      else if (p.y + p.h < (n.y + 1) * TS - 2) { this.aimTile(col, row); this.clickOnce(); }
       else this.jump();
       return false;
     }
