@@ -3,3 +3,6 @@ assets/
 src/assets_data.js
 node_modules/
 .DS_Store
+tools/jev/.venv/
+tools/jev/models/
+tools/jev/data/

@@ -143,6 +143,10 @@ const UI = {
       const w = ctx.measureText(msg).width + 20;
       ctx.fillStyle = 'rgba(20,60,30,0.85)'; roundRect(ctx, vw / 2 - w / 2, vh - 92, w, 24, 8); ctx.fill();
       txt(ctx, msg, vw / 2, vh - 75, '#9aff9a', 13, 'center');
+      if (Bot.tactic && Bot.tactic.probs && G.tick - Bot.tactic.at < 120) {
+        const top = Object.entries(Bot.tactic.probs).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, v]) => k + ' ' + Math.round(v * 100) + '%').join(' · ');
+        txt(ctx, (TerraJev.ready ? '🧠 TerraJev: ' : '📜 rules: ') + top, vw / 2, vh - 116, TerraJev.ready ? '#ffd23a' : '#cfe8ff', 12, 'center');
+      }
       const ms = Object.keys(Bot.milestones);
       if (ms.length) txt(ctx, 'milestones: ' + ms.slice(-6).join(' → '), vw / 2, vh - 100, '#cfe8ff', 11, 'center', false);
     }

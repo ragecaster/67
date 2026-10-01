@@ -146,6 +146,7 @@ const Bot = {
     if (!this.active || !G.world) return;
     const p = this.p();
     this.t++;
+    TerraJev.tickLogging();
     this.wasDown = Input.mDown;
     this.allowDrop = false;
     this.resetInputs();
@@ -155,6 +156,8 @@ const Bot = {
     if (p.dead) { this.task = null; this.nav = null; this.plan = []; if (!this.deadLogged) { this.deaths++; (this.deathLog = this.deathLog || []).push(G.tick + ' ' + G.clockString() + ' ' + G.deathCause);
       this.registerDeath(G.deathCause); this.log('died of ' + G.deathCause + ' at ' + this.feet() + ' depth ' + (this.feet()[1] - G.world.worldSurface) + ' lifeMax ' + p.lifeMax + ' def ' + p.calc.defense + ' near: ' + G.npcs.filter(n => !n.friendly && !n.town && dist(n.cx, n.cy, p.cx, p.cy) < 400).map(n => n.name).slice(0, 5).join(',') + ' task: ' + (this.lastGoal || this.goal)); this.deadLogged = true; } return; }
     this.deadLogged = false;
+    TerraJev.recentHurt = (TerraJev.recentHurt || 0) * 0.99 + Math.max(0, (this.prevLife || p.life) - p.life);
+    this.prevLife = p.life;
     // close menus the bot didn't open
     if (UI.talk) UI.closeTalk();
     if (G.victory) G.victory = null;
@@ -186,7 +189,7 @@ const Bot = {
         }
       }
     }
-    if (p.life < p.lifeMax * 0.45 && !p.buffs.potion_sickness && p.inv.some(s => s && ITEMS[s.id].heal && ITEMS[s.id].potion)) this.press('h');
+    if (p.life < p.lifeMax * (TerraJev.ready ? 0.2 : 0.45) && !p.buffs.potion_sickness && p.inv.some(s => s && ITEMS[s.id].heal && ITEMS[s.id].potion)) this.press('h');
     if (p.lavaWet || p.buffs.on_fire) { this.jump(); }
     if (p.breath < 80) this.jump();
     // finish an in-progress hotbar move before doing anything else (it's a multi-click UI action)
@@ -208,31 +211,7 @@ const Bot = {
     if (!this.uiBusy) {
       const wall = G.npcs.find(n => n.type === 'wall_of_flesh' && !n.dead);
       if (wall) { this.why = 'wall'; this.wallFight(wall); return; }
-      const enemy = this.findEnemy();
-      if (enemy) {
-        // badly hurt: run for the house instead of trading blows (resting is nearly free for a turbo bot, dying is not)
-        // flee earlier from things that hit hard: three of its hits is the line, whatever our max life
-        const hit = Math.max(8, ((enemy.def && enemy.def.damage) || enemy.damage || 20) - p.calc.defense * 0.5);
-        const lowLife = p.life < (this.fleeing ? p.lifeMax * 0.7 : Math.min(p.lifeMax * 0.6, Math.max(p.lifeMax * 0.33, hit * 3)));
-        this.fleeing = lowLife && !p.buffs.him;
-        if (this.fleeing && !enemy.boss && this.houseSpot) {
-          this.why = 'flee'; this.goal = 'retreating (' + Math.round(p.life) + '/' + p.lifeMax + ')';
-          const dx = enemy.cx - p.cx;
-          const r = this.moveTo(this.base[0], this.base[1], 1);
-          // cornered (adjacent): swing at it rather than getting hit in the back
-          if (r === 'fail' || (Math.abs(dx) < 36 && Math.abs(enemy.cy - p.cy) < 40)) { this.fight(enemy); }
-          return;
-        }
-        this.why = 'fight'; this.fight(enemy); return;
-      }
-      // nothing around and hurt: stand still and regenerate
-      const hostilesNear = G.npcs.some(n => !n.friendly && !n.town && !n.dead && dist(n.cx, n.cy, p.cx, p.cy) < 450) || G.projectiles.some(q => q.hostile && !q.dead && dist(q.cx, q.cy, p.cx, p.cy) < 300);
-      if (p.life < p.lifeMax * (this.resting ? 0.9 : 0.6) && !p.dead && this.restTicks < 4000 && !(hostilesNear && p.y / TS > G.world.hellLayer)) {
-        this.resting = true; this.restTicks++; this.why = 'rest'; this.goal = 'resting (' + Math.round(p.life) + '/' + p.lifeMax + ')';
-        return;
-      }
-      this.resting = false; this.restTicks = 0;
-      if (this.shouldShelter()) { this.why = 'shelter'; this.goal = 'hiding in the house (night)'; const r = this.moveTo(this.base[0], this.base[1], 1); if (r === true) { this.aimWorld(p.cx + 200, p.cy); } return; }
+      if (this.tactics()) return;
     }
     // watchdog: abandon tasks that make no progress (no movement, no inventory change)
     const sig = Math.round(p.x / 48) + ',' + Math.round(p.y / 48) + '|' + p.inv.reduce((n, s) => n + (s ? s.count : 0), 0);
@@ -263,6 +242,76 @@ const Bot = {
       } else if (this.task && !this.task.done) this.instantDone = 0;
       if (this.task) this.taskAge++;
     }
+  },
+
+  // ================= TerraJev tactics: one typed decision instead of an if-chain =================
+  // returns true when the chosen tactic used this tick (the task does not run)
+  tactics() {
+    const p = this.p();
+    const enemy = this.findEnemy();
+    const potions = p.inv.some(s => s && ITEMS[s.id].heal && ITEMS[s.id].potion) && !p.buffs.potion_sickness;
+    const ranged = p.inv.some(s => s && ITEMS[s.id].damage && (ITEMS[s.id].use === 'shoot' || ITEMS[s.id].shoot) && !(ITEMS[s.id].ammo && p.findAmmo(ITEMS[s.id].ammo) < 0));
+    const hurt = p.life < p.lifeMax * 0.95;
+    const hostilesNear = G.npcs.some(n => !n.friendly && !n.town && !n.dead && dist(n.cx, n.cy, p.cx, p.cy) < 450) || G.projectiles.some(q => q.hostile && !q.dead && dist(q.cx, q.cy, p.cx, p.cy) < 300);
+    const opts = [];
+    if (enemy) {
+      opts.push('fight');
+      if (ranged) opts.push('kite');
+      if (this.houseSpot && !enemy.boss) opts.push('flee');
+      if (potions && hurt) opts.push('heal');
+      if (!enemy.boss) opts.push('ignore');
+    } else {
+      if (hurt && !(hostilesNear && p.y / TS > G.world.hellLayer)) opts.push('rest');
+      if (potions && p.life < p.lifeMax * 0.7) opts.push('heal');
+      if (G.isNight() && this.houseValid() && this.feet()[1] < G.world.worldSurface + 5 && !G.npcs.some(n => n.boss)) opts.push('shelter');
+      opts.push('continue');
+    }
+    if (opts.length === 1 && opts[0] === 'continue') { this.tactic = null; this.resting = false; this.restTicks = 0; return false; }
+    // teacher = the old hand-written rules (TerraJev starts by imitating them, then learns from outcomes)
+    const teacher = this.ruleTactic(enemy, opts, potions);
+    // ask again every 15 ticks, when the target changes, or after a big hit
+    const T = this.tactic, lifeDrop = T ? T.life - p.life : 0;
+    if (!T || G.tick - T.at >= 15 || T.enemy !== (enemy && enemy.uid) || lifeDrop > p.lifeMax * 0.1 || !opts.includes(T.choice)) {
+      const state = jevStateFeatures(this, enemy);
+      const ans = TerraJev.decide({ id: 'tactic', state, teacher, candidates: opts.map(o => ({ id: o, features: jevCandFeatures(this, o, enemy) })) });
+      this.tactic = { choice: ans.choice, at: G.tick, enemy: enemy && enemy.uid, life: p.life, probs: ans.probabilities };
+    }
+    const c = this.tactic.choice;
+    this.why = 'jev:' + c;
+    switch (c) {
+      case 'fight': this.resting = false; this.fight(enemy); return true;
+      case 'kite': {
+        this.resting = false; this.fight(enemy);
+        const away = enemy.cx > p.cx ? 'a' : 'd';
+        if (dist(enemy.cx, enemy.cy, p.cx, p.cy) < 200) { Input.keys.a = Input.keys.d = false; this.holdSafe(away); }
+        this.goal = 'kiting ' + enemy.name; return true;
+      }
+      case 'flee': {
+        this.goal = 'retreating (' + Math.round(p.life) + '/' + p.lifeMax + ')';
+        const r = this.moveTo(this.base[0], this.base[1], 1);
+        if (enemy && (r === 'fail' || (Math.abs(enemy.cx - p.cx) < 36 && Math.abs(enemy.cy - p.cy) < 40))) this.fight(enemy);
+        return true;
+      }
+      case 'heal': this.press('h'); if (enemy) { this.fight(enemy); return true; } return false;
+      case 'rest': this.resting = true; this.restTicks = (this.restTicks || 0) + 1; this.goal = 'resting (' + Math.round(p.life) + '/' + p.lifeMax + ')'; if (this.restTicks > 4000) { this.tactic = null; return false; } return true;
+      case 'shelter': { this.goal = 'hiding in the house (night)'; const r = this.moveTo(this.base[0], this.base[1], 1); if (r === true) this.aimWorld(p.cx + 200, p.cy); return true; }
+      default: this.resting = false; this.restTicks = 0; return false; // ignore / continue: let the task run
+    }
+  },
+  // the previous hard-coded policy, kept as TerraJev's teacher label (and as the behaviour when no weights are loaded)
+  ruleTactic(enemy, opts, potions) {
+    const p = this.p();
+    if (enemy) {
+      if (p.life < p.lifeMax * 0.45 && opts.includes('heal')) return 'heal';
+      const hit = Math.max(8, ((enemy.def && enemy.def.damage) || enemy.damage || 20) - p.calc.defense * 0.5);
+      const lowLife = p.life < (this.fleeing ? p.lifeMax * 0.7 : Math.min(p.lifeMax * 0.6, Math.max(p.lifeMax * 0.33, hit * 3)));
+      this.fleeing = lowLife && !p.buffs.him;
+      if (this.fleeing && opts.includes('flee')) return 'flee';
+      return 'fight';
+    }
+    if (opts.includes('rest') && p.life < p.lifeMax * (this.resting ? 0.9 : 0.6) && (this.restTicks || 0) < 4000) return 'rest';
+    if (opts.includes('shelter') && this.shouldShelter()) return 'shelter';
+    return 'continue';
   },
 
   // Dying over and over in the same place means the plan walks into the same trap each respawn: stay out of that area for a while
