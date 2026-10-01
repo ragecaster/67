@@ -16,19 +16,24 @@ const TerraJev = {
   W: null, ready: false, temperature: 1, sample: false, epsilon: 0, logging: false, records: [], pending: [],
   OPTIONS: ['fight', 'kite', 'flee', 'heal', 'ignore', 'rest', 'shelter', 'continue'],
 
+  // one small network per question id ('tactic', 'target', 'weapon', 'control'); older single-model files = tactic
+  M: {},
   load(weights) {
-    if (!weights || !weights.meta) return false;
-    this.W = weights; this.ready = true;
+    if (!weights) return false;
+    this.M = weights.meta ? { tactic: weights } : weights;
+    this.W = this.M.tactic || null;
+    this.ready = Object.keys(this.M).length > 0;
     return true;
   },
+  has(qid) { return this.ready && !!this.M[qid]; },
 
   // ---------- tiny tensor helpers ----------
   lin(L, x) { const o = L.b.slice(), n = x.length; for (let i = 0; i < o.length; i++) { let s = o[i]; const off = i * n; for (let j = 0; j < n; j++) s += L.w[off + j] * x[j]; o[i] = s; } return o; },
   relu(v) { for (let i = 0; i < v.length; i++) if (v[i] < 0) v[i] = 0; return v; },
   mlp(layers, x) { let h = x; layers.forEach((L, i) => { h = this.lin(L, h); if (i < layers.length - 1 || L.act) this.relu(h); }); return h; },
 
-  forward(stateVec, candVecs) {
-    const W = this.W;
+  forward(stateVec, candVecs, qid = 'tactic') {
+    const W = this.M[qid] || this.W;
     const s = this.mlp(W.state, stateVec);
     const H = candVecs.map(cv => { const c = this.mlp(W.cand, cv); return this.relu(this.lin(W.pair, s.concat(c, s.map((v, i) => v * c[i])))); });
     // multi-head self-attention across the candidate set
@@ -51,21 +56,21 @@ const TerraJev = {
   //   q = { id, state: number[], candidates: [{ id, features: number[] }], teacher?: id }
   decide(q) {
     let probs;
-    if (this.ready) {
-      const logits = this.forward(q.state, q.candidates.map(c => c.features));
+    if (this.has(q.id)) {
+      const logits = this.forward(q.state, q.candidates.map(c => c.features), q.id);
       const T = this.temperature, mx = Math.max(...logits);
       const e = logits.map(z => Math.exp((z - mx) / T)), sum = e.reduce((a, b) => a + b, 0);
       probs = e.map(v => v / sum);
     } else {
-      // no weights yet: behave like the teacher (the old rules), still through the same interface
-      probs = q.candidates.map(c => (c.id === q.teacher ? 1 : 0));
-      if (!probs.some(v => v)) probs = q.candidates.map(() => 1 / q.candidates.length);
+      // no trained network for this question yet: explore uniformly (that's how it learns)
+      probs = q.candidates.map(() => 1 / q.candidates.length);
     }
+    const untrained = !this.has(q.id);
     // exploration for training rollouts: with probability epsilon try a random allowed option
     const eps = this.epsilon || 0;
     if (eps > 0) probs = probs.map(v => (1 - eps) * v + eps / probs.length);
     let idx = 0;
-    if (this.sample || eps > 0) { let r = Math.random(), acc = 0; idx = probs.length - 1; for (let i = 0; i < probs.length; i++) { acc += probs[i]; if (r <= acc) { idx = i; break; } } }
+    if (this.sample || eps > 0 || untrained) { let r = Math.random(), acc = 0; idx = probs.length - 1; for (let i = 0; i < probs.length; i++) { acc += probs[i]; if (r <= acc) { idx = i; break; } } }
     else idx = probs.indexOf(Math.max(...probs));
     const out = { id: q.id, choice: q.candidates[idx].id, idx, probabilities: Object.fromEntries(q.candidates.map((c, i) => [c.id, probs[i]])) };
     if (this.logging) this.record(q, out, probs);
@@ -74,15 +79,15 @@ const TerraJev = {
   },
 
   // ---------- rollout logging for training (outcome measured over the next H ticks) ----------
-  H: 240,
+  H: 240, HQ: { tactic: 240, target: 120, weapon: 180, control: 45, task: 3000 },
   record(q, out, probs) {
     const m = this.metrics();
     this.pending.push({ t: G.tick, q: q.id, state: q.state, cands: q.candidates.map(c => c.id), feats: q.candidates.map(c => c.features), chosen: out.idx, mu: probs[out.idx], teacher: q.candidates.findIndex(c => c.id === q.teacher), m0: m });
-    if (this.pending.length > 4000) this.pending.shift();
+    if (this.pending.length > 8000) this.pending.shift();
   },
   // running counters the reward is built from (filled by bot/npc hooks)
   counters: { dmgTaken: 0, dmgDealt: 0, kills: 0, deaths: 0, value: 0 },
-  metrics() { const c = this.counters, p = G.player; return { taken: c.dmgTaken, dealt: c.dmgDealt, kills: p.stats.kills, deaths: c.deaths, value: this.invValue(p), lifeMax: p.lifeMax, ms: Object.keys(Bot.milestones || {}).length }; },
+  metrics() { const c = this.counters, p = G.player; return { taken: c.dmgTaken, dealt: c.dmgDealt, kills: p.stats.kills, deaths: c.deaths, value: this.invValue(p), lifeMax: p.lifeMax, ms: Object.keys(Bot.milestones || {}).length, def: p.calc.defense, pick: Math.max(0, ...p.inv.map(s => s ? ITEMS[s.id].pick || 0 : 0)) }; },
   invValue(p) { let v = 0; for (const s of p.inv) if (s && ITEMS[s.id]) v += (ITEMS[s.id].value || 1) * s.count; return v; },
   tickLogging() {
     if (!this.logging) return;
@@ -91,11 +96,15 @@ const TerraJev = {
     this.lastLife = p.dead ? null : p.life;
     if (p.dead && !this.wasDead) this.counters.deaths++;
     this.wasDead = p.dead;
-    while (this.pending.length && G.tick - this.pending[0].t >= this.H) {
-      const r = this.pending.shift(), m = this.metrics(), m0 = r.m0;
+    for (let i = 0; i < this.pending.length; i++) {
+      const r = this.pending[i];
+      if (G.tick - r.t < (this.HQ[r.q] || this.H)) continue;
+      this.pending.splice(i--, 1);
+      const m = this.metrics(), m0 = r.m0;
       r.outcome = {
         taken: (m.taken - m0.taken) / Math.max(100, m0.lifeMax), died: m.deaths - m0.deaths, kills: m.kills - m0.kills,
         dealt: m.dealt - m0.dealt, gain: Math.max(0, m.value - m0.value), ms: m.ms - m0.ms,
+        dDef: m.def - m0.def, dLife: m.lifeMax - m0.lifeMax, dPick: m.pick - m0.pick,
       };
       delete r.m0;
       this.records.push(r);
@@ -156,5 +165,46 @@ function jevCandFeatures(bot, opt, enemy) {
   else if (opt === 'fight' || opt === 'kite') { a = enemy ? enemy.life / enemy.lifeMax : 0; b = enemy ? Math.min(Math.hypot(enemy.cx - p.cx, enemy.cy - p.cy), 600) / 200 : 0; }
   else if (opt === 'rest') { a = (p.lifeMax - p.life) / p.lifeMax; }
   return oh.concat([a, b]); // 8 + 2 = 10
+}
+
+// ---------- finer-grained questions ----------
+// target: which enemy?   weapon: which weapon?   control: which raw inputs (move x jump x attack, or path to it)?
+function jevTargetFeatures(bot, n, current) {
+  const p = G.player, dx = n.cx - p.cx, dy = n.cy - p.cy, d = Math.hypot(dx, dy);
+  const ws = bot.bestWeaponSlot(n), it = ws >= 0 ? ITEMS[p.inv[ws].id] : null;
+  const dmg = it ? (it.fixedDamage ? 67 : Math.max(1, it.damage - n.defense * 0.5)) : 1;
+  const ai = n.def && n.def.ai;
+  return [Math.min(d, 900) / 300, clamp(dx / 300, -3, 3), clamp(dy / 300, -3, 3), n.life / n.lifeMax, Math.min(n.life, 600) / 200,
+    Math.max(1, n.damage - p.calc.defense * 0.5) / 50, (n.def.noGravity || ai === 'flyer' || ai === 'bat') ? 1 : 0, n.boss ? 1 : 0,
+    lineOfSight(G.world, p.cx, p.cy, n.cx, n.cy) ? 1 : 0, n === current ? 1 : 0, Math.min(n.life / dmg, 30) / 10,
+    ['caster', 'demon', 'harpy', 'antlion', 'bombardiro'].includes(ai) ? 1 : 0];
+}
+function jevWeaponFeatures(bot, slot, target) {
+  const p = G.player, it = ITEMS[p.inv[slot].id];
+  const def = target ? target.defense : 0, dmg = it.fixedDamage ? 67 : Math.max(1, it.damage - def * 0.5);
+  const ranged = !!(it.use === 'shoot' || it.shoot || it.use === 'throw');
+  const d = target ? Math.hypot(target.cx - p.cx, target.cy - p.cy) : 0;
+  const ammoOk = !it.ammo || p.findAmmo(it.ammo) >= 0, manaOk = !it.mana || p.mana >= it.mana;
+  return [Math.min(it.damage, 100) / 50, Math.min(it.useTime, 60) / 30, Math.min(dmg * 60 / Math.max(6, it.useTime), 600) / 200,
+    ranged ? 1 : 0, (it.use === 'swing' || it.use === 'thrust') ? 1 : 0, it.autoReuse ? 1 : 0, (it.mana || 0) / 20,
+    ammoOk && manaOk ? 1 : 0, p.sel === slot ? 1 : 0, !ranged && d > 70 ? 1 : 0, it.fixedDamage ? 1 : 0];
+}
+const JEV_CONTROLS = (() => { const o = []; for (const m of [-1, 0, 1]) for (const j of [0, 1]) for (const a of [0, 1]) o.push({ id: (m < 0 ? 'L' : m > 0 ? 'R' : '_') + (j ? 'J' : '_') + (a ? 'A' : '_'), m, j, a }); o.push({ id: 'path', m: 0, j: 0, a: 1, path: true }); return o; })();
+function jevControlFeatures(bot, c, target, it) {
+  const p = G.player, w = G.world, [fx, fy] = bot.feet();
+  const dx = target ? target.cx - p.cx : 0, dy = target ? target.cy - p.cy : 0;
+  const m = c.m;
+  const blocked = m !== 0 && (w.solid(fx + m * 2, fy - 1) || w.solid(fx + m * 2, fy - 2)) ? 1 : 0;
+  const cliff = m !== 0 && bot.cliffAhead(m) ? 1 : 0;
+  let lava = 0; if (m !== 0) for (let k = 1; k <= 4 && !lava; k++) for (let j = -1; j <= 3; j++) if (w.liq(fx + m * k, fy + j) > 20 && w.ltype[w.idx(fx + m * k, fy + j)] === 1) { lava = 1; break; }
+  const edge = m !== 0 ? bot.edgeDist(m) / 12 : 1;
+  const toward = target && m !== 0 ? m * sign(dx) : 0;
+  const after = target ? Math.hypot(dx - m * 30, dy) : 0;
+  const melee = it && (it.use === 'swing' || it.use === 'thrust') && !it.shoot;
+  const inReach = target ? (melee ? (after < 60 ? 1 : 0) : (after < 450 ? 1 : 0)) : 0;
+  let proj = 0; for (const q of G.projectiles) if (q.hostile && !q.dead && Math.abs(q.cy - p.cy) < 80 && Math.abs(q.cx - p.cx) < 260 && sign(q.cx - p.cx) === (m || 1) * (m ? 1 : 0) && sign(q.vx) === -sign(q.cx - p.cx)) proj++;
+  const above = target && dy < -24 ? 1 : 0;
+  return [m < 0 ? 1 : 0, m === 0 ? 1 : 0, m > 0 ? 1 : 0, c.j, c.a, c.path ? 1 : 0, blocked, cliff, lava, edge, toward, Math.min(after, 600) / 200, inReach,
+    Math.min(proj, 3) / 3, above, c.j && (above || blocked) ? 1 : 0, p.onGround ? 1 : 0];
 }
 if (typeof TERRAJEV_WEIGHTS !== 'undefined') TerraJev.load(TERRAJEV_WEIGHTS);

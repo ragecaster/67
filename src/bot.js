@@ -181,7 +181,8 @@ const Bot = {
     // long fall in progress (the game hurts above 25 tiles): drop a block right under our feet; it lands us and resets the fall
     if (!p.onGround && p.vy > 4 && p.fallStart != null && (p.y - p.fallStart) / TS > 14 && !UI.invOpen) {
       const w = G.world, fy2 = Math.floor((p.y + p.h) / TS);
-      const bs = this.slotOf((it, st) => ['dirt_block', 'stone_block', 'clay_block', 'mud_block', 'sand_block', 'ash_block'].includes(it.id));
+      // a deadly fall outranks the reservation: use any block
+      let bs = this.spareBlockSlot(false); if (bs < 0) bs = this.slotOf(it => ['dirt_block', 'stone_block', 'clay_block', 'mud_block', 'sand_block', 'ash_block'].includes(it.id));
       if (bs >= 0 && bs <= 9) {
         const col = Math.floor(p.cx / TS);
         for (const cy of [fy2 + 1, fy2 + 2]) {
@@ -218,7 +219,7 @@ const Bot = {
     if (sig !== this.progSig) { this.progSig = sig; this.progAt = G.tick; }
     if (this.task && G.tick - this.progAt > 2400) {
       this.log('watchdog: abandoning "' + this.goal + '" (no progress)');
-      this.cooldowns = this.cooldowns || {}; this.cooldowns[this.goal.split(' ').slice(0, 2).join(' ')] = G.tick + 3600;
+      this.cooldowns = this.cooldowns || {}; this.cooldowns[this.lastTaskId || this.goal] = G.tick + 3600;
       this.task = null; this.nav = null; this.progAt = G.tick; this.watchdogs = (this.watchdogs || 0) + 1;
       this.task = this.taskExplore();
     }
@@ -267,13 +268,11 @@ const Bot = {
       opts.push('continue');
     }
     if (opts.length === 1 && opts[0] === 'continue') { this.tactic = null; this.resting = false; this.restTicks = 0; return false; }
-    // teacher = the old hand-written rules (TerraJev starts by imitating them, then learns from outcomes)
-    const teacher = this.ruleTactic(enemy, opts, potions);
     // ask again every 15 ticks, when the target changes, or after a big hit
     const T = this.tactic, lifeDrop = T ? T.life - p.life : 0;
     if (!T || G.tick - T.at >= 15 || T.enemy !== (enemy && enemy.uid) || lifeDrop > p.lifeMax * 0.1 || !opts.includes(T.choice)) {
       const state = jevStateFeatures(this, enemy);
-      const ans = TerraJev.decide({ id: 'tactic', state, teacher, candidates: opts.map(o => ({ id: o, features: jevCandFeatures(this, o, enemy) })) });
+      const ans = TerraJev.decide({ id: 'tactic', state, candidates: opts.map(o => ({ id: o, features: jevCandFeatures(this, o, enemy) })) });
       this.tactic = { choice: ans.choice, at: G.tick, enemy: enemy && enemy.uid, life: p.life, probs: ans.probabilities };
     }
     const c = this.tactic.choice;
@@ -298,21 +297,7 @@ const Bot = {
       default: this.resting = false; this.restTicks = 0; return false; // ignore / continue: let the task run
     }
   },
-  // the previous hard-coded policy, kept as TerraJev's teacher label (and as the behaviour when no weights are loaded)
-  ruleTactic(enemy, opts, potions) {
-    const p = this.p();
-    if (enemy) {
-      if (p.life < p.lifeMax * 0.45 && opts.includes('heal')) return 'heal';
-      const hit = Math.max(8, ((enemy.def && enemy.def.damage) || enemy.damage || 20) - p.calc.defense * 0.5);
-      const lowLife = p.life < (this.fleeing ? p.lifeMax * 0.7 : Math.min(p.lifeMax * 0.6, Math.max(p.lifeMax * 0.33, hit * 3)));
-      this.fleeing = lowLife && !p.buffs.him;
-      if (this.fleeing && opts.includes('flee')) return 'flee';
-      return 'fight';
-    }
-    if (opts.includes('rest') && p.life < p.lifeMax * (this.resting ? 0.9 : 0.6) && (this.restTicks || 0) < 4000) return 'rest';
-    if (opts.includes('shelter') && this.shouldShelter()) return 'shelter';
-    return 'continue';
-  },
+
 
   // Dying over and over in the same place means the plan walks into the same trap each respawn: stay out of that area for a while
   registerDeath(cause) {
@@ -348,12 +333,6 @@ const Bot = {
   },
 
   // ================= combat =================
-  shouldShelter() {
-    const p = this.p();
-    // mining happens underground where night makes little difference: don't idle in the house all night for it
-    if (/^(mining|crafting|farming)/.test(this.goal || '')) return false;
-    return G.isNight() && this.houseValid() && !p.armor.some(a => a) && p.lifeMax < 200 && this.feet()[1] < G.world.worldSurface + 5 && !G.npcs.some(n => n.boss);
-  },
   findEnemy() {
     const p = this.p();
     let best = null, bd = 1e9;
@@ -378,142 +357,150 @@ const Bot = {
     if (n.life < f.life) { f.life = n.life; f.since = G.tick; }
     if (G.tick - f.since > (n.boss ? 3600 : 480)) { this.ignore[n.uid] = G.tick + 3600; delete this.fights[n.uid]; this.log('ignoring ' + n.name + ' (unreachable)'); return; }
     if (G.tick % 600 === 0) for (const k in this.fights) if (!G.npcs.some(m => m.uid == k)) delete this.fights[k];
-    // while a boss is up, pick the weapon for the boss (servants/minions die to anything) so we don't swap back and forth
-    const boss = G.npcs.find(m => m.boss && !m.dead);
-    let ws = this.bestWeaponSlot(boss || n);
-    if (ws < 0) return;
-    // don't flip-flop between weapons every few ticks: keep the current one unless the new one is clearly better
-    const curS = p.sel, cur = p.inv[curS];
-    if (cur && curS !== ws && ITEMS[cur.id].damage && !ITEMS[cur.id].pick && !ITEMS[cur.id].axe && G.tick - (this.weaponSwitchAt || 0) < 120) ws = curS;
-    else if (ws !== curS) this.weaponSwitchAt = G.tick;
+    const T = this.fightT || (this.fightT = {});
+    // ---- target: which enemy? (TerraJev 'target', re-asked every 30 ticks) ----
+    const foes = G.npcs.filter(m => !m.friendly && !m.town && !m.dead && m.alpha >= 0.5 && !m.def.critter && !(this.ignore[m.uid] > G.tick) && dist(m.cx, m.cy, p.cx, p.cy) < (m.boss ? 900 : 350))
+      .sort((x, y) => dist(x.cx, x.cy, p.cx, p.cy) - dist(y.cx, y.cy, p.cx, p.cy)).slice(0, 6);
+    if (!foes.includes(n)) foes.push(n);
+    if (!T.target || T.target.dead || !foes.includes(T.target) || G.tick - T.tAt >= 30) {
+      if (foes.length > 1) {
+        const ans = TerraJev.decide({ id: 'target', state: jevStateFeatures(this, n), candidates: foes.map(m => ({ id: 'npc' + m.uid, features: jevTargetFeatures(this, m, T.target) })) });
+        T.target = foes[ans.idx];
+      } else T.target = n;
+      T.tAt = G.tick;
+    }
+    const tgt = T.target;
+    // ---- weapon: which one? (TerraJev 'weapon', re-asked every 60 ticks or on a new target) ----
+    const slots = [];
+    p.inv.forEach((s2, i) => { if (!s2) return; const it2 = ITEMS[s2.id]; if (!it2.damage || it2.ammoType || it2.consumable || it2.pick || it2.axe || it2.hammer) return; if (it2.ammo && p.findAmmo(it2.ammo) < 0) return; if (it2.mana && p.mana < it2.mana) return; slots.push(i); });
+    if (!slots.length) return;
+    slots.sort((x, y) => (ITEMS[p.inv[y].id].damage || 0) - (ITEMS[p.inv[x].id].damage || 0));
+    if (slots.length > 6) slots.length = 6;
+    if (T.ws == null || !slots.includes(T.ws) || G.tick - T.wAt >= 60 || T.wTarget !== tgt.uid) {
+      const ans = TerraJev.decide({ id: 'weapon', state: jevStateFeatures(this, tgt), candidates: slots.map(i => ({ id: p.inv[i].id, features: jevWeaponFeatures(this, i, tgt) })) });
+      T.ws = slots[ans.idx]; T.wAt = G.tick; T.wTarget = tgt.uid;
+    }
+    const ws = T.ws;
     if (ws > 9) { this.ensureHotbar(ws); return; }
     this.selectSlot(ws);
     const it = ITEMS[p.inv[ws].id];
-    // weapons that fire a projectile on every swing (The 67) are shot from a distance like a bow
+    // ---- control: raw inputs every 4 ticks (TerraJev 'control': move L/-/R x jump x attack, or path to the target) ----
+    if (!T.ctrl || G.tick - T.cAt >= 4 || T.cTarget !== tgt.uid) {
+      const ans = TerraJev.decide({ id: 'control', state: jevStateFeatures(this, tgt), candidates: JEV_CONTROLS.map(c => ({ id: c.id, features: jevControlFeatures(this, c, tgt, it) })) });
+      T.ctrl = JEV_CONTROLS[ans.idx]; T.cAt = G.tick; T.cTarget = tgt.uid;
+    }
+    const c = T.ctrl;
+    if (c.path) this.moveTo(Math.floor(tgt.cx / TS), Math.floor((tgt.y + tgt.h - 1) / TS), 1);
+    else if (c.m) this.holdSafe(c.m > 0 ? 'd' : 'a');   // the cliff/edge guard stays in code ("authorise in code")
+    if (c.j) this.jump();
+    // aim (lead moving targets with projectiles); attack only when the model says so
     const melee = (it.use === 'swing' || it.use === 'thrust') && !it.shoot;
-    const dx = n.cx - p.cx, dy = n.cy - p.cy, adx = Math.abs(dx), dist = Math.hypot(dx, dy);
-    // --- movement ---
-    let dodged = false;
-    // on a floating bridge, hits knock us ~5 tiles sideways: fight from well inside it, never next to an open end
-    if (this.floating()) {
-      const a = this.edgeDist(1), b = this.edgeDist(-1);
-      if (Math.min(a, b) < 6 && Math.max(a, b) > Math.min(a, b) + 2) { this.holdSafe(a < b ? 'a' : 'd'); dodged = true; }
-    }
-    if (!dodged && n.boss) dodged = this.dodgeBoss(n);
-    if (!dodged) {
-      if (melee) {
-        const want = n.boss ? 60 : 34;
-        // path to it only when it stands on reachable ground; a flyer far above is chased by walking underneath (A* to the sky wastes seconds)
-        const reachable = Math.abs(n.cy - p.cy) < 160 && !(n.noGravity || (n.def && n.def.noGravity) || (n.def && (n.def.ai === 'flyer' || n.def.flying)));
-        if (adx > want + 40 && !n.boss && reachable) this.moveTo(Math.floor(n.cx / TS), Math.floor((n.y + n.h - 1) / TS), 1);
-        else if (adx > want + 40 && !n.boss) this.holdSafe(dx > 0 ? 'd' : 'a');
-        else if (adx > want) this.holdSafe(dx > 0 ? 'd' : 'a');
-      } else {
-        // ranged: stay 140-280 px away, retreat when it closes in
-        if (dist < 140) this.holdSafe(dx > 0 ? 'a' : 'd');
-        else if (dist > 280 && !n.boss) this.holdSafe(dx > 0 ? 'd' : 'a');
-        else if (n.boss && adx > 220) this.holdSafe(dx > 0 ? 'd' : 'a');
-      }
-    }
-    // hop up at something standing above us (melee), or over a wall; never bunny-hop while shooting a hovering boss
-    // (never on a floating platform: a hop plus a held direction carries us off the edge)
-    if (!this.nearEdge(8) && ((melee && n.cy < p.y - 10 && adx < 150 && !(n.boss && n.noGravity)) || (p.collidedX && p.onGround))) this.jump();
-    // --- aim (lead moving targets with projectiles) and attack ---
-    let ax = n.cx, ay = n.cy;
-    if (!melee && it.use !== 'throw') {
-      const sp = it.shootSpeed || 8, t = Math.min(45, dist / sp);
-      ax += (n.vx || 0) * t; ay += (n.vy || 0) * t - dist * 0.015;
-    }
+    const dx = tgt.cx - p.cx, dy = tgt.cy - p.cy, d = Math.hypot(dx, dy);
+    let ax = tgt.cx, ay = tgt.cy;
+    if (!melee && it.use !== 'throw') { const sp = it.shootSpeed || 8, t = Math.min(45, d / sp); ax += (tgt.vx || 0) * t; ay += (tgt.vy || 0) * t - d * 0.015; }
     this.aimWorld(ax, ay);
-    // only auto-reuse weapons repeat while the button is held; everything else needs a fresh click each use
-    if (it.autoReuse) this.clickHold();
-    else if (p.itemAnim === 0) this.clickOnce();
-    this.goal = 'fighting ' + n.name;
+    if (c.a) { if (it.autoReuse) this.clickHold(); else if (p.itemAnim === 0) this.clickOnce(); }
+    this.goal = 'fighting ' + tgt.name;
   },
-  // sidestep a boss's telegraphed charge; returns true when we are dodging this tick
-  dodgeBoss(n) {
-    const p = this.p();
-    const rx = p.cx - n.cx, ry = p.cy - n.cy, r = Math.hypot(rx, ry);
-    const vx = n.vx || 0, vy = n.vy || 0, v = Math.hypot(vx, vy);
-    if (n.def && n.def.ai === 'eye' && n.state === 'dash' && v > 3 && r < 420) {
-      const ux = vx / v, uy = vy / v;
-      const along = rx * ux + ry * uy;        // >0: it is heading toward us
-      const cross = rx * uy - ry * ux;        // sideways offset from its line
-      // rx/ry point from the boss to us: along > 0 means we are in front of the charge; sidestep until we are clear of its line
-      if (along > 0 && Math.abs(cross) < 110) {
-        if (Math.abs(uy) < 0.35) { this.jump(); return true; } // flat charge: hop over it
-        // pick a side once per charge (re-deciding every tick makes us shuffle in place) and keep running that way
-        if (!(this.dodgeUntil > G.tick)) { this.dodgeSign = cross === 0 ? (Math.random() < 0.5 ? 1 : -1) : (cross * uy >= 0 ? 1 : -1); this.dodgeUntil = G.tick + 35; }
-        this.hold(this.dodgeSign > 0 ? 'd' : 'a');
-        return true;
-      }
-    }
-    // keep out of melee range of anything big that walks at us
-    if (n.def && n.def.ai === 'tung' && r < 130) { this.hold(rx > 0 ? 'd' : 'a'); if (n.state === 'leap') this.jump(); return true; }
-    return false;
-  },
-
-  // ================= task planner =================
+  // ================= task choice: TerraJev picks the next skill =================
+  // Candidates are the skills that make sense right now (masked); TerraJev returns a probability for each.
   nextTask() {
-    const p = this.p(), w = G.world;
+    const p = this.p();
     this.uiBusy = false;
-    // inventory housekeeping
-    if (p.inv.slice(10).filter(s => !s).length < 3) return this.taskTrash();
-    // equip anything better
-    const eq = this.findUpgradeToEquip();
-    if (eq >= 0) return this.taskEquip(eq);
-    const houseOk = this.houseValid();
-    if (!this.milestones.wood && this.count('wood') < 90 && !houseOk) return this.taskChop(90);
-    if (this.count('wood') >= 90) this.milestone('wood');
-    // a valid room isn't a finished house: the door, bench, chair and a walkable doorstep come after the walls
-    if (!houseOk || !this.houseFinished) return this.taskBuildHouse();
-    this.milestone('house');
-    // misc crafts (torches, mana crystals, glass, hellforge...) then the tier ladder (stations -> iron -> crystals -> gold)
-    const craftList = this.wantedCrafts().filter(o => !this.blocked(o[0]));
-    if (craftList.length) return this.taskCraftAtBase(craftList[0]);
-    const prog = this.progressionTask();
-    if (prog) return prog;
-    if (!w.flags.eye_of_cthulhu) return this.taskEye();
-    if (!this.hasBetterPick(65)) return this.taskBrainrot();
-    if (!w.flags.wall_of_flesh) return this.taskHell();
-    return this.taskExplore();
+    if (this.houseValid() && this.houseFinished) this.milestone('house');
+    const cands = this.taskCandidates();
+    if (!cands.length) return this.taskExplore();
+    const state = jevStateFeatures(this, null);
+    const ans = TerraJev.decide({ id: 'task', state, candidates: cands.map(c => ({ id: c.id, features: c.f })) });
+    const pick = cands[ans.idx];
+    this.taskChoice = { id: pick.id, at: G.tick, probs: ans.probabilities };
+    this.lastTaskId = pick.id;
+    (this.taskHist = this.taskHist || {})[pick.id] = G.tick;
+    if (pick.item) this.commit(pick.item, pick.qty || 1);
+    const t = pick.make();
+    return t || this.taskExplore();
+  },
+  taskCandidates() {
+    const p = this.p(), w = G.world, out = [];
+    const KINDS = ['trash', 'equip', 'chop', 'build', 'stone', 'ore', 'craft', 'crystal', 'eye', 'brainrot', 'hell', 'explore', 'home'];
+    const add = (id, kind, make, extra = {}) => {
+      const f = KINDS.map(k => (k === kind ? 1 : 0));
+      const last = this.taskHist && this.taskHist[id];
+      const cool = this.cooldowns && this.cooldowns[id] > G.tick ? 1 : 0;
+      f.push(extra.value || 0, extra.def || 0, extra.dmg || 0, extra.pickGain || 0, extra.ready == null ? 1 : extra.ready, extra.needs || 0,
+        extra.dist == null ? 0 : Math.min(extra.dist, 300) / 100, this.lastTaskId === id ? 1 : 0, cool, last ? Math.min(G.tick - last, 6000) / 3000 : 2);
+      out.push(Object.assign({ id, kind, make, f }, extra));
+    };
+    const freeSlots = p.inv.slice(10).filter(s => !s).length;
+    if (freeSlots < 6) add('trash', 'trash', () => this.taskTrash(), { value: (6 - freeSlots) / 6 });
+    // equipment upgrades in the inventory
+    p.inv.forEach((s, i) => {
+      if (!s) return; const it = ITEMS[s.id];
+      let gain = 0;
+      if (it.armor) { const k = { head: 0, body: 1, legs: 2 }[it.armor], cur = p.armor[k]; gain = (it.defense || 0) - (cur ? ITEMS[cur.id].defense || 0 : 0); if (gain <= 0) return; }
+      else if (it.acc) { if (p.acc.some(a => a && a.id === s.id) || !p.acc.some(a => !a)) return; gain = 1; }
+      else if (it.lifeCrystal) { if (p.lifeMax >= 400) return; gain = 2; }
+      else if (it.manaCrystal) { if (p.manaMaxBase >= 200) return; gain = 1; }
+      else return;
+      add('equip:' + s.id, 'equip', () => this.taskEquip(i), { def: gain / 10 });
+    });
+    const tree = this.nearestTile((t, x, y) => t === T.TREE && w.treeType(x, y) === TREE_BASE, 140, 40);
+    if (tree) add('chop', 'chop', () => this.taskChop(this.count('wood') + 40), { value: Math.min(this.count('wood'), 200) / 100, dist: Math.abs(tree[0] - this.feet()[0]) });
+    if (!this.houseValid() || !this.houseFinished) add('build', 'build', () => this.taskBuildHouse(), { ready: Math.min(1, this.count('wood') / 90) });
+    add('stone', 'stone', () => this.taskMine('stone', () => this.count('stone_block') >= Math.min(9999, this.count('stone_block') + 30)), { value: Math.min(this.count('stone_block'), 200) / 100 });
+    const pickPow = Math.max(0, ...p.inv.map(s => s ? ITEMS[s.id].pick || 0 : 0));
+    for (const [ore, tileName] of Object.entries(ORE_TILE)) {
+      const tile = T[tileName], td = TILES[tile];
+      if (!td || td.minPick > pickPow) continue;
+      const near = this.nearestTile(t => t === tile, 90, 80);
+      if (!near) continue;
+      add('ore:' + ore, 'ore', () => this.taskMine('ore', () => this.count(ore) >= this.count(ore) + 15, [tile]), { value: Math.log1p(ITEMS[ore].value || 1) / 8, dist: Math.abs(near[0] - this.feet()[0]) + Math.abs(near[1] - this.feet()[1]), needs: Math.min(this.count(ore), 200) / 100 });
+    }
+    // craftable goals: gear, stations, ammo, consumables, summons (the skill resolves missing ingredients itself)
+    for (const [id, qty] of JEV_GOALS) {
+      if (!ITEMS[id] || !RECIPES.some(r => r.out === id)) continue;
+      const it = ITEMS[id];
+      if (id === 'furnace' && this.stationPlaced('furnace')) continue;
+      if (id === 'iron_anvil' && this.stationPlaced('anvil')) continue;
+      if (id === 'hellforge' && this.stationPlaced('hellforge')) continue;
+      if (it.pick && this.hasBetterPick(it.pick)) continue;
+      if (it.armor) { const k = { head: 0, body: 1, legs: 2 }[it.armor], cur = p.armor[k]; if (cur && (ITEMS[cur.id].defense || 0) >= (it.defense || 0)) continue; }
+      if (it.summon && w.flags[it.summon]) continue;
+      if (this.owns(id, qty)) continue;
+      const step = this.resolve(id, qty);
+      if (!step) continue;
+      const needs = this.rawNeeds(id, qty);
+      const total = Object.values(needs).reduce((a, b) => a + b, 0) || 1;
+      const have = Object.entries(needs).reduce((a, [k, v]) => a + Math.min(v, this.count(k)), 0);
+      const curDmg = Math.max(0, ...p.inv.map(s => s && ITEMS[s.id].damage && !ITEMS[s.id].ammoType ? (ITEMS[s.id].fixedDamage ? 67 : ITEMS[s.id].damage) : 0));
+      add('craft:' + id, 'craft', () => this.taskForStep(this.resolve(id, qty)), {
+        item: id, qty, value: Math.log1p(it.value || 1) / 12, def: (it.defense || 0) / 10,
+        dmg: it.damage && !it.ammoType ? Math.max(0, (it.fixedDamage ? 67 : it.damage) - curDmg) / 30 : 0,
+        pickGain: it.pick ? (it.pick - pickPow) / 20 : 0, ready: have / total, needs: Math.log1p(total) / 6,
+      });
+    }
+    if (p.lifeMax < 400) { const c = this.nearestTile(t => t === T.LIFE_CRYSTAL, 120, 90); if (c && !this.crystalBad(c)) add('crystal', 'crystal', () => this.taskBreakAt(c, 'aura crystal', 'pick'), { dist: Math.abs(c[0] - this.feet()[0]) + Math.abs(c[1] - this.feet()[1]) }); }
+    if (!w.flags.eye_of_cthulhu && this.houseValid()) add('eye', 'eye', () => this.taskEye(), { ready: Math.min(1, this.count('lens') / 6) });
+    if (w.flags.eye_of_cthulhu && !this.hasBetterPick(65)) add('brainrot', 'brainrot', () => this.taskBrainrot(), { ready: Math.min(1, this.count('rotten_chunk') / 6) });
+    if (this.hasBetterPick(65) && !w.flags.wall_of_flesh) add('hell', 'hell', () => this.taskHell(), { ready: Math.min(1, p.lifeMax / 300) });
+    add('explore', 'explore', () => this.taskExplore());
+    if (this.base) add('home', 'home', () => this.taskGoHome(), { dist: Math.abs(this.base[0] - this.feet()[0]) + Math.abs(this.base[1] - this.feet()[1]) });
+    // the cooldown memory: drop candidates that just failed (unless that leaves nothing)
+    const fresh = out.filter(c => !(this.cooldowns && this.cooldowns[c.id] > G.tick));
+    return fresh.length ? fresh : out;
+  },
+  taskGoHome() {
+    const self = this;
+    this.goal = 'going home';
+    return { step() { const r = self.moveTo(self.base[0], self.base[1], 1); if (r === true || r === 'fail') this.done = true; } };
   },
   hasBetterPick(n) { return this.p().inv.some(s => s && (ITEMS[s.id].pick || 0) >= n); },
   hasStation(st) {
     const [bx, by] = this.base || this.feet();
     return !!this.nearestTile(t => TILES[t] && TILES[t].station === st, 12, 8, [bx, by]) || this.has({ furnace: 'furnace', anvil: 'iron_anvil', work_bench: 'work_bench' }[st]);
   },
-  wantedCrafts() {
-    const out = [], c = id => this.count(id), p = this.p();
-    const ownsPick = n => this.hasBetterPick(n);
-    if (this.stationPlaced('furnace') && c('demonite_ore') >= 12) out.push(['demonite_bar', Math.floor(c('demonite_ore') / 3)]);
-    if (this.stationPlaced('furnace') && c('sand_block') >= 20 && c('glass') < 4) out.push(['glass', 4]);
-    if (this.stationPlaced('anvil')) {
-      if (c('demonite_bar') >= 12 && c('rotten_chunk') >= 6 && !ownsPick(65)) out.push(['nightmare_pickaxe', 1]);
-      if (c('hellstone') >= 3 * 20 && c('obsidian') >= 20 && !this.stationPlaced('hellforge')) out.push(['hellforge', 1, 'place']);
-    }
-    if (this.stationPlaced('hellforge') && c('hellstone') >= 3 && c('obsidian') >= 1) out.push(['hellstone_bar', Math.min(Math.floor(c('hellstone') / 3), c('obsidian'))]);
-    if (this.stationPlaced('anvil') && c('hellstone_bar') >= 20 && !ownsPick(100)) out.push(['molten_pickaxe', 1]);
-    if (this.stationPlaced('anvil') && c('hellstone_bar') >= 20 && !this.has('fiery_greatsword')) out.push(['fiery_greatsword', 1]);
-    if (c('fallen_star') >= 5 && p.manaMaxBase < 100) out.push(['mana_crystal', 1]);
-    if (c('gel') >= 2 && c('wood') > 20 && c('torch') < 20) out.push(['torch', 5]);
-    if (c('lens') >= 6 && !this.has('suspicious_looking_eye') && !G.world.flags.eye_of_cthulhu) out.push(['suspicious_looking_eye', 1, 'altar']);
-    return out.filter(o => ITEMS[o[0]] && RECIPES.some(r => r.out === o[0]));
-  },
   stationPlaced(st) { const [bx, by] = this.base; return !!this.nearestTile(t => TILES[t] && (TILES[t].station === st || (st === 'furnace' && t === T.HELLFORGE)), 14, 8, [bx, by]); },
   houseValid() { return G.npcs.some(n => n.type === 'guide' && n.home) || (this.houseSpot && checkRoom(G.world, this.houseSpot[0] + 5, this.houseSpot[1] - 2).ok); },
-  findUpgradeToEquip() {
-    const p = this.p();
-    return p.inv.findIndex(s => {
-      if (!s) return false; const it = ITEMS[s.id];
-      if (it.armor) { const k = { head: 0, body: 1, legs: 2 }[it.armor]; const cur = p.armor[k]; return !cur || ITEMS[cur.id].defense < it.defense; }
-      if (it.acc) return !p.acc.some(a => a && a.id === s.id) && p.acc.some(a => !a);
-      if (it.lifeCrystal && p.lifeMax < 400) return true;
-      if (it.manaCrystal && p.manaMaxBase < 200) return true;
-      return false;
-    });
-  },
-
   // ================= movement =================
   // moveTo / followPath live in botnav.js (A* pathfinding)
   dig(tx, ty) {
@@ -966,8 +953,7 @@ const Bot = {
     }
     const need = [fx + dir, fx + 2 * dir, fx + 3 * dir].find(c => !w.solid(c, Y + 1));
     if (need !== undefined) {
-      const PB = ['dirt_block', 'stone_block', 'mud_block', 'clay_block', 'sand_block', 'ash_block'];
-      let bs = -1; for (const id of PB) { bs = this.slotOf(it => it.id === id); if (bs >= 0) break; }
+      const bs = this.spareBlockSlot(false);
       if (bs < 0) return 'noblocks';
       if (bs > 9) { this.ensureHotbar(bs); return false; }
       this.selectSlot(bs);

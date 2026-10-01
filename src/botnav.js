@@ -67,7 +67,7 @@ const Nav = {
   plan(sx, sy, goalFn, heur, maxNodes = 16000) {
     this.stamp = (this.stamp || 0) + 1;
     this.power = this.pickPower();
-    this.blocks = G.player.inv.reduce((n, s) => n + (s && ['dirt_block', 'stone_block', 'wood', 'mud_block', 'clay_block', 'sand_block', 'ash_block'].includes(s.id) ? s.count : 0), 0);
+    this.blocks = Bot.spareBlocks(); // only blocks we may spend (not the ones reserved for the current goal)
     const w = G.world, WW = w.w, N = WW * w.h;
     if (!this.gA || this.gA.length !== N) { this.gA = new Float64Array(N); this.gS = new Uint32Array(N); this.fromA = new Int32Array(N); this.mvA = new Uint8Array(N); this.fallA = new Uint8Array(N); this.vertA = new Uint8Array(N); }
     const gA = this.gA, gS = this.gS, fromA = this.fromA, mvA = this.mvA, fallA = this.fallA, vertA = this.vertA, stamp = this.stamp;
@@ -304,8 +304,7 @@ Object.assign(Bot, {
       // furniture/objects standing in the cell (a chair, a pot...) block placement: break them first, while we still stand there
       const occ = w.tile(col, row);
       if (occ && !TILES[occ].solid && !TILES[occ].cut) { if (this.dig(col, row) === 'fail') { nav.replan = true; this.replanWhy = 'pillar-blocked'; } return false; }
-      const PB = ['dirt_block', 'stone_block', 'mud_block', 'clay_block', 'sand_block', 'ash_block', 'wood'];
-      let bs = -1; for (const id of PB) { bs = this.slotOf(it => it.id === id); if (bs >= 0) break; } // wood last: it's for the house
+      const bs = this.spareBlockSlot(true); // never the blocks reserved for the current goal; wood last (it's for the house)
       if (bs < 0) { nav.replan = true; this.replanWhy = 'no-blocks'; return false; }
       if (bs > 9) { this.ensureHotbar(bs); return false; }
       this.selectSlot(bs);
@@ -321,8 +320,7 @@ Object.assign(Bot, {
       const cols = dir > 0 ? [n.x, n.x + 1] : [n.x + 1, n.x];
       const col = cols.find(c => !(w.tile(c, row) && TILES[w.tile(c, row)].solid));
       if (col !== undefined) {
-        const PB = ['dirt_block', 'stone_block', 'mud_block', 'clay_block', 'sand_block', 'ash_block', 'wood'];
-        let bs = -1; for (const id of PB) { bs = this.slotOf(it => it.id === id); if (bs >= 0) break; }
+        const bs = this.spareBlockSlot(true);
         if (bs < 0) { nav.replan = true; this.replanWhy = 'no-blocks'; return false; }
         if (bs > 9) { this.ensureHotbar(bs); return false; }
         this.selectSlot(bs);

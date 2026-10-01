@@ -5,6 +5,16 @@
 // while never finishing a single armor set.
 const RAW_ITEMS = new Set(['wood', 'stone_block', 'dirt_block', 'copper_ore', 'iron_ore', 'silver_ore', 'gold_ore', 'demonite_ore', 'hellstone', 'obsidian', 'gel', 'lens', 'rotten_chunk', 'fallen_star', 'sand_block', 'clay_block', 'bone']);
 const ORE_TILE = { copper_ore: 'COPPER', iron_ore: 'IRON', silver_ore: 'SILVER', gold_ore: 'GOLD', demonite_ore: 'DEMONITE', hellstone: 'HELLSTONE' };
+// Goal catalog for TerraJev's `task` question: things worth crafting (no ordering — the model decides what to go for)
+const JEV_GOALS = [
+  ['furnace', 1], ['iron_anvil', 1], ['torch', 30], ['wooden_arrow', 300], ['lesser_healing_potion', 5], ['mana_crystal', 1],
+  ['copper_pickaxe', 1], ['iron_pickaxe', 1], ['silver_pickaxe', 1], ['gold_pickaxe', 1], ['nightmare_pickaxe', 1], ['molten_pickaxe', 1],
+  ['the_67', 1], ['gold_bow', 1], ['iron_bow', 1], ['demon_bow', 1], ['molten_fury', 1], ['lights_bane', 1], ['fiery_greatsword', 1], ['nights_edge', 1],
+  ['copper_helmet', 1], ['copper_chainmail', 1], ['copper_greaves', 1], ['iron_helmet', 1], ['iron_chainmail', 1], ['iron_greaves', 1],
+  ['silver_helmet', 1], ['silver_chainmail', 1], ['silver_greaves', 1], ['gold_helmet', 1], ['gold_chainmail', 1], ['gold_greaves', 1],
+  ['shadow_helmet', 1], ['shadow_scalemail', 1], ['shadow_greaves', 1], ['molten_helmet', 1], ['molten_breastplate', 1], ['molten_greaves', 1],
+  ['suspicious_looking_eye', 1], ['kentongan', 1], ['hellforge', 1], ['grappling_hook', 1], ['empty_bucket', 1],
+];
 const STATION_ITEM = { work_bench: 'work_bench', furnace: 'furnace', anvil: 'iron_anvil', hellforge: 'hellforge' };
 
 Object.assign(Bot, {
@@ -56,44 +66,44 @@ Object.assign(Bot, {
     }
     return null; // gel / lens / chunks: dropped by monsters, picked up along the way
   },
-  // The ordered list of things a player wants, as [item, qty]. Segments stop the list early (e.g. "iron tier first").
-  wantSegments() {
-    // armor before weapons: most early deaths are the bot trading blows with nothing on.
-    // The 67 (67 damage for 6 gold + 7 silver bars) outclasses every tiered broadsword, so those are skipped entirely.
-    const armor = (k) => [[k + '_chainmail', 1], [k + '_greaves', 1], [k + '_helmet', 1]];
-    return [
-      { name: 'stations', want: [['furnace', 1], ['iron_anvil', 1]] },
-      { name: 'pick', want: [['iron_pickaxe', 1]] },
-      { name: 'the67', want: [['the_67', 1]] },
-      { name: 'iron', want: armor('iron') },
-      { name: 'bow', want: [['gold_bow', 1], ['wooden_arrow', 300]] },
-      { name: 'crystals', special: 'crystals' },
-      { name: 'gold', want: [['gold_pickaxe', 1]].concat(armor('gold')) },
-    ];
+  // ---- goal memory: what are we working toward, and which raw materials does it still need? ----
+  // Those materials are reserved: navigation (pillars, bridges, fall catches) may only spend blocks above the reservation,
+  // so the 20 stone for a furnace doesn't get stacked into a pillar on the walk home.
+  rawNeeds(id, qty, acc = {}, depth = 0) {
+    if (depth > 6 || qty <= 0) return acc;
+    const r = RECIPES.find(q => q.out === id);
+    if (RAW_ITEMS.has(id) || !r) { acc[id] = (acc[id] || 0) + qty; return acc; }
+    const have = Math.min(qty, this.count(id)), need = qty - have;
+    if (need <= 0) return acc;
+    const times = Math.ceil(need / r.n);
+    for (const [ing, n] of r.ing) this.rawNeeds(ing, n * times, acc, depth + 1);
+    return acc;
   },
-  // first actionable task of the ladder (null when the whole ladder is done / nothing actionable)
-  progressionTask() {
-    const p = this.p();
-    for (const seg of this.wantSegments()) {
-      if (seg.special === 'crystals') {
-        if (p.lifeMax < 400) { const c = this.nearestTile(t => t === T.LIFE_CRYSTAL, 120, 90); if (c && !this.crystalBad(c)) return this.taskBreakAt(c, 'aura crystal', 'pick'); }
-        continue;
-      }
-      for (const [id, qty] of seg.want) {
-        if (!ITEMS[id] || !RECIPES.some(r => r.out === id)) continue;
-        // placed stations count as owned
-        if (id === 'furnace' && this.stationPlaced('furnace')) continue;
-        if (id === 'iron_anvil' && this.stationPlaced('anvil')) continue;
-        if (this.blocked(id)) continue;
-        // a pickaxe of a lower tier than one we own is pointless
-        const pk = ITEMS[id].pick; if (pk && this.hasBetterPick(pk)) continue;
-        const step = this.resolve(id, qty);
-        if (!step) continue;
-        const t = this.taskForStep(step);
-        if (t) { this.planWhy = id + ' <- ' + JSON.stringify(step); return t; }
-      }
+  commit(id, qty) {
+    const c = this.committed;
+    if (!c || c.item !== id || G.tick - c.at > 600) {
+      const needs = this.rawNeeds(id, qty);
+      if (!c || c.item !== id) this.log('committing to ' + ITEMS[id].name + ' (reserving ' + Object.entries(needs).map(([k, v]) => v + ' ' + k).join(', ') + ')');
+      this.committed = { item: id, qty, needs, at: G.tick };
     }
-    return null;
   },
+  reserved(id) {
+    let n = 0;
+    const c = this.committed;
+    if (c && c.needs[id]) n += c.needs[id];
+    if (this.hell && this.hell.x0 && ['stone_block', 'dirt_block', 'ash_block'].includes(id)) n += 0; // the runway itself is what blocks are for
+    return n;
+  },
+  // a hotbar/inventory slot holding a building block we can afford to spend (cheap blocks first, wood last)
+  spareBlockSlot(allowWood = true) {
+    const order = ['dirt_block', 'ash_block', 'mud_block', 'sand_block', 'clay_block', 'snow_block', 'stone_block'].concat(allowWood ? ['wood'] : []);
+    for (const id of order) {
+      if (this.count(id) - this.reserved(id) <= 0) continue;
+      const s = this.slotOf(it => it.id === id);
+      if (s >= 0) return s;
+    }
+    return -1;
+  },
+  spareBlocks() { return ['dirt_block', 'ash_block', 'mud_block', 'sand_block', 'clay_block', 'snow_block', 'stone_block', 'wood'].reduce((n, id) => n + Math.max(0, this.count(id) - this.reserved(id)), 0); },
   crystalBad(c) { return !!(this.badCrystals && this.badCrystals.has(c[0] + ',' + c[1])); },
 });
