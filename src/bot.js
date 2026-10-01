@@ -12,6 +12,8 @@ const Bot = {
     Input.mDown = false;
   },
   hold(k) { Input.keys[k] = true; },
+  // the game only jumps on a fresh key press (jumpHeld): after landing the key must be up for one tick or a held ' ' never jumps again
+  jump() { const p = G.player; if (p.onGround && p.jumpHeld) return; Input.keys[' '] = true; },
   press(k) { if (!Input.keys[k]) { Input.pressed[k] = true; Input.lastKeyTime[k] = performance.now(); } },
   aimWorld(x, y) { Input.mx = x - G.camX; Input.my = y - G.camY; },
   aimTile(tx, ty) { this.aimWorld(tx * TS + 8, ty * TS + 8); },
@@ -29,6 +31,7 @@ const Bot = {
   milestone(name) { if (!this.milestones[name]) { this.milestones[name] = G.tick; this.log('MILESTONE: ' + name); G.chat('[bot] milestone: ' + name, '#9aff9a'); } },
 
   start(turbo) {
+    this.instantDone = 0; this.taskAge = 1; this.restTicks = 0; this.resting = false; this.fleeing = false;
     this.active = true; this.turbo = turbo || this.turbo; this.task = null; this.plan = []; this.stuck = 0;
     this.base = this.base || [G.world.spawnX, G.world.spawnY];
     this.log('BotSigma locked in. turbo ' + this.turbo + 'x');
@@ -42,14 +45,16 @@ const Bot = {
   has(id, n = 1) { return this.count(id) >= n; },
   slotOf(pred) { return this.p().inv.findIndex(s => s && pred(ITEMS[s.id], s)); },
   bestSlot(key) { let bi = -1, bv = 0; this.p().inv.forEach((s, i) => { const v = s && ITEMS[s.id][key]; if (v && v > bv) { bv = v; bi = i; } }); return bi; },
-  bestWeaponSlot() {
+  bestWeaponSlot(enemy) {
     let bi = -1, bv = 0;
+    const def = enemy ? (enemy.def && enemy.def.defense || enemy.defense || 0) : 0;
     this.p().inv.forEach((s, i) => {
       if (!s) return; const it = ITEMS[s.id];
       if (!it.damage || it.ammoType || it.consumable || it.pick || it.axe || it.hammer) return;
       if (it.ammo && this.p().findAmmo(it.ammo) < 0) return;
       if (it.mana && this.p().mana < it.mana) return;
-      const v = it.damage * 60 / it.useTime + (it.use === 'swing' || it.use === 'thrust' ? 5 : 0);
+      // damage that actually lands (defense soaks half of it), per second
+      const v = Math.max(1, it.damage - def * 0.5) * 60 / (it.useAnim || it.useTime) + (it.use === 'swing' || it.use === 'thrust' ? 2 : 0);
       if (v > bv) { bv = v; bi = i; }
     });
     return bi;
@@ -87,7 +92,7 @@ const Bot = {
     if (Input.typing) Input.typing = null;
     if (!UI.invOpen && !this.uiBusy) UI.mouseOverUI = false; // the flag is only refreshed on draw, which turbo skips
     this.why = '';
-    if (p.dead) { this.task = null; this.nav = null; this.plan = []; if (!this.deadLogged) { this.deaths++; this.log('died (' + (G.deathMessage || '') + ')'); this.deadLogged = true; } return; }
+    if (p.dead) { this.task = null; this.nav = null; this.plan = []; if (!this.deadLogged) { this.deaths++; (this.deathLog = this.deathLog || []).push(G.tick + ' ' + G.clockString() + ' ' + G.deathCause); this.log('died of ' + G.deathCause + ' at ' + this.feet() + ' depth ' + (this.feet()[1] - G.world.worldSurface) + ' lifeMax ' + p.lifeMax + ' def ' + p.calc.defense + ' near: ' + G.npcs.filter(n => !n.friendly && !n.town && dist(n.cx, n.cy, p.cx, p.cy) < 400).map(n => n.name).slice(0, 5).join(',') + ' task: ' + (this.lastGoal || this.goal)); this.deadLogged = true; } return; }
     this.deadLogged = false;
     // close menus the bot didn't open
     if (UI.talk) UI.closeTalk();
@@ -98,8 +103,8 @@ const Bot = {
     this.lastPos = pos;
     // survival reflexes
     if (p.life < p.lifeMax * 0.45 && !p.buffs.potion_sickness && p.inv.some(s => s && ITEMS[s.id].heal && ITEMS[s.id].potion)) this.press('h');
-    if (p.lavaWet || p.buffs.on_fire) { this.hold(' '); }
-    if (p.breath < 80) this.hold(' ');
+    if (p.lavaWet || p.buffs.on_fire) { this.jump(); }
+    if (p.breath < 80) this.jump();
     // finish an in-progress hotbar move before doing anything else (it's a multi-click UI action)
     if (this.hb) { this.why = 'hotbar'; this.ensureHotbar(this.hb.from, this.hb.to); return; }
     // never leave the inventory open with something on the cursor (clicking the world would throw it)
@@ -118,7 +123,26 @@ const Bot = {
     // pick what to do
     if (!this.uiBusy) {
       const enemy = this.findEnemy();
-      if (enemy) { this.why = 'fight'; this.fight(enemy); return; }
+      if (enemy) {
+        // badly hurt: run for the house instead of trading blows (resting is nearly free for a turbo bot, dying is not)
+        const lowLife = p.life < p.lifeMax * (this.fleeing ? 0.7 : 0.33);
+        this.fleeing = lowLife && !p.buffs.him;
+        if (this.fleeing && !enemy.boss && this.houseSpot) {
+          this.why = 'flee'; this.goal = 'retreating (' + Math.round(p.life) + '/' + p.lifeMax + ')';
+          const dx = enemy.cx - p.cx;
+          const r = this.moveTo(this.base[0], this.base[1], 1);
+          // cornered (adjacent): swing at it rather than getting hit in the back
+          if (r === 'fail' || (Math.abs(dx) < 36 && Math.abs(enemy.cy - p.cy) < 40)) { this.fight(enemy); }
+          return;
+        }
+        this.why = 'fight'; this.fight(enemy); return;
+      }
+      // nothing around and hurt: stand still and regenerate
+      if (p.life < p.lifeMax * (this.resting ? 0.9 : 0.6) && !p.dead && this.restTicks < 4000) {
+        this.resting = true; this.restTicks++; this.why = 'rest'; this.goal = 'resting (' + Math.round(p.life) + '/' + p.lifeMax + ')';
+        return;
+      }
+      this.resting = false; this.restTicks = 0;
       if (this.shouldShelter()) { this.why = 'shelter'; this.goal = 'hiding in the house (night)'; const r = this.moveTo(this.base[0], this.base[1], 1); if (r === true) { this.aimWorld(p.cx + 200, p.cy); } return; }
     }
     // watchdog: abandon tasks that make no progress (no movement, no inventory change)
@@ -131,13 +155,24 @@ const Bot = {
       this.task = this.taskExplore();
     }
     if (!this.task || this.task.done) {
-      this.task = this.nextTask(); this.nav = null;
+      this.task = this.nextTask(); this.nav = null; this.taskAge = 0;
       const key = this.goal.split(' ').slice(0, 2).join(' ');
       if (this.cooldowns && this.cooldowns[key] > G.tick) { this.log('skipping "' + key + '" (cooling down)'); this.task = this.taskExplore(); }
     }
-    this.why = 'task:' + this.goal;
+    this.why = 'task:' + this.goal; this.lastGoal = this.goal;
     if (this.task) {
       try { this.task.step(); } catch (e) { this.errors++; this.log('task error ' + e.message); this.task = null; }
+      // a task that is already finished the tick it was picked means the planner and the task disagree: don't spin on it
+      if (this.task && this.task.done && this.taskAge === 0) {
+        if (++this.instantDone > 8) {
+          this.instantDone = 0;
+          const key = this.goal.split(' ').slice(0, 2).join(' ');
+          this.log('task loop on "' + this.goal + '": cooling it down');
+          this.cooldowns = this.cooldowns || {}; this.cooldowns[key] = G.tick + 3600;
+          this.task = this.taskExplore();
+        }
+      } else if (this.task && !this.task.done) this.instantDone = 0;
+      if (this.task) this.taskAge++;
     }
   },
 
@@ -169,7 +204,7 @@ const Bot = {
     if (n.life < f.life) { f.life = n.life; f.since = G.tick; }
     if (G.tick - f.since > (n.boss ? 3600 : 480)) { this.ignore[n.uid] = G.tick + 3600; delete this.fights[n.uid]; this.log('ignoring ' + n.name + ' (unreachable)'); return; }
     if (G.tick % 600 === 0) for (const k in this.fights) if (!G.npcs.some(m => m.uid == k)) delete this.fights[k];
-    const ws = this.bestWeaponSlot();
+    const ws = this.bestWeaponSlot(n);
     if (ws < 0) return;
     if (ws > 9) { this.ensureHotbar(ws); return; }
     this.selectSlot(ws);
@@ -181,7 +216,7 @@ const Bot = {
     else if (adx > want + 40 && !n.boss) { this.moveTo(Math.floor(n.cx / TS), Math.floor((n.y + n.h - 1) / TS), 1); }
     else if (adx > want) this.hold(dx > 0 ? 'd' : 'a');
     else if (!melee && adx < 90) this.hold(dx > 0 ? 'a' : 'd');
-    if (n.cy < p.y - 10 || (p.collidedX && p.onGround) || (n.boss && Math.random() < 0.03)) this.hold(' ');
+    if (n.cy < p.y - 10 || (p.collidedX && p.onGround) || (n.boss && Math.random() < 0.03)) this.jump();
     this.aimWorld(n.cx, n.cy);
     if (it.autoReuse) this.clickHold();
     else if (p.itemAnim === 0) this.clickOnce();
@@ -203,15 +238,11 @@ const Bot = {
     // a valid room isn't a finished house: the door, bench, chair and a walkable doorstep come after the walls
     if (!houseOk || !this.houseFinished) return this.taskBuildHouse();
     this.milestone('house');
-    // crafting ladder (at base)
+    // misc crafts (torches, mana crystals, glass, hellforge...) then the tier ladder (stations -> iron -> crystals -> gold)
     const craftList = this.wantedCrafts().filter(o => !this.blocked(o[0]));
     if (craftList.length) return this.taskCraftAtBase(craftList[0]);
-    // gather materials for the next upgrade
-    if (this.count('stone_block') < 25 && !this.hasStation('furnace')) return this.taskMine('stone', () => this.count('stone_block') >= 25);
-    if (!this.hasStation('furnace') && this.count('torch') < 3) return this.taskChop(this.count('wood') + 5);
-    if (this.count('iron_ore') + this.count('iron_bar') * 3 < 60 && !this.hasBetterPick(40)) return this.taskMine('ore', () => this.count('iron_ore') >= 45 || this.count('copper_ore') >= 60);
-    if (p.lifeMax < 200) { const c = this.nearestTile(t => t === T.LIFE_CRYSTAL, 120, 90); if (c) return this.taskBreakAt(c, 'aura crystal', 'pick'); }
-    if (!this.hasBetterPick(55)) return this.taskMine('ore', () => this.count('gold_ore') + this.count('silver_ore') >= 40);
+    const prog = this.progressionTask();
+    if (prog) return prog;
     if (!w.flags.eye_of_cthulhu) return this.taskEye();
     if (!this.hasBetterPick(65)) return this.taskBrainrot();
     if (!w.flags.wall_of_flesh) return this.taskHell();
@@ -225,25 +256,9 @@ const Bot = {
   wantedCrafts() {
     const out = [], c = id => this.count(id), p = this.p();
     const ownsPick = n => this.hasBetterPick(n);
-    const station = { furnace: 'furnace', anvil: 'iron_anvil' };
-    if (!this.stationPlaced('furnace') && c('stone_block') >= 20 && c('wood') >= 4 && c('torch') >= 3) out.push(['furnace', 1, 'place']);
-    if (this.stationPlaced('furnace')) {
-      for (const [ore, bar, n] of [['copper_ore', 'copper_bar', 3], ['iron_ore', 'iron_bar', 3], ['silver_ore', 'silver_bar', 4], ['gold_ore', 'gold_bar', 4], ['demonite_ore', 'demonite_bar', 3]]) if (c(ore) >= n * 4) out.push([bar, Math.floor(c(ore) / n)]);
-      if (c('sand_block') >= 20 && c('glass') < 4) out.push(['glass', 4]);
-    }
-    if (!this.stationPlaced('anvil') && c('iron_bar') >= 5) out.push(['iron_anvil', 1, 'place']);
+    if (this.stationPlaced('furnace') && c('demonite_ore') >= 12) out.push(['demonite_bar', Math.floor(c('demonite_ore') / 3)]);
+    if (this.stationPlaced('furnace') && c('sand_block') >= 20 && c('glass') < 4) out.push(['glass', 4]);
     if (this.stationPlaced('anvil')) {
-      for (const tier of ['gold', 'silver', 'iron', 'copper']) {
-        const bar = tier + '_bar';
-        const pick = { copper: 35, iron: 40, silver: 45, gold: 55 }[tier];
-        if (!ownsPick(pick) && c(bar) >= 12 && c('wood') >= 4) out.push([tier + '_pickaxe', 1]);
-        if (!p.inv.some(s => s && ITEMS[s.id].damage >= { copper: 8, iron: 10, silver: 11, gold: 13 }[tier] && ITEMS[s.id].use === 'swing' && !ITEMS[s.id].pick && !ITEMS[s.id].axe) && c(bar) >= 8) out.push([tier + '_broadsword', 1]);
-        for (const [piece, need, slot] of [['_helmet', 15, 0], ['_chainmail', 25, 1], ['_greaves', 20, 2]]) {
-          const cur = p.armor[slot] ? ITEMS[p.armor[slot].id].defense : 0;
-          const it = ITEMS[tier + piece];
-          if (it && it.defense > cur && c(bar) >= need + (ownsPick(pick) ? 0 : 12) && !this.has(tier + piece)) out.push([tier + piece, 1]);
-        }
-      }
       if (c('demonite_bar') >= 12 && c('rotten_chunk') >= 6 && !ownsPick(65)) out.push(['nightmare_pickaxe', 1]);
       if (c('hellstone') >= 3 * 20 && c('obsidian') >= 20 && !this.stationPlaced('hellforge')) out.push(['hellforge', 1, 'place']);
     }
@@ -280,6 +295,7 @@ const Bot = {
     if (++this.digTicks > 300) { this.badTiles = this.badTiles || new Set(); this.badTiles.add(key); this.log('cannot dig ' + t.name + ' at ' + key + ', skipping'); this.digTicks = 0; return 'fail'; }
     const kind = t.tree || t.cactus ? 'axe' : 'pick';
     const s = this.bestSlot(kind);
+    this.dbg = 'dig ' + key + ' ' + t.name + ' slot ' + s + ' digTicks ' + this.digTicks;
     if (s < 0) return;
     if (s > 9) { this.ensureHotbar(s); return; }
     if (t.minPick > (ITEMS[this.p().inv[s].id].pick || 999) && kind === 'pick') { this.stuck += 30; return; }
@@ -331,7 +347,7 @@ const Bot = {
         const [tx, ty] = pos, w = G.world;
         if (!w.tile(tx, ty)) { this.done = true; self.log('got ' + label); return; }
         const r = self.moveTo(tx, ty + 1, 3);
-        if (r === 'fail') { this.done = true; self.log('could not reach ' + label); return; }
+        if (r === 'fail') { this.done = true; self.log('could not reach ' + label); self.badCrystals = self.badCrystals || new Set(); self.badCrystals.add(tx + ',' + ty); return; }
         if (r || self.p().inReach(tx, ty)) {
           const s = self.bestSlot(tool || 'pick'); if (s > 9) { self.ensureHotbar(s); return; }
           self.selectSlot(s); self.aimTile(tx, ty); self.clickHold();
@@ -380,7 +396,8 @@ const Bot = {
   // craft an item by clicking its recipe in the crafting list, then drop it into the inventory
   taskCraftAtBase(order) {
     const self = this;
-    const [id, times, after] = order;
+    const [id, times, afterArg] = order;
+    const after = afterArg === 'placeonly' ? 'place' : afterArg;
     const r = RECIPES.find(r => r.out === id);
     this.goal = 'crafting ' + ITEMS[id].name;
     let phase = 'go', clicks = 0, waited = 0;
@@ -393,7 +410,7 @@ const Bot = {
           else if (r.station) { const st = self.nearestTile(t => TILES[t] && (TILES[t].station === r.station || (r.station === 'furnace' && t === T.HELLFORGE)), 14, 8, self.base); if (st) target = [st[0], st[1] + (TILES[G.world.tile(st[0], st[1])].multi[1] - 1 - (G.world.frame(st[0], st[1]) >> 4))]; }
           const res = self.moveTo(target[0], target[1], 2);
           if (res === 'fail') { this.done = true; self.log('could not reach crafting station for ' + id); self.fail(id); return; }
-          if (res) phase = 'open';
+          if (res) phase = times ? 'open' : 'place'; // times 0: the item is already in the inventory, just place it
           return;
         }
         self.uiBusy = true;
@@ -506,7 +523,7 @@ const Bot = {
     return null;
   },
   // mine: go to the nearest reachable stone/ore (pathfinding digs the tunnel), grab anything useful in reach
-  taskMine(what, doneFn) {
+  taskMine(what, doneFn, tiles) {
     const self = this;
     this.goal = 'mining ' + what;
     let target = null, since = 0, bestD = Infinity;
@@ -518,16 +535,17 @@ const Bot = {
         const w = G.world, p = self.p();
         const [fx, fy] = self.feet();
         const pick = self.bestSlot('pick'), power = pick >= 0 ? ITEMS[p.inv[pick].id].pick : 0;
-        const want = what === 'stone' ? (t => t === T.STONE) : (t => (TILES[t] && TILES[t].ore && TILES[t].minPick <= power && t !== T.HELLSTONE) || t === T.LIFE_CRYSTAL);
+        const want = tiles ? (t => tiles.includes(t) && TILES[t].minPick <= power) : what === 'stone' ? (t => t === T.STONE) : (t => (TILES[t] && TILES[t].ore && TILES[t].minPick <= power && t !== T.HELLSTONE) || t === T.LIFE_CRYSTAL);
         const ok = (t, x, y) => want(t) && !self.nearLava(x, y) && !self.isProtected(x, y) && !bad(x, y) && Nav.cellCost(x, y) < Infinity;
         const near = self.nearestTile((t, x, y) => ok(t, x, y) && p.inReach(x, y), 7, 6);
+        self.dbg = 'mine near=' + near + ' target=' + target;
         if (near) { if (self.dig(near[0], near[1]) === 'fail') markBad(near); self.goal = 'mining ' + TILES[w.tile(near[0], near[1])].name; since = G.tick; return; }
-        if (!target || !want(w.tile(target[0], target[1]))) {
-          target = self.nearestTile(ok, 90, 70);
+        if (!target || (!target.synthetic && !want(w.tile(target[0], target[1])))) {
+          target = self.nearestTile(ok, 90, 70) || self.nearestTile(ok, 400, 250);
           if (!target) { // nothing known nearby: head deeper, away from the house
             const depth = what === 'stone' ? w.worldSurface + 12 : w.rockLayer + 15;
             const side = self.houseSpot && Math.abs(fx - self.houseSpot[0]) < 20 ? (fx < self.houseSpot[0] + 5 ? -25 : 25) : (Math.random() < 0.5 ? -30 : 30);
-            target = [fx + side, Math.max(fy + 15, depth)];
+            target = [fx + side, Math.max(fy + 15, depth)]; target.synthetic = true; // wander target: keep it until reached, don't re-pick every tick
           }
           since = G.tick; bestD = Infinity;
           self.log('mining toward ' + target);
@@ -643,7 +661,8 @@ const Bot = {
           if (G.isNight() && !G.npcs.some(n => n.boss)) {
             const s = self.slotOf(it => it.id === 'suspicious_looking_eye');
             if (s > 9) { self.ensureHotbar(s); return; }
-            self.selectSlot(s); self.clickOnce(); self.log('summoning the Eye of Ohio'); self.milestone('eye summoned');
+            if (this.summonedAt && G.tick - this.summonedAt < 300) return; // the item takes a moment to be used up and the boss to appear
+            self.selectSlot(s); self.clickOnce(); this.summonedAt = G.tick; self.log('summoning the Eye of Ohio'); self.milestone('eye summoned');
           } else self.moveTo(self.base[0], self.base[1], 2);
           return;
         }

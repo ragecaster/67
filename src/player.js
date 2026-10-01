@@ -587,6 +587,7 @@ class Player {
   kill(cause, source) {
     if (this.dead) return;
     this.life = 0; this.dead = true; this.aura = 0;
+    G.deathCause = cause + (source && source.name ? ':' + source.name : '');
     this.stats.deaths++;
     playSound('player_killed');
     for (let i = 0; i < 40; i++) spawnDust(this.cx, this.cy, '#b01010', 1, 4, { life: 60 });

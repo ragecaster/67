@@ -63,9 +63,9 @@ const Nav = {
     this.power = this.pickPower();
     this.blocks = G.player.inv.reduce((n, s) => n + (s && ['dirt_block', 'stone_block', 'wood', 'mud_block', 'clay_block', 'sand_block', 'ash_block'].includes(s.id) ? s.count : 0), 0);
     const w = G.world, WW = w.w, N = WW * w.h;
-    if (!this.gA || this.gA.length !== N) { this.gA = new Float64Array(N); this.gS = new Uint32Array(N); this.fromA = new Int32Array(N); this.mvA = new Uint8Array(N); }
-    const gA = this.gA, gS = this.gS, fromA = this.fromA, mvA = this.mvA, stamp = this.stamp;
-    const MV = ['walk', 'up', 'drop', 'jump', 'down', 'fall', 'swim', 'pillar', 'leap'], PILLAR = 7;
+    if (!this.gA || this.gA.length !== N) { this.gA = new Float64Array(N); this.gS = new Uint32Array(N); this.fromA = new Int32Array(N); this.mvA = new Uint8Array(N); this.fallA = new Uint8Array(N); this.vertA = new Uint8Array(N); }
+    const gA = this.gA, gS = this.gS, fromA = this.fromA, mvA = this.mvA, fallA = this.fallA, vertA = this.vertA, stamp = this.stamp;
+    const MV = ['walk', 'up', 'drop', 'jump', 'down', 'fall', 'swim', 'pillar', 'leap'], PILLAR = 7, FALL = 5;
     const digMap = new Map();
     const key = (x, y) => y * WW + x;
     // binary min-heap of [f, cost, x, y]
@@ -75,12 +75,21 @@ const Nav = {
     const W = this.W || 2.5; // weighted A*: greedy toward the goal (dig costs make the plain heuristic far too optimistic)
     hpush([heur(sx, sy) * W, 0, sx, sy]);
     const open = heap;
-    gA[key(sx, sy)] = 0; gS[key(sx, sy)] = stamp; fromA[key(sx, sy)] = -1;
+    gA[key(sx, sy)] = 0; gS[key(sx, sy)] = stamp; fromA[key(sx, sy)] = -1; mvA[key(sx, sy)] = 0; fallA[key(sx, sy)] = 0; vertA[key(sx, sy)] = 0;
     let expanded = 0, best = null, bestH = Infinity;
     const push = (x, y, cost, prevK, move) => {
       const k = key(x, y);
       if (gS[k] === stamp && gA[k] <= cost) return;
+      // rows fallen since we last stood on something (the game hurts above 25): mid-air drop/fall chains must not exceed ~22
+      const dy = y - Math.floor(prevK / WW);
+      let fall = dy > 0 && !(move.t === 'down') ? fallA[prevK] + dy : 0;
+      if (fall > 0 && this.standable(x, y)) fall = 0;
+      if (fall > 22) return;
+      // never dig/descend more than ~15 rows in a straight vertical line: a stair-step stops an accidental fall (the game hurts above 25 tiles)
+      const vert = dy > 0 ? vertA[prevK] + dy : 0;
+      if (vert > 15) return;
       gA[k] = cost; gS[k] = stamp; fromA[k] = prevK; mvA[k] = MV.indexOf(move.t);
+      fallA[k] = fall; vertA[k] = vert;
       if (move.digs) digMap.set(k, move.digs); else digMap.delete(k);
       hpush([cost + heur(x, y) * W, cost, x, y]);
     };
@@ -133,7 +142,7 @@ const Nav = {
       {
         const [c, d] = this.space(x, y + 1, 0, 0);
         if (c < Infinity && c > 0) push(x, y + 1, cost + 1 + c, k, { t: 'down', digs: d });
-        else if (c === 0 && !this.standable(x, y)) push(x, y + 1, cost + 0.5, k, { t: 'fall', digs: [] });
+        else if (c === 0 && !this.standable(x, y)) push(x, y + 1, cost + 0.5 + (fallA[k] > 8 ? 2 : 0), k, { t: 'fall', digs: [] });
       }
       // climb straight up: swim, or pillar with blocks
       {
@@ -264,17 +273,17 @@ Object.assign(Bot, {
       if (bs < 0) { nav.replan = true; this.replanWhy = 'no-blocks'; return false; }
       if (bs > 9) { this.ensureHotbar(bs); return false; }
       this.selectSlot(bs);
-      if (p.onGround) this.hold(' ');
+      if (p.onGround) this.jump();
       else if (p.vy > -1 && p.y + p.h < (n.y + 1) * TS - 1) { this.aimTile(Math.floor(p.cx / TS), n.y + 1); this.clickOnce(); }
-      else this.hold(' ');
+      else this.jump();
       return false;
     }
     if (Math.abs(dxp) > 2) this.hold(dxp > 0 ? 'd' : 'a');
     if (n.y < ny || m.t === 'jump' || m.t === 'swim' || m.t === 'leap') {
-      if (p.onGround || p.wet || p.vy < 0) this.hold(' ');
+      if (p.onGround || p.wet || p.vy < 0) this.jump();
     }
     // walking into a wall we expected to step up: hop
-    if (p.collidedX && p.onGround) this.hold(' ');
+    if (p.collidedX && p.onGround) this.jump();
     return false;
   },
 });

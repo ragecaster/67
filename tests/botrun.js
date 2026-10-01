@@ -1,5 +1,6 @@
 // usage: node botrun.js <ticks> <seed> [sampleEvery]
 const run = require('./harness');
+const { capture } = require('./snaplib');
 const TICKS = parseInt(process.argv[2] || '60000'), SEED = process.argv[3] || 'bot67', EVERY = parseInt(process.argv[4] || '6000');
 run(async (page, errors) => {
   await page.newGame(SEED);
@@ -14,5 +15,8 @@ run(async (page, errors) => {
     for (const l of s.logs) console.log('   > ' + l);
   }
   console.log('INV:', await page.evaluate(() => G.player.inv.filter(Boolean).map(s => s.id + ':' + s.count).join(' ')));
+  console.log('DEATHS: ' + JSON.stringify(await page.evaluate(() => Bot.deathLog || [])));
+  console.log('LOG:\n' + (await page.evaluate(() => Bot.logLines.slice(-80))).join('\n'));
+  if (process.env.SNAPEND) console.log('snapshot at tick', await capture(page, process.env.SNAPEND));
   await page.screenshot({ path: 'botrun.png' });
 });
