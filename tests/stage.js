@@ -7,6 +7,7 @@ const STAGE = process.argv[2] || 'iron', TICKS = +process.argv[3] || 60000, EVER
 run(async (page) => {
   await page.newGame(SEED);
   await applyStage(page, STAGE);
+  if (process.env.GIVE) await page.evaluate((ids) => { for (const id of ids) invAdd(G.player.inv, id, 1); }, process.env.GIVE.split(','));
   for (let done = 0; done < TICKS; done += EVERY) {
     const s = await page.evaluate(([n, FORCE]) => {
       for (let i = 0; i < n; i++) {

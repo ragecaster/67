@@ -25,7 +25,7 @@ const Bot = {
     const fy = Math.floor((p.y + p.h - 1) / TS);
     const cx = p.cx + dir * 16, c0 = Math.floor((cx - 9) / TS), c1 = Math.floor((cx + 9) / TS);
     for (let x = c0; x <= c1; x++) {
-      for (let y = fy + 1; y <= fy + 14; y++) { const t = w.tile(x, y); if ((t && TILES[t].solid) || t === T.PLATFORM || w.liq(x, y) > 100) return false; }
+      for (let y = fy + 1; y <= fy + 14; y++) { const t = w.tile(x, y); if ((t && TILES[t].solid) || t === T.PLATFORM || (w.liq(x, y) > 100 && w.ltype[w.idx(x, y)] === 0)) return false; if (w.liq(x, y) > 20 && w.ltype[w.idx(x, y)] === 1) return true; /* lava is a cliff */ }
     }
     return true;
   },
@@ -848,26 +848,46 @@ const Bot = {
   taskHell() {
     const self = this, w = G.world;
     this.goal = 'going to Ohio';
+    let arrivalX = null, huntT = 0, throwTries = 0;
     return {
       step() {
-        const [fx, fy] = self.feet();
+        const p = self.p(), [fx, fy] = self.feet();
         if (w.flags.wall_of_flesh) { this.done = true; return; }
-        if (fy < w.hellLayer + 5) { const r = self.moveTo(fx + 4, w.hellLayer + 20, 2); if (r === 'fail') this.done = true; return; }
+        // 1) get down to the underworld
+        if (fy < w.hellLayer + 5) { const r = self.moveTo(fx + 4, w.hellLayer + 20, 2); if (r === 'fail') this.done = true; self.goal = 'going to Ohio'; return; }
         self.milestone('reached Ohio');
-        // mine hellstone + obsidian, look for a voodoo doll, throw it in lava
+        if (arrivalX === null) arrivalX = fx;
+        // 2) a doll in the bag: only Wall-of-Brainrot ready? then throw it into lava
         if (self.has('guide_voodoo_doll')) {
-          const lava = self.nearestTile((t, x, y) => w.liq(x, y) > 200 && w.ltype[w.idx(x, y)] === 1, 40, 20);
-          if (lava) {
-            const r = self.moveTo(lava[0] - 3, lava[1] - 1, 3);
-            if (r) { const s = self.slotOf(it => it.id === 'guide_voodoo_doll'); if (s > 9) { self.ensureHotbar(s); return; } self.selectSlot(s); self.press('t'); self.milestone('threw the voodoo doll'); }
-            return;
+          if (!self.readyForWall()) { self.goal = 'got the voodoo doll, but not ready for the Wall (' + self.wallReadiness() + ')'; this.done = true; self.cooldowns = self.cooldowns || {}; self.cooldowns['got the'] = G.tick + 20000; return; }
+          const lava = self.nearestTile((t, x, y) => w.liq(x, y) > 100 && w.ltype[w.idx(x, y)] === 1 && !w.solid(x, y - 1), 60, 30);
+          if (!lava) { self.goal = 'looking for lava to throw the doll into'; const r = self.moveTo(arrivalX + (Math.floor(G.tick / 900) % 2 ? 40 : -40), w.hellLayer + 20, 4); if (r === 'fail') arrivalX += 15; return; }
+          self.goal = 'throwing the voodoo doll into lava';
+          const side = fx < lava[0] ? -4 : 4;
+          const r = self.moveTo(lava[0] + side, lava[1] - 1, 2);
+          if (r === true || (Math.abs(fx - (lava[0] + side)) <= 3 && Math.abs(fy - (lava[1] - 1)) <= 3)) {
+            const s = self.slotOf(it => it.id === 'guide_voodoo_doll'); if (s > 9) { self.ensureHotbar(s); return; }
+            self.selectSlot(s);
+            self.aimWorld(lava[0] * TS + 8, lava[1] * TS - 24);   // face the lava (the throw goes the way we face)
+            if (p.dir !== (lava[0] > fx ? 1 : -1)) { self.hold(lava[0] > fx ? 'd' : 'a'); return; }
+            if (++throwTries > 3) { self.press('t'); self.milestone('threw the voodoo doll'); self.log('threw the voodoo doll toward ' + lava); }
           }
+          return;
         }
-        if (!this.sub || this.sub.done) this.sub = self.taskMine('ore', () => false);
-        this.sub.step();
+        // 3) hunt Voodoo Ohio Demons (they carry the doll and only spawn while the Guide lives)
+        if (!G.npcs.some(n => n.type === 'guide' && !n.dead)) { self.goal = 'no Guide alive: demons carry no dolls, waiting at home'; self.moveTo(self.base[0], self.base[1], 2); return; }
+        self.goal = 'hunting Voodoo Ohio Demons';
+        // wander the underworld floor around where we arrived; the generic fight code deals with whatever comes
+        if (G.tick - huntT > 900) { huntT = G.tick; this.wander = [arrivalX + (Math.floor(G.tick / 900) % 2 ? 45 : -45), w.hellLayer + 20]; }
+        const wt = this.wander || [arrivalX, w.hellLayer + 20];
+        const r = self.moveTo(wt[0], wt[1], 4);
+        if (r === 'fail') huntT = 0;
       },
     };
   },
+  // would a human attempt the Wall of Brainrot now? (it kills the Guide and chases you across the whole underworld)
+  wallReadiness() { const p = this.p(); return 'life ' + p.lifeMax + ' def ' + p.calc.defense + ' the_67 ' + this.owns('the_67') + ' arrows ' + this.count('wooden_arrow'); },
+  readyForWall() { const p = this.p(); return p.lifeMax >= 300 && p.calc.defense >= 16 && this.owns('the_67') && this.has('guide_voodoo_doll') ; },
   taskExplore() {
     const self = this;
     this.goal = 'exploring';

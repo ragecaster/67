@@ -71,7 +71,7 @@ const Nav = {
     const w = G.world, WW = w.w, N = WW * w.h;
     if (!this.gA || this.gA.length !== N) { this.gA = new Float64Array(N); this.gS = new Uint32Array(N); this.fromA = new Int32Array(N); this.mvA = new Uint8Array(N); this.fallA = new Uint8Array(N); this.vertA = new Uint8Array(N); }
     const gA = this.gA, gS = this.gS, fromA = this.fromA, mvA = this.mvA, fallA = this.fallA, vertA = this.vertA, stamp = this.stamp;
-    const MV = ['walk', 'up', 'drop', 'jump', 'down', 'fall', 'swim', 'pillar', 'leap'], PILLAR = 7, FALL = 5;
+    const MV = ['walk', 'up', 'drop', 'jump', 'down', 'fall', 'swim', 'pillar', 'leap', 'bridge'], PILLAR = 7, FALL = 5, BRIDGE = 9;
     const digMap = new Map();
     const key = (x, y) => y * WW + x;
     // binary min-heap of [f, cost, x, y]
@@ -143,6 +143,16 @@ const Nav = {
           // the arc needs headroom above the gap
           if (this.space(x + dx * Math.max(1, L - 1), y - 3, 1, 0)[0] !== 0) break;
           if (this.standable(x + dx * L, y)) { push(x + dx * L, y, cost + 2 + L * 0.8, k, { t: 'leap', digs: null }); break; }
+        }
+      }
+      // bridge: lay a block under the front foot to cross a gap or lava (chains: the block we just laid is the floor now)
+      if (this.blocks > 3 && (this.standable(x, y) || mvA[k] === BRIDGE)) {
+        for (const dx of [-1, 1]) {
+          if (this.standable(x + dx, y)) continue;                        // plain walking already works there
+          const [cb] = this.space(x + dx, y);
+          if (cb !== 0) continue;                                          // body cells must be free (and never lava)
+          // the cell the block goes into must not be solid already and must have a neighbour to attach to (the floor we stand on)
+          push(x + dx, y, cost + 5, k, { t: 'bridge', digs: null });
         }
       }
       // dig straight down one row
@@ -279,7 +289,7 @@ Object.assign(Bot, {
     // 2) move the body there
     const targetCx = n.x * TS + 16, dxp = targetCx - p.cx;
     // moves that deliberately leave the ground (drop/fall/leap/jump) may walk off an edge; plain walks may not
-    this.allowDrop = m.t === 'drop' || m.t === 'fall' || m.t === 'leap' || m.t === 'jump' || m.t === 'swim' || m.t === 'down' || m.t === 'pillar' || m.t === 'up';
+    this.allowDrop = m.t === 'bridge' || m.t === 'drop' || m.t === 'fall' || m.t === 'leap' || m.t === 'jump' || m.t === 'swim' || m.t === 'down' || m.t === 'pillar' || m.t === 'up';
     if (m.t === 'pillar') {
       if (Math.abs(dxp) > 5) { this.hold(dxp > 0 ? 'd' : 'a'); return false; }
       const row = n.y + 1, cands = [Math.floor(p.cx / TS), Math.floor((p.x + 1) / TS), Math.floor((p.x + p.w - 1) / TS)];
@@ -304,6 +314,21 @@ Object.assign(Bot, {
       else if (p.y + p.h < (n.y + 1) * TS - 2) { this.aimTile(col, row); this.clickOnce(); }
       else this.jump();
       return false;
+    }
+    if (m.t === 'bridge') {
+      // stand at the edge, place a block in the cell under the leading foot, then step onto it
+      const dir = n.x > nx ? 1 : -1, col = dir > 0 ? n.x + 1 : n.x, row = n.y + 1;
+      const under = w.tile(col, row);
+      if (!(under && TILES[under].solid)) {
+        const PB = ['dirt_block', 'stone_block', 'mud_block', 'clay_block', 'sand_block', 'ash_block', 'wood'];
+        let bs = -1; for (const id of PB) { bs = this.slotOf(it => it.id === id); if (bs >= 0) break; }
+        if (bs < 0) { nav.replan = true; this.replanWhy = 'no-blocks'; return false; }
+        if (bs > 9) { this.ensureHotbar(bs); return false; }
+        this.selectSlot(bs);
+        this.aimTile(col, row);
+        if (p.itemAnim === 0) this.clickOnce();
+        return false;
+      }
     }
     if (Math.abs(dxp) > 2) this.hold(dxp > 0 ? 'd' : 'a');
     if (n.y < ny || m.t === 'jump' || m.t === 'swim' || m.t === 'leap') {

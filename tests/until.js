@@ -8,10 +8,14 @@ const SNAP = process.env.SNAP; // SNAP=/tmp/x.json saves the situation when the 
 const PAT = process.argv[2], MAX = +process.argv[3] || 100000, SEED = process.argv[4] || 'bot67', R = +process.argv[5] || 30;
 run(async (page) => {
   await page.newGame(SEED);
+  if (process.env.FORCE) await page.evaluate((f) => { window.__force = f; }, process.env.FORCE);
+  if (process.env.GIVE) { /* applied after the stage */ }
   if (process.env.STAGE) await applyStage(page, process.env.STAGE); else await page.evaluate(() => { Bot.start(1); });
+  if (process.env.GIVE) await page.evaluate((ids) => { for (const id of ids) invAdd(G.player.inv, id, 1); }, process.env.GIVE.split(','));
   for (let done = 0; done < MAX; done += 5000) {
     const r = await page.evaluate(([pat, n, R]) => {
       for (let i = 0; i < n; i++) {
+        if (window.__force && Bot.milestones.house && (!Bot.task || Bot.task.done) && !Bot.uiBusy) { Bot.task = Bot[window.__force](); Bot.taskAge = 1; }
         Bot.wantsDraw = false; G.update(); if (Bot.wantsDraw || G.tick % 1200 === 0) G.draw(); Input.endFrame();
         if (pat.startsWith('js:') ? !!(new Function('return (' + pat.slice(3) + ')'))() : Bot.logLines.some(l => l.includes(pat))) {
           const w = G.world, p = G.player, [fx, fy] = Bot.feet();
