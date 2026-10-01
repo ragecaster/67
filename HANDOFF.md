@@ -73,3 +73,31 @@ Set `CHROME_PATH=/path/to/chrome` if Playwright's bundled browser isn't availabl
 - Hobby project. The owner wants lots of meme content while keeping the Terraria feel. They like watching the bot on the live site.
 - The owner edited the README themselves ("claude lied to u guys lol oops"). Leave their README text alone unless asked.
 - Commits go straight to `main` (Pages deploys from it). Don't force-push; pull or rebase first because the owner sometimes edits on GitHub.
+
+## Session 3 stop point (read this first)
+
+**Status of the long-term goal (Ohio descent + Wall of Brainrot): NOT achieved in a natural run.** Pushed on `claude/compassionate-bardeen-an4rat`.
+
+What is proven:
+- Natural runs reach and defeat the Eye of Ohio and Tung Tung Tung Sahur (earlier session).
+- `taskHell` now descends to a floating ash island, lays a straight runway (`lineStep`), waits for a Voodoo doll and throws it (see section above). Each piece works in isolation.
+- The Wall fight works: `tests/wallrun.js` (runway written into the world as a TEST shortcut) kills the Wall in ~2000 ticks, bot life 300 -> ~135.
+
+What is not proven / known blockers, most important first:
+1. **Finishing the 320-tile runway alive.** Ohio mobs deal ~0.1 life/tick, regen is 0.2/s while being hit. Deaths cost ~10k ticks (descent), ascent is a 450-row pillar (~5k ticks). Sortie healing exists but is untested over a full run.
+2. **Premature Wall.** A Voodoo demon killed over the void drops its doll into lava, summoning the Wall with no runway behind you; it then pulls and kills the bot through respawns until it reaches the world edge (~15 deaths, ~20k+ ticks). Ideas: stand on a 3+ wide platform while hunting, keep the doll-hunt for after the runway, pick dolls up, or fight the premature Wall on whatever runway exists.
+3. **Last fix not yet verified:** after a death in the `bridge` phase the bot used to try laying the runway from wherever it respawned (stuck 40k ticks in the shaft); now it first goes back to the island. A new run (`node tests/helldbg.js 1500000 10000 > /tmp/log`) was just started and killed at the hard stop, so this is unverified.
+4. Potions (gel+mushroom+bottle) and life crystals up to 400 (planner cap raised to 400) would raise survival; not tested.
+
+How to continue: `cd tests; node helldbg.js <ticks> <every>` runs the whole flow (house -> Ohio -> runway), `CAPTURE=1` writes snapshots `/tmp/hell_<phase>.json`, `RESTORE=file` resumes one; `islandfight.js <snapshot>` replays the island with env GOD/NOMOB/TRACK/RING/FINE; `wallrun.js` tests the Wall fight. Run long jobs in the background and poll with short reads (blocking waits looked like a hang to the user).
+
+## Next step idea: a Jev-style decision model for a better bot
+
+Jev (Open-Jev / NanoJev / AgentJev on Hugging Face; I could not fetch them: the sandbox blocks huggingface.co and the clone was denied by the permission classifier) is a typed-decision model: one program state plus a typed question (choice / score / yes-no) in, a calibrated probability distribution out of a single forward pass, nothing generated, so no malformed output. NanoJev (0.6B) already returns action distributions for Maze/Snake/ViZDoom. That matches this bot's shape well:
+
+- Keep the hand-written layers that are reliable: A* nav, executors (dig, pillar, bridge, lineStep), crafting UI clicks. Replace the brittle *if-chains* in `nextTask`, `fight`, `taskHell`, flee/rest with a decision call every 10-30 ticks.
+- State summary as text: depth, life/max, nearby enemies (type, distance, dy), floor/edge distances left and right, held item, inventory flags (has doll, blocks), current phase.
+- Questions with fixed options, e.g. fight/ranged-hold position/retreat-from-edge/heal-at-home/continue-task; "is it safe to place the next block?" (yes/no); "which of these 4 tasks next?".
+- The model returns probabilities; take argmax (or sample with temperature) and let the existing executors do it. Log (state, options, choice, outcome) to build a dataset: death causes, edge falls and premature Wall are exactly the cases where a learned policy should beat the thresholds.
+- Training signal: this bot already produces cheap, deterministic rollouts (headless, ~1000 ticks/s, snapshots), so fine-tune on rollouts that survived/succeeded, or use the model only as a critic ("will this sortie end in death?") first.
+- Practical first step: define the state/options schema in JS, run the existing rule policy through it and log it (no model yet), then plug a model behind the same interface. Needs the weights locally (`hf download aimeigaoshou/agent-jev`, or NanoJev) and a small Python bridge to the headless browser.
