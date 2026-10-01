@@ -854,7 +854,14 @@ const Bot = {
         const p = self.p(), [fx, fy] = self.feet();
         if (w.flags.wall_of_flesh) { this.done = true; return; }
         // 1) get down to the underworld
-        if (fy < w.hellLayer + 5) { const r = self.moveTo(fx + 4, w.hellLayer + 20, 2); if (r === 'fail') this.done = true; self.goal = 'going to Ohio'; return; }
+        // (latched: the bot's y jitters by a row, and flipping between "descending" and "hunting" every few ticks resets the path each time)
+        if (!this.arrived && fy >= w.hellLayer + 24) { this.arrived = true; arrivalX = fx; }
+        if (!this.arrived) {
+          if (!this.descendX) this.descendX = fx + 4;
+          const r = self.moveTo(this.descendX, w.hellLayer + 26, 2);
+          if (r === 'fail') { this.fails = (this.fails || 0) + 1; if (this.fails > 3) this.done = true; }
+          self.goal = 'going to Ohio'; return;
+        }
         self.milestone('reached Ohio');
         if (arrivalX === null) arrivalX = fx;
         // 2) a doll in the bag: only Wall-of-Brainrot ready? then throw it into lava
