@@ -58,14 +58,17 @@ Object.assign(Bot, {
   },
   // The ordered list of things a player wants, as [item, qty]. Segments stop the list early (e.g. "iron tier first").
   wantSegments() {
-    // armor before weapons: most early deaths are the bot trading blows with nothing on
-    const tier = (k) => [[k + '_pickaxe', 1], [k + '_chainmail', 1], [k + '_greaves', 1], [k + '_helmet', 1], [k + '_broadsword', 1], [k + '_bow', 1]];
+    // armor before weapons: most early deaths are the bot trading blows with nothing on.
+    // The 67 (67 damage for 6 gold + 7 silver bars) outclasses every tiered broadsword, so those are skipped entirely.
+    const armor = (k) => [[k + '_chainmail', 1], [k + '_greaves', 1], [k + '_helmet', 1]];
     return [
       { name: 'stations', want: [['furnace', 1], ['iron_anvil', 1]] },
-      { name: 'iron', want: tier('iron') },
-      { name: 'ammo', want: [['wooden_arrow', 100]] },
+      { name: 'pick', want: [['iron_pickaxe', 1]] },
+      { name: 'the67', want: [['the_67', 1]] },
+      { name: 'iron', want: armor('iron') },
+      { name: 'bow', want: [['gold_bow', 1], ['wooden_arrow', 300]] },
       { name: 'crystals', special: 'crystals' },
-      { name: 'gold', want: tier('gold') },
+      { name: 'gold', want: [['gold_pickaxe', 1]].concat(armor('gold')) },
     ];
   },
   // first actionable task of the ladder (null when the whole ladder is done / nothing actionable)
