@@ -27,6 +27,17 @@ The owner watched the bot and asked for player-like play. Here is what each requ
   - Ohio descent and lava safety beyond avoiding lava-adjacent ore.
   - The owner's ideas for Ohio: clear room left/right so demons come into the open, dig a drain pocket under hellstone, use platforms over lava.
   - Tung remains the weakest fight (~3/8 first-fight wins at 140 life on the bench, the same as before).
+- **Sky arena** (`fightArenaSite`, `skyArena`, `taskAwaitBoss`, `bossWarning`, `toSkyArena`):
+  - One per world, kept in `Bot.fightArena`: a 24-platform strip 20 tiles over clear ground, 40–120 tiles from the house.
+  - It's reached by a wood-platform ladder that is re-laid wherever a rung is missing; never dirt.
+  - A 2-platform apron sits past the ladder top; the far end has a fence.
+  - Both the Eye and Tung are fought there:
+    - the Eye with the dash planner along the strip;
+    - Tung summoned from the strip's middle, because it spawns ~22 tiles to a side and drifts ~5, which puts both spawn points past the ends.
+  - Natural spawns: on the game's warnings (Eye: "evil presence", 30 s; Tung: the Sahur call at 25200) the bot heads up and waits in the middle, fighting anything that shows up.
+  - Bench: summoned 12/12 (`_bossbench.js`); natural with warning, Eye 4/4 and Tung 3/4 (`tests/skyreturn.js`, `WARN=1`).
+  - Gotcha: the nav node is the left column of the 2-wide body (`nodeOf`), while `feet()` is the centre column. Walking 'to column c' must target node c-1, and the last tile is walked by hand.
+- **Platform ladders** are sparse (a rung every ~5 rows where it can anchor, `tests/climbtest.js`), and the bot drops through platforms with S (A* drop-through move). Rows supported by platforms reset the vertical-descent limit, and S is released before 18 rows of free fall.
 - **Bench caveat:** the bench is not run-to-run deterministic. Compare over several seeds and runs, never a single run.
 - **Boss rush, rules, 330k ticks, 6 seeds** (outputs in `tools/jev/data/rush/`):
   - HEAD `b5b`: 11 bosses, 3/3 on 2 seeds (302k, 313k), 2 Eye kills.

@@ -338,6 +338,8 @@ const Bot = {
     if (p.life < A.life - p.lifeMax * 0.15) return true;
     // a pillar/bridge ran out of platforms and we have wood: craft some now (they're hand-crafted on the spot)
     if (this.wantPlatforms > G.tick - 60 && A.id !== 'craft:platforms' && this.count('wood') - this.reserved('wood') >= 13) return true;
+    // a boss warning just came up: go to the sky arena now
+    if (A.id.indexOf('await:') !== 0 && this.fightArena && this.fightArena.built && this.bossWarning() && G.tick % 30 === 0) return true;
     if (['hell', 'boss', 'brainrot'].includes(A.kind)) return false;   // long trips stay committed (enemies and big hits still interrupt above)
     // an aura crystal comes within 30 tiles while we're busy with something else: think again (teacherPick grabs it)
     // (once per crystal: a re-decision restarts the current task, so it must not fire again while we can't or won't go)
@@ -352,6 +354,9 @@ const Bot = {
     this.uiBusy = false;
     if (this.houseValid() && this.houseFinished) this.milestone('house');
     // reflexes: nothing to decide about these
+    const warn = this.bossWarning(), A0 = this.fightArena;
+    // (enemies first: on the arena they're shot from where we stand, then we go back to waiting)
+    if (warn && A0 && A0.built && Math.abs(this.feet()[0] - A0[0]) < 200 && !foes.length) { this.setAct({ id: 'await:' + warn, kind: 'boss' }, this.taskAwaitBoss(warn), foes); return; }
     if (!foes.length) {
       const up = this.equipUpgrade();
       if (up) { this.setAct({ id: 'equip:' + up, kind: 'reflex' }, this.taskEquip(up), foes); return; }
@@ -490,7 +495,7 @@ const Bot = {
       else if (d > want + 200 || !lineOfSight(G.world, p.cx, p.cy, n.cx, n.cy)) { if (d > 400 || this.stuck > 20) tile(); else this.holdSafe(toward); }
       if (n.boss && (G.tick % 90 < 12 || G.projectiles.some(q => q.hostile && !q.dead && dist(q.cx, q.cy, p.cx, p.cy) < 120))) this.jump();
     }
-    if (p.collidedX && p.onGround && !(this.perch && /^(tung-(perch|ledge)|eye-dodge|anchored)/.test(this.why))) this.jump();   // never hop the perch fence
+    if (p.collidedX && p.onGround && !(this.perch && /^(tung-(perch|ledge|sky)|eye-dodge|anchored)/.test(this.why))) this.jump();   // never hop the perch fence
     // aim (lead moving targets with projectiles) and attack when it can land
     let ax = n.cx, ay = n.cy;
     if (!melee && it.use !== 'throw') { const sp = it.shootSpeed || 8, t = Math.min(45, d / sp); ax += (n.vx || 0) * t; ay += (n.vy || 0) * t - d * 0.015; }
@@ -502,8 +507,17 @@ const Bot = {
   // keep 220-340 px away shooting The 67's homing 6s and 7s, hop every shockwave, keep moving while logs are in the air,
   // and when cornered slip under it while it is in the air
   tungDance(n, dx, d, toward, away) {
+    if (this.toSkyArena()) return;
     const p = this.p(), adx = Math.abs(dx), dirAway = away === 'd' ? 1 : -1;
     if (this.onPerch()) { this.why = 'tung-perch'; return; }   // out of reach: stand still and shoot
+    // the sky arena: hold the middle and shoot down; if it got onto the strip after all, run for the far end
+    if (this.onSkyArena() && p.onGround) {
+      const A = this.fightArena, onStrip = Math.abs(n.y + n.h - (A[1] + 1) * TS) < 24 && Math.abs(dx) < 30 * TS;
+      const mid = this.skyMid(), [fx] = this.feet(), far = A[0] + A[3] * (A.len - 1), back = A[0] - A[3];
+      const goal = onStrip ? (Math.abs(n.cx / TS - far) > Math.abs(n.cx / TS - back) ? far : A[0]) : mid;
+      if (Math.abs(fx - goal) > 1) this.hold(goal > fx ? 'd' : 'a');
+      this.why = 'tung-sky'; return;
+    }
     // knocked along the ledge / back onto the pillar top: walk back out to the spot
     if (this.perch && p.onGround) {
       const pr = this.perch, [fx, fy] = this.feet(), [sx] = this.perchSpot();
@@ -529,7 +543,39 @@ const Bot = {
   // An offline model of exactly this (tools/jev/eyesim.py) took plain strafing from ~5 (phase 1) / ~10 (phase 2) contact
   // hits per 1000 ticks to 0, on arenas from 20 to 56 tiles wide.
   EYE_PLANS: (() => { const o = []; for (const d of [-1, 1, 0]) for (const s of [999, 12, 30]) for (const j of [-1, 0, 8, 16, 26]) o.push([d, s, j]); return o; })(),
+  // a boss showed up while we're off the sky arena (knocked down, or it came early): if it's built and close, go up (the
+  // shooting goes on meanwhile); true while on the way
+  // the game warns before a boss comes by itself ("evil presence" 30 s before the Eye, the Sahur call 30 s before Tung at
+  // 3 AM): like a player reading chat, head up to the sky arena then and wait there
+  bossWarning() {
+    const w = G.world;
+    if (G.npcs.some(n => n.boss)) return null;
+    if (G.eyeTimer > 0 && !w.flags.eye_of_cthulhu) return 'eye_of_cthulhu';
+    if (G.tungTimer && !w.dayTime && w.time >= 25200 - 600 && w.time < 27000 && !w.flags.tung_sahur) return 'tung_sahur';
+    return null;
+  },
+  taskAwaitBoss(key) {
+    const self = this, A = this.fightArena;
+    this.goal = 'heading to the sky arena (' + BOSS_TYPES[key].name + ' is coming)';
+    return { step() {
+      if (!self.bossWarning() || !self.fightArena) { this.done = true; return; }
+      self.perch = A;
+      if (!self.onArena()) { if (self.climbPerch() === 'fail') this.done = true; self.goal = 'heading to the sky arena (' + BOSS_TYPES[key].name + ' is coming)'; return; }
+      const [fx] = self.feet(), mid = self.skyMid();   // wait in the middle (Tung spawns ~22 tiles to a side: past both ends)
+      if (Math.abs(fx - mid) > 1) self.hold(mid > fx ? 'd' : 'a');
+      self.goal = 'waiting on the sky arena for ' + BOSS_TYPES[key].name;
+    } };
+  },
+  toSkyArena() {
+    const A = this.fightArena, [fx] = this.feet();
+    // (a boss already on us outruns a long trip: only when it's close; the warnings below send us up ahead of time)
+    if (!A || !A.built || this.onSkyArena() || Math.abs(fx - A[0]) > 30) return false;
+    this.perch = A;
+    if (this.climbPerch() === 'fail') { A.built = false; return false; }   // (it'll be checked and repaired before the next summon)
+    this.why = 'to-sky-arena'; return true;
+  },
   eyeDance(n) {
+    if (this.toSkyArena()) return;
     const p = this.p(), [fx, fy] = this.feet();
     let A = this.eyeArena;
     // on (or jumping over) the arena strip: its floor and ends; knocked off it: the ground here, +-28 tiles
@@ -1362,53 +1408,23 @@ const Bot = {
             self.goal = 'waiting for night to summon ' + name; self.moveTo(home[0] - 6, home[1], 3); return;
           }
           // every boss comes to wherever we are: get to the surface right here (Tung's perch gets built next to us)
-          if (fy > topSolid(w, fx) + 3 && !(self.perch && (self.perch.kind === 'arena') === (key === 'eye_of_cthulhu') && Math.abs(fx - self.perch[0]) <= (self.perch.len || self.LEDGE) + 1)) { self.goal = 'climbing to the surface to summon ' + name; if (self.moveTo(fx, topSolid(w, fx) - 1, 3) === 'fail') self.moveTo(home[0] - 6, home[1], 3); return; }
+          if (fy > topSolid(w, fx) + 3 && !(self.perch && Math.abs(fx - self.perch[0]) <= (self.perch.len || self.LEDGE) + 3) && !(self.fightArena && Math.abs(fx - self.fightArena[0]) <= self.ARENA_LEN + 3)) { self.goal = 'climbing to the surface to summon ' + name; if (self.moveTo(fx, topSolid(w, fx) - 1, 3) === 'fail') self.moveTo(home[0] - 6, home[1], 3); return; }
           if (p.life < p.lifeMax * 0.85) { self.goal = 'healing up before ' + name; return; }
           if (!self.bossReady(key)) { self.log('not ready for ' + name + ' yet'); this.done = true; return; }
-          // The Eye: like a player, fight it from a long flat strip of wood platforms ~8 tiles over the ground. Running on flat
-          // footing is what lets eyeDance's dash planner work (its model assumes a flat floor), zombies and toilets can't reach it,
-          // and the Eye's dashes and our shots pass through platforms.
-          if (key === 'eye_of_cthulhu' && !(self.arenaFailed && G.tick - self.arenaFailed < 20000)) {
-            const L = self.ARENA_LEN;
-            if (self.perch && (self.perch.kind !== 'arena' || (Math.abs(fx - self.perch[0]) > 80 && !self.onArena()))) self.perch = null;
-            const want = L + 14;   // the strip plus a platform pillar up to it (blocks do the pillar if wood is short)
-            if (!self.perch && self.count('wood_platform') < want && self.count('wood') >= 1 && !this.crafted) {
-              this.crafted = true;
-              sub = self.taskCraftAtBase(['wood_platform', Math.min(self.count('wood'), Math.ceil((want - self.count('wood_platform')) / 2))]); return;
-            }
-            if (!self.perch && self.count('wood_platform') < L) {
-              const need = Math.ceil((L - self.count('wood_platform')) / 2);
-              if ((this.chops = (this.chops || 0) + 1) <= 2) { sub = self.taskChop(need + 5); return; }   // 15 wood buys the whole strip
-              self.log('not enough wood for an arena, fighting on the ground'); self.arenaFailed = G.tick;
-            } else {
-              const site = self.perch || self.eyeArenaSite([fx, fy]);
-              if (!site) { self.log('no arena site here, fighting on the ground'); self.arenaFailed = G.tick; }
-              else {
-                self.perch = site;
-                const pr0 = self.perch, trees = pr0.cleared ? [] : self.arenaTrees(pr0[0], pr0[2], pr0[1], pr0[3], L);   // (once building, our own pillar is in the way)
-                if (!trees) { self.log('arena site got blocked, picking another'); self.perch = null; return; }
-                if (trees.length) {   // fell the trees in the way, nearest first, standing beside the trunk
-                  const [tx, ty] = trees.sort((a, b) => Math.abs(a[0] - fx) - Math.abs(b[0] - fx))[0];
-                  self.goal = 'clearing trees for the ' + name + ' arena';
-                  const side = fx <= tx ? tx - 1 : tx + 1, r = self.moveTo(side, ty, 1);
-                  if (r === 'fail') { self.log('cannot reach a tree in the arena, fighting on the ground'); self.perch = null; self.arenaFailed = G.tick; return; }
-                  if (r || self.p().inReach(tx, ty)) { const ax = self.bestSlot('axe'); if (ax > 9) { self.ensureHotbar(ax); return; } self.selectSlot(ax); self.aimTile(tx, ty); self.clickHold(); }
-                  return;
-                }
-                pr0.cleared = true;
-                const r = self.climbPerch();
-                if (r === 'fail') { self.log('arena build failed, fighting on the ground'); self.perch = null; self.arenaFailed = G.tick; return; }
-                if (r !== true) { self.goal = 'building an arena for ' + name; return; }
-                const pr = self.perch, far = pr[0] + pr[3] * (pr.len - 2), near = pr[0] + pr[3] * 3;
-                self.arena = { x0: Math.min(near, far), x1: Math.max(near, far), floor: pr[1] + 1 };
-              }
-            }
+          // The sky arena (one per world, built once, kept): a 24-platform strip ~20 tiles over clear ground 40-120 tiles from the
+          // house, reached by a wood-platform ladder. The Eye is fought by running and jumping along it (eyeDance's dash planner
+          // needs that flat footing); Tung's leap tops out ~12 tiles, so Tung is summoned from and shot at from the strip's middle.
+          // Ground mobs can't get up there, and the house stays out of the fight.
+          const skyBoss = key === 'eye_of_cthulhu' || key === 'tung_sahur';
+          if (skyBoss && !(self.arenaFailed && G.tick - self.arenaFailed < 20000)) {
+            const r = self.skyArena(this, name, key);
+            if (r === 'sub') { sub = this.sub; return; }
+            if (r === false) return;   // still on the way / building
           }
-          // Tung only reaches ~12 tiles up (leap), its shockwaves run along the ground and its logs arc ~8 tiles high:
-          // fight it from a 25-tile pillar next to the house, like a human would
-          if (key === 'tung_sahur') {
+          // Tung without a sky arena: the old 32-tile perch next to us (solid blocks: Tung climbs platforms)
+          if (key === 'tung_sahur' && !self.onSkyArena()) {
             if (!self.perch && self.count('wood_platform') < self.LEDGE && self.count('wood') >= 5) { sub = self.taskCraftAtBase(['wood_platform', Math.ceil((self.LEDGE - self.count('wood_platform')) / 2)]); return; }
-            if (self.perch && ((Math.abs(fx - self.perch[0]) > 80 && !self.onPerch()) || self.perch.kind === 'arena')) self.perch = null;   // an old perch far away (or the Eye's low arena): build a new one here
+            if (self.perch && ((Math.abs(fx - self.perch[0]) > 80 && !self.onPerch()) || self.perch.kind === 'arena')) self.perch = null;
             const perch = self.perch || (self.count('wood_platform') >= self.LEDGE && self.spareBlocks() - self.count('wood') >= self.PERCH_H + 2 ? self.tungPerch([fx, fy]) : null);
             const climbed = perch ? self.climbPerch() : true;   // true once on the spot with the fence up
             if (perch && climbed !== true) { self.goal = 'building a perch for ' + name; if (climbed === 'fail') { self.log('no perch for ' + name + ', fighting on the ground'); self.perch = null; self.perchFailed = G.tick; } return; }
@@ -1497,24 +1513,86 @@ const Bot = {
   },
   // Eye arena: a pillar up to `stand` and a strip of ARENA_LEN platforms along row stand+1, 7+ rows over the highest ground under it
   // (ground mobs can't jump that high) and at most 20 over the lowest (a knock off the edge must not be a deadly fall)
-  ARENA_LEN: 30,
-  eyeArenaSite(at) {
-    const w = G.world, L = this.ARENA_LEN;
+  // 24: the Eye's dash planner needs 20+ tiles; Tung spawns ~22 tiles to either side of us and drifts ~5 toward us while it
+  // drops, so from the middle of 24 (+2 apron) both spawn points stay clear of the strip
+  ARENA_LEN: 24,
+  // where the sky arena goes: clear ground 40-120 tiles from the house (its strip at least 30 away from it), the strip FIGHT_H
+  // rows over the highest ground under it, the ladder column at most FIGHT_H + 8 rows tall; fewest trees to fell, nearest first.
+  // 20 rows: Tung's leap (vy -13, gravity 0.45) tops out ~12 rows, and a knock off the edge stays under the 25-row fall damage.
+  FIGHT_H: 20,
+  fightArenaSite() {
+    const w = G.world, L = this.ARENA_LEN, home = this.base || this.feet();
     let best = null;
-    for (const off of [0, -12, 12, -24, 24, -40, 40, -60, 60]) for (const dir of [1, -1]) {
-      const x = at[0] + off, gy = topSolid(w, x) - 1;
-      if (gy < 5 || Math.abs(gy - at[1]) > 30) continue;
+    for (const off of [40, -40, 55, -55, 70, -70, 90, -90, 110, -110]) for (const dir of [1, -1]) {
+      const x = home[0] + off, x2 = x + dir * (L + 1), gy = topSolid(w, x) - 1;
+      if (gy < 5 || x < 40 || x2 < 40 || x > w.w - 40 || x2 > w.w - 40) continue;
+      if (Math.max(x, x2) >= home[0] - 30 && Math.min(x, x2) <= home[0] + 30) continue;   // keep the house out of it
       let hi = 1e9, lo = -1e9;
-      for (let i = 0; i <= L + 1; i++) { const t = topSolid(w, x + dir * i); if (t < 0) { hi = -1; break; } hi = Math.min(hi, t); lo = Math.max(lo, t); }
+      for (let i = -3; i <= L + 1; i++) { const t = topSolid(w, x + dir * i); if (t < 0) { hi = -1; break; } hi = Math.min(hi, t); lo = Math.max(lo, t); }
       if (hi < 0) continue;   // water under it
-      const stand = hi - 9;   // feet row; platforms on stand+1, 7 clear rows above the highest ground
-      if (lo - stand > 21 || gy - stand < 4) continue;
+      const stand = hi - 1 - this.FIGHT_H;
+      if (stand < 8 || gy - stand > this.FIGHT_H + 8) continue;
       const trees = this.arenaTrees(x, gy, stand, dir, L);
       if (!trees) continue;
-      const cost = trees.length * 3 + Math.abs(off) / 12;
+      const cost = trees.length * 3 + Math.abs(off) / 15 + (gy - stand) / 3;
       if (!best || cost < best.cost) { const pr = [x, stand, gy, dir]; pr.len = L; pr.kind = 'arena'; best = { cost, pr }; }
     }
     return best && best.pr;
+  },
+  skyMid() { const A = this.fightArena; return A[0] + A[3] * Math.round(A.len / 2); },
+  onSkyArena() { const A = this.fightArena; if (!A) return false; const [fx, fy] = this.feet(); return fy <= A[1] + 1 && fy >= A[1] - 6 && (fx - A[0]) * A[3] >= -3 && (fx - A[0]) * A[3] <= A.len + 1; },
+  // get to the sky arena (choosing / building / repairing it on the way): true = on it and ready, false = working on it,
+  // 'sub' = a sub-task (crafting platforms, chopping) was put in task.sub, 'none' = no arena this time
+  skyArena(task, name, key) {
+    const L = this.ARENA_LEN, [fx] = this.feet();
+    if (!this.fightArena) {
+      const site = this.fightArenaSite();
+      if (!site) { this.log('no sky arena site near home, fighting without one'); this.arenaFailed = G.tick; return 'none'; }
+      this.fightArena = site; this.log('sky arena site at ' + site[0] + ',' + site[1] + ' (' + (site[2] - site[1]) + ' up)');
+    }
+    const A = this.fightArena;
+    // the ladder and the strip are all wood platforms (never dirt): bring enough for whatever is missing (+ a few spare)
+    let missing = 0; for (let y = A[1] + 2; y <= A[2]; y++) if (G.world.tile(A[0], y) !== T.PLATFORM) missing++;
+    for (let k = 1; k <= A.len + 2; k++) if (G.world.tile(A[0] + A[3] * k, A[1] + 1) !== T.PLATFORM) missing++;
+    if (G.world.tile(A[0], A[1] + 1) !== T.PLATFORM) missing++;
+    // (counted once, on the ground before setting off: mid-climb the in-place craft can't happen and a short count re-fires)
+    const want = missing + 6;
+    if (!task.stocked && this.count('wood_platform') < want && !this.onSkyArena()) {
+      const crafts = Math.ceil((want - this.count('wood_platform')) / 2);
+      if (this.count('wood') >= crafts && (task.crafts = (task.crafts || 0) + 1) <= 3) { task.sub = this.taskCraftAtBase(['wood_platform', crafts]); return 'sub'; }
+      if ((task.chops = (task.chops || 0) + 1) <= 3) { task.sub = this.taskChop(this.count('wood') + crafts + 10); return 'sub'; }
+      this.log('not enough wood for the sky arena'); this.arenaFailed = G.tick; return 'none';
+    }
+    task.stocked = true;
+    this.perch = A;
+    if (!A.cleared) {
+      const trees = this.arenaTrees(A[0], A[2], A[1], A[3], L);
+      if (!trees) { this.log('sky arena site got blocked, picking another'); this.fightArena = null; this.perch = null; return false; }
+      if (trees.length) {   // fell the trees in the way, nearest first, standing beside the trunk
+        const [tx, ty] = trees.sort((a, b) => Math.abs(a[0] - fx) - Math.abs(b[0] - fx))[0];
+        this.goal = 'clearing trees for the sky arena';
+        const side = fx <= tx ? tx - 1 : tx + 1, r = this.moveTo(side, ty, 1);
+        if (r === 'fail') { this.log('cannot reach a tree at the sky arena site'); this.fightArena = null; this.perch = null; this.arenaFailed = G.tick; return 'none'; }
+        if (r || this.p().inReach(tx, ty)) { const ax = this.bestSlot('axe'); if (ax > 9) { this.ensureHotbar(ax); return false; } this.selectSlot(ax); this.aimTile(tx, ty); this.clickHold(); }
+        return false;
+      }
+      A.cleared = true;
+    }
+    const r = A.built && this.onArena() ? true : this.climbPerch();   // (already up there: climbPerch would brake us onto its end spot)
+    if (r === 'fail' && !this.has('wood_platform')) { task.stocked = false; task.crafts = task.chops = 0; this.log('sky arena: out of platforms, getting more'); return false; }
+    if (r === 'fail') { this.log('sky arena: could not build/climb it, trying again later'); this.perch = null; this.arenaFailed = G.tick; A.fails = (A.fails || 0) + 1; if (A.fails > 2) this.fightArena = null; return 'none'; }
+    if (r !== true) { this.goal = (A.built ? 'climbing to' : 'building') + ' the sky arena for ' + name; return false; }
+    A.built = true;
+    // Tung is summoned from the middle of the strip: it spawns ~22 tiles to one side and drops, and from the middle both
+    // sides are past the ends (from near an end, one side is over the strip and it lands on it and walks over to us)
+    if (key === 'tung_sahur') {
+      const mid = this.skyMid(), p = this.p();
+      if (Math.abs(fx - mid) > 1) { this.hold(mid > fx ? 'd' : 'a'); this.goal = 'taking the middle of the sky arena'; return false; }
+      if (Math.abs(p.vx) > 0.3) return false;   // let it come to a stop (braking with the other key overshoots back and forth)
+    }
+    const far = A[0] + A[3] * (A.len - 2), near = A[0] + A[3] * (G.world.tile(A[0] - A[3], A[1] + 1) === T.PLATFORM ? 1 : 3);   // (the apron catches a knock past the ladder)
+    this.arena = { x0: Math.min(near, far), x1: Math.max(near, far), floor: A[1] + 1 };
+    return true;
   },
   // what stands where the pillar, the strip and its headroom go: null if anything but trees (and low plants), else the trees to
   // fell first (their lowest trunk cell; chopping it brings the whole tree down and pays for the platforms)
@@ -1563,6 +1641,16 @@ const Bot = {
     if (onTop) {
       if (fx === pr[0] && fy !== pr[1] && w.tile(pr[0] + dir, pr[1] + 1) !== T.PLATFORM) { pr[1] = fy; return false; }   // the pillar top is where we stand
       const row = pr[1] + 1;
+      // sky arena: a 2-platform apron on the far side of the ladder top first (a knock off that end lands on it instead of the ground)
+      if (pr.kind === 'arena' && !pr.apron && Math.abs(fx - pr[0]) <= 2) {
+        const a = [1, 2].map(i => pr[0] - dir * i).find(x => w.tile(x, row) !== T.PLATFORM);
+        if (a === undefined || !this.has('wood_platform') || (pr.apronTries = (pr.apronTries || 0) + 1) > 240) pr.apron = true;
+        else {
+          const s0 = this.slotOf(it => it.id === 'wood_platform'); if (s0 > 9) { this.ensureHotbar(s0); return false; }
+          this.selectSlot(s0); if (Math.abs(p.vx) > 0.4) this.hold(p.vx > 0 ? 'a' : 'd');
+          this.aimTile(a, row); if (p.itemAnim === 0) this.clickOnce(); return false;
+        }
+      }
       // ledge: the first missing platform cell, placed from where we stand
       let k = 1; while (k <= (pr.len || this.LEDGE) && w.tile(pr[0] + dir * k, row) === T.PLATFORM) k++;
       if (k <= (pr.len || this.LEDGE)) {
@@ -1593,14 +1681,23 @@ const Bot = {
       // standing right next to the spot on the same ground: the pillar can just as well go here
       const openHere = pr.kind === 'arena' ? (t => t && !t.length)(this.arenaTrees(fx, fy, pr[1], pr[3], pr.len)) : this.perchOpen(fx, fy, pr[3]);
       if (pr.climb == null && Math.abs(fx - pr[0]) <= 3 && Math.abs(fy - pr[2]) <= 2 && p.onGround && openHere) { pr[0] = fx; pr[2] = fy; if (pr.kind !== 'arena') pr[1] = fy - this.PERCH_H; }
-      else { const r = this.moveTo(cc, pr[2], 0); return r === 'fail' ? this.perchFail('cannot walk to the pillar spot') : false; }   // exactly there (tolerance 1 "arrives" next to it and never climbs)
+      // exactly there: the last tile and a half by hand until our centre (feet()) is in column cc (the nav node is the left column
+      // of our 2-wide body and 'arrives' up to 8 px off: next to the column, where we used to wait forever)
+      // (also up on a platform ladder: a hop drifts us off the column, and walking 'to the pillar' would drop us back to its foot)
+      else if (Math.abs(p.cx - (cc * TS + 8)) < 24 && (Math.abs(fy - pr[2]) <= 1 || fy < pr[2]) && (p.onGround || fy < pr[2])) {
+        this.hold(p.cx < cc * TS + 8 ? 'd' : 'a');
+        if (pr.kind === 'arena' && p.onGround && fy < pr[2]) this.jump(); else if (p.vy < 0 && pr.kind === 'arena') Input.keys[' '] = true;
+        return false;
+      }
+      else { const r = this.moveTo(cc - 1, pr[2], 0); return r === 'fail' ? this.perchFail('cannot walk to the pillar spot') : false; }
     }
     // the arena's pillar is platforms when there are enough left for the strip too (no dirt to dig back out), else blocks
     const ledgeLeft = (pr.len || this.LEDGE) - [...Array(pr.len || this.LEDGE)].filter((_, i) => w.tile(pr[0] + dir * (i + 1), pr[1] + 1) === T.PLATFORM).length;
-    // (not Tung's perch: Tung lands on any platform on the way up and leaps again, so its pillar stays solid blocks)
-    const plat = pr.kind === 'arena' && this.count('wood_platform') >= ledgeLeft + Math.max(0, fy - pr[1]) + 2;
+    // (not Tung's perch: Tung lands on any platform on the way up and leaps again, so its pillar stays solid blocks; the sky
+    // arena is out of Tung's reach and its ladder is platforms only, re-laid wherever a rung is missing)
+    const plat = pr.kind === 'arena';
     const bs = plat ? this.slotOf(it => it.id === 'wood_platform') : this.spareBlockSlot(false);
-    if (bs < 0) return this.perchFail('out of blocks (' + this.spareBlocks() + ' spare)');
+    if (bs < 0) return this.perchFail(plat ? 'out of platforms for the ladder' : 'out of blocks (' + this.spareBlocks() + ' spare)');
     if (bs > 9) { this.ensureHotbar(bs); return false; }
     this.selectSlot(bs);
     // the cell on top of the stack under us (blocks or platforms); place it once our feet have cleared it
@@ -1611,6 +1708,7 @@ const Bot = {
     if (occ && !TILES[occ].solid && occ !== T.PLATFORM) { if (this.dig(col, cell) === 'fail') return this.perchFail('cannot clear ' + TILES[occ].name); return false; }   // grass, a sapling...
     if (p.onGround) this.jump();
     else if (p.y + p.h <= cell * TS - 1 && !w.tile(col, cell)) { this.aimTile(col, cell); this.clickOnce(); }
+    else if (plat && p.vy < 0 && w.tile(col, cell) === T.PLATFORM) Input.keys[' '] = true;   // up an existing ladder: the full jump, rungs catch us
     return false;
   },
   onPerch() { if (!this.perch) return false; const [sx, sy] = this.perchSpot(), [fx, fy] = this.feet(); return Math.abs(fx - sx) <= 1 && fy >= sy - 4 && fy <= sy + 1; },

@@ -109,7 +109,9 @@ const Nav = {
       if (fall > 0 && this.standable(x, y)) fall = 0;
       if (fall > 22) return;
       // never dig/descend more than ~15 rows in a straight vertical line: a stair-step stops an accidental fall (the game hurts above 25 tiles)
-      const vert = dy > 0 ? vertA[prevK] + dy : 0;
+      // (a platform under us is a catch point: a ladder of them can be walked down rung by rung, any length)
+      const onPlat = G.world.tile(x, y + 1) === T.PLATFORM || G.world.tile(x + 1, y + 1) === T.PLATFORM;
+      const vert = dy > 0 && !onPlat ? vertA[prevK] + dy : 0;
       if (vert > 15) return;
       gA[k] = cost; gS[k] = stamp; fromA[k] = prevK; mvA[k] = MV.indexOf(move.t);
       fallA[k] = fall; vertA[k] = vert;
@@ -367,7 +369,9 @@ Object.assign(Bot, {
     // dropping onto a node: momentum carries ~3 px/tick, so brake once above it instead of sailing past the ledge
     else if ((m.t === 'drop' || m.t === 'fall') && Math.abs(p.vx) > 0.8) Input.keys[p.vx > 0 ? 'a' : 'd'] = true;
     // falling down past platforms (our own ladders, arenas): hold S until the feet reach the node we're going to
-    if (m.t === 'fall' && Math.floor((p.y + p.h - 1) / TS) < n.y) Input.keys.s = true;
+    // (let go before 18 rows of free fall so the next rung catches us: the game hurts above 25)
+    const fallen = p.fallStart != null ? (p.y - p.fallStart) / TS : 0;
+    if (m.t === 'fall' && Math.floor((p.y + p.h - 1) / TS) < n.y && fallen < 18) Input.keys.s = true;
     if (n.y < ny || m.t === 'jump' || m.t === 'swim' || m.t === 'leap') {
       if (p.onGround || p.wet || p.vy < 0) this.jump();
     }
