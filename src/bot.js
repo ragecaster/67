@@ -77,12 +77,13 @@ const Bot = {
       // damage that actually lands (defense soaks half of it), per second
       let dmg = it.damage;
       if (it.ammo) dmg += ITEMS[this.p().inv[this.p().findAmmo(it.ammo)].id].damage || 0;
-      const melee = it.use === 'swing' || it.use === 'thrust';
-      // a sword can't reach something hovering well above us
+      const melee = (it.use === 'swing' || it.use === 'thrust') && !it.shoot;   // a sword that fires a projectile (The 67) reaches like a gun
+      // a plain sword can't reach something hovering well above us
       const high = enemy && enemy.cy < this.p().cy - 90 && (enemy.noGravity || (enemy.def && enemy.def.noGravity) || enemy.boss);
-      // bosses: shooting from range beats trading blows (and doesn't flip-flop with every dash)
-      // expected damage that lands: measured hit rates are ~0.9 for melee swings and ~0.4 for arrows on a moving boss
-      const v = Math.max(1, dmg - def * 0.5) * 60 / (it.useAnim || it.useTime) * (melee ? (high ? 0.12 : 0.9) : 0.4) + (melee ? 2 : 0);
+      // expected damage that lands: measured hit rates are ~0.9 for swings / The 67 and ~0.4 for arrows and throws on a moving boss.
+      // fixed-damage weapons (The 67) ignore defense
+      const landed = it.fixedDamage ? 67 : Math.max(1, dmg - def * 0.5);
+      const v = landed * 60 / (it.useAnim || it.useTime) * (melee ? (high ? 0.12 : 0.9) : it.fixedDamage ? 0.9 : 0.4) + (melee ? 2 : 0);
       if (v > bv) { bv = v; bi = i; }
     });
     return bi;
@@ -323,7 +324,9 @@ const Bot = {
   },
   rangedSlot() {
     const p = this.p(); let bi = -1, bv = 0;
-    p.inv.forEach((s, i) => { if (!s) return; const it = ITEMS[s.id]; if (!it.damage || it.ammoType || it.consumable || it.pick || it.axe || it.hammer) return; if (!(it.use === 'shoot' || it.shoot) || it.use === 'swing') return; if (it.ammo && p.findAmmo(it.ammo) < 0) return; if (it.mana && p.mana < it.mana) return; if (it.damage > bv) { bv = it.damage; bi = i; } });
+    // anything that hits from a distance (bows, throws, and swords that fire a projectile), ranked by damage that lands
+    p.inv.forEach((s, i) => { if (!s) return; const it = ITEMS[s.id]; if (!it.damage || it.ammoType || it.consumable || it.pick || it.axe || it.hammer) return; if (!(it.use === 'shoot' || it.shoot)) return; if (it.ammo && p.findAmmo(it.ammo) < 0) return; if (it.mana && p.mana < it.mana) return;
+      const v = (it.fixedDamage ? 67 * 0.9 : it.damage * 0.4) * 60 / (it.useAnim || it.useTime); if (v > bv) { bv = v; bi = i; } });
     return bi;
   },
 
