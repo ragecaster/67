@@ -148,6 +148,43 @@ const Bot = {
   // ================= main tick =================
   tick() {
     if (!this.active || !G.world) return;
+    this.tickMain();
+    if (!this.p().dead && !G.inBackrooms(this.p())) { this.closeDoorBehind(); this.noclipGuard(); }
+  },
+  // a door we walked through stays open (zombies walk in at night): close it behind us like a player would
+  closeDoorBehind() {
+    const d = this.doorOpened, p = this.p(), w = G.world;
+    if (!d || this.uiBusy || UI.invOpen || Input.rClick || Input.mClick) return;
+    if (!TILES[w.tile(d[0], d[1])]?.door) { this.doorOpened = null; return; }
+    const dx = Math.abs(p.cx - (d[0] * TS + 8)) / TS;
+    if (dx > 6) { this.doorOpened = null; return; }
+    if (dx < 1.8 || w.tile(d[0], d[1]) !== T.DOOR_OPEN) return;
+    const [ox, oy] = w.objOrigin(d[0], d[1]);
+    if (G.npcs.some(n => !n.dead && rectsOverlap({ x: ox * TS, y: oy * TS, w: TS, h: 3 * TS }, n))) return;
+    if (!p.inReach(d[0], d[1])) return;
+    this.rightClickWorld(d[0], d[1]);
+    this.doorOpened = null;
+  },
+  // the glitch block floats at jump height near spawn (and the house): touching it noclips us into the Backrooms (Smilers,
+  // Partygoers, a long walk back). The planner never routes through it, but fight hops, step-up hops and unstick jumps did.
+  noclipGuard() {
+    const w = G.world, nc = w.noclipAt, p = this.p();
+    if (!nc || w.tile(nc[0], nc[1]) !== T.NOCLIP) return;
+    const bx0 = nc[0] * TS, bx1 = bx0 + TS, by0 = nc[1] * TS, by1 = by0 + TS;
+    if (Math.abs(p.cx - (bx0 + 8)) > 120 || Math.abs(p.cy - (by0 + 8)) > 160) return;
+    const reach = Math.max(10, Math.abs(p.vx) * 10);
+    const overX = p.x - reach < bx1 && p.x + p.w + reach > bx0;
+    const awayKey = p.cx < bx0 + 8 ? 'a' : 'd', towardKey = awayKey === 'a' ? 'd' : 'a';
+    // under it (within a jump): no jumping, and if we're already rising, steer out sideways
+    if (overX && by1 <= p.y + 4 && p.y - by1 < 8 * TS) {
+      Input.keys[' '] = false;
+      if (p.vy < 0 && p.x < bx1 + 2 && p.x + p.w > bx0 - 2) { Input.keys[towardKey] = false; Input.keys[awayKey] = true; }
+      this.why = 'noclip-guard';
+    }
+    // level with it: don't walk into it
+    if (p.y < by1 + 4 && p.y + p.h > by0 - 4 && Math.abs(p.cx - (bx0 + 8)) < p.w / 2 + 8 + reach) { Input.keys[towardKey] = false; this.why = 'noclip-guard'; }
+  },
+  tickMain() {
     const p = this.p();
     this.t++;
     TerraJev.tickLogging();
@@ -249,9 +286,14 @@ const Bot = {
   // Every candidate is a concrete action a skill can carry out right now: fight THIS enemy, mine THAT ore, craft X,
   // summon boss Y, go home... The skills own the details (weapon, hotbar, aiming, dodging, pathing, digging);
   // housekeeping (equipping upgrades, clearing junk) is a reflex, not a decision.
+  // weak hoppers (green/blue slimes: a few life per hit) come to us on their own; chasing every one across the map ate a third of
+  // day 1. They count as foes only once they are close.
+  nuisance(n) { const p = this.p(); return !n.boss && n.def.ai === 'slime' && Math.max(1, n.damage - p.calc.defense * 0.5) <= p.lifeMax * 0.1; },
   foesNear() {
     const p = this.p(); this.ignore = this.ignore || {};
-    return G.npcs.filter(n => !n.friendly && !n.town && !n.dead && n.alpha >= 0.5 && !n.def.critter && !(this.ignore[n.uid] > G.tick) &&
+    // an 'unreachable' enemy that comes right up to us is reachable after all (ignoring it let it chew on us)
+    return G.npcs.filter(n => !n.friendly && !n.town && !n.dead && n.alpha >= 0.5 && !n.def.critter && !(this.ignore[n.uid] > G.tick && dist(n.cx, n.cy, p.cx, p.cy) > 56) &&
+      !(this.nuisance(n) && dist(n.cx, n.cy, p.cx, p.cy) > 80) &&
       (n.boss ? dist(n.cx, n.cy, p.cx, p.cy) < 900 : dist(n.cx, n.cy, p.cx, p.cy) < 300 && lineOfSight(G.world, p.cx, p.cy, n.cx, n.cy)))
       .sort((a, b) => (b.boss ? 1 : 0) - (a.boss ? 1 : 0) || dist(a.cx, a.cy, p.cx, p.cy) - dist(b.cx, b.cy, p.cx, p.cy)).slice(0, 4);
   },
@@ -272,6 +314,13 @@ const Bot = {
     if (!foes.length) {
       const up = this.equipUpgrade();
       if (up) { this.setAct({ id: 'equip:' + up, kind: 'reflex' }, this.taskEquip(up), foes); return; }
+      // a crafting station sitting in the inventory (its placing got interrupted by a fight) goes up at the base right away
+      const cd = this.cooldowns = this.cooldowns || {};
+      if (this.base && this.houseSpot) for (const [st, item] of [['furnace', 'furnace'], ['anvil', 'iron_anvil']]) {
+        if (!this.has(item) || this.stationPlaced(st) || cd['place:' + item] > G.tick) continue;
+        cd['place:' + item] = G.tick + 1500;
+        this.setAct({ id: 'place:' + item, kind: 'reflex' }, this.taskCraftAtBase([item, 0, 'placeonly']), foes); return;
+      }
       if (p.inv.slice(10).filter(s => !s).length < 4 && !(this.cooldowns && this.cooldowns.trash > G.tick)) { (this.cooldowns = this.cooldowns || {}).trash = G.tick + 1800; this.setAct({ id: 'trash', kind: 'reflex' }, this.taskTrash(), foes); return; }
     }
     const forced = this.survivalReflex(foes);
@@ -336,7 +385,7 @@ const Bot = {
     const self = this;
     return { step() {
       const p = self.p();
-      if (n.dead || !G.npcs.includes(n) || dist(n.cx, n.cy, p.cx, p.cy) > (n.boss ? 1400 : 600) || self.ignore[n.uid] > G.tick) { this.done = true; return; }
+      if (n.dead || !G.npcs.includes(n) || dist(n.cx, n.cy, p.cx, p.cy) > (n.boss ? 1400 : 600) || (self.ignore[n.uid] > G.tick && dist(n.cx, n.cy, p.cx, p.cy) > 56)) { this.done = true; return; }
       self.combat(n, kite);
     } };
   },
@@ -389,7 +438,12 @@ const Bot = {
   },
   skillRest() {
     const self = this, t0 = G.tick;
-    return { step() { const p = self.p(); self.goal = 'resting (' + Math.round(p.life) + '/' + p.lifeMax + ')'; if (p.life >= p.lifeMax * 0.95 || G.tick - t0 > 4000) this.done = true; } };
+    return { step() {
+      const p = self.p(); self.goal = 'resting (' + Math.round(p.life) + '/' + p.lifeMax + ')';
+      // rest inside the house when there is one (flyers and hoppers can't get in), not on the doorstep
+      if (self.houseValid() && self.base) { const r = self.moveTo(self.base[0], self.base[1], 1); if (r !== true && r !== 'fail') return; }
+      if (p.life >= p.lifeMax * 0.95 || G.tick - t0 > 4000) this.done = true;
+    } };
   },
   skillShelter() {
     const self = this, t0 = G.tick;
@@ -849,11 +903,15 @@ const Bot = {
     this.goal = 'building a house';
     const w = G.world;
     if (!this.houseSpot) {
-      // find flat-ish ground near spawn
+      // find flat-ish ground near spawn, ideally right around it: we respawn at the spawn point, so with the house built over it
+      // every respawn lands inside (a spawn point in the door column respawned us on the roof or held the door open at night)
+      const nc = w.noclipAt;
       for (let d = 0; d < 80 && !this.houseSpot; d++) for (const s of [1, -1]) {
-        const x0 = w.spawnX + d * s;
+        const x0 = w.spawnX - 5 + d * s;
         const ys = []; for (let i = 0; i < 11; i++) ys.push(topSolid(w, x0 + i));
         if (ys.some(y => y < 0)) continue;
+        // the Backrooms glitch block floats at jump height: never build (or jump around) under it
+        if (nc && nc[0] >= x0 - 5 && nc[0] <= x0 + 14 && nc[1] >= Math.min(...ys) - 14) continue;
         if (Math.max(...ys) - Math.min(...ys) <= 3 && !ys.some((y, i) => w.liq(x0 + i, y - 1))) { this.houseSpot = [x0, Math.max(...ys)]; break; }
       }
       if (!this.houseSpot) this.houseSpot = [w.spawnX + 3, topSolid(w, w.spawnX + 3)];
@@ -884,16 +942,21 @@ const Bot = {
         const p = self.p();
         while (i < plan.length && self.planStepDone(plan[i])) i++;
         if (i >= plan.length) { this.done = true; self.houseFinished = true; self.log('house finished'); return; }
-        // clearing needs no tools; everything after it needs a work bench standing at the base
-        if (plan[i][0] !== 'clear') {
-          if (!self.nearestTile(t => t === T.WORKBENCH, 10, 6, self.base)) {
-            if (self.has('work_bench')) { self.task = self.taskPlaceItem('work_bench', self.base); return; }
-            if (self.count('wood') < 10) { self.task = self.taskChop(self.count('wood') + 40); return; }
-            self.task = self.taskCraftAtBase(['work_bench', 1, 'place']); return;
+        // clearing, the shell and the door cut need no station; walls and furniture need the work bench, which goes to its
+        // planned spot inside the house (placed 'wherever there is room' it used to land in a wall column or on the chair's
+        // spot, and the house then looped on a step it could never finish)
+        let cur = plan[i];
+        if (cur[0] === 'wall' || cur[0] === 'furn') {
+          if (!self.houseBench()) {
+            if (!self.has('work_bench')) {
+              if (self.count('wood') < 10) { self.task = self.taskChop(self.count('wood') + 40); return; }
+              self.task = self.taskCraftAtBase(['work_bench', 1]); return;
+            }
+            cur = plan.find(q => q[3] === 'work_bench');
           }
-          // craft prerequisites first
-          for (const [id, n] of Object.entries(needs)) {
-            const placed = id === 'work_bench' ? !!self.nearestTile(t => t === T.WORKBENCH, 12, 8, self.base) : id === 'wooden_door' ? [0, 1, 2].some(j => TILES[w.tile(hx, fy - 1 - j)]?.door) : id === 'wooden_chair' ? w.tile(hx + 7, fy - 1) === T.CHAIR : false;
+          // craft prerequisites first (at the bench: not before it stands)
+          if (cur[3] !== 'work_bench') for (const [id, n] of Object.entries(needs)) {
+            const placed = id === 'work_bench' ? !!self.houseBench() : id === 'wooden_door' ? [0, 1, 2].some(j => TILES[w.tile(hx, fy - 1 - j)]?.door) : id === 'wooden_chair' ? !!self.inHouse(t => t === T.CHAIR) : false;
             if (!placed && self.count(id) < (id === 'wood_wall' ? Math.min(n, 4) : 1) && !(id === 'wood_wall' && i >= plan.findIndex(q => q[0] === 'furn'))) {
               if (id === 'work_bench') continue;
               if (self.count('wood') < 12) { self.task = self.taskChop(self.count('wood') + 40); return; }
@@ -902,7 +965,9 @@ const Bot = {
             }
           }
         }
-        const [op, x, y, item] = plan[i];
+        let [op, x, y, item] = cur;
+        // furniture: any free floor spot inside the room will do (the planned one first)
+        if (op === 'furn' && item !== 'wooden_door' && item !== 'torch') { const s = self.houseFurnSpot(item, x); if (s) [x, y] = s; }
         self.goal = 'building a house (' + i + '/' + plan.length + ': ' + op + ' ' + (item || '') + ' @' + x + ',' + y + ' ' + (TILES[w.tile(x, y)]?.name || 'air') + ')';
         // stand inside the house footprint near the target
         const standX = clamp(x, hx + 2, hx + 8);
@@ -916,10 +981,13 @@ const Bot = {
         if (op === 'clear' || op === 'dig') { self.dig(x, y); return; }
         const id = op === 'block' ? 'wood' : op === 'wall' ? 'wood_wall' : item;
         const s = self.slotOf(it => it.id === id);
-        if (s < 0) { if (id === 'wood') { self.task = self.taskChop(self.count('wood') + 30); } else self.task = self.taskCraftAtBase([id, 1]); return; }
+        if (s < 0) { if (id === 'wood') { self.task = self.taskChop(self.count('wood') + 30); } else self.task = self.taskCraftAtBase([id, id === 'wood_wall' ? 12 : 1]); return; }
         if (s > 9) { self.ensureHotbar(s); return; }
         self.selectSlot(s);
         if (op === 'block' && p.overlapsTile(x, y)) { self.hold(x > self.feet()[0] ? 'a' : 'd'); return; }
+        // furniture (or a pot) standing where a wall/floor block goes: break it first, it is placed again inside later
+        const occ = w.tile(x, y);
+        if (op === 'block' && occ && !TILES[occ].solid && !TILES[occ].cut) { self.dig(x, y); return; }
         self.aimTile(x, y); self.clickOnce();
         if (this.triesI !== i) { this.triesI = i; this.tries = 0; }
         if (++this.tries > 120) { this.tries = 0; self.log('house: giving up on ' + op + ' ' + x + ',' + y); i++; }
@@ -933,8 +1001,29 @@ const Bot = {
     if (op === 'dig') return !t || (td && td.door);
     if (op === 'block') return td && td.solid && !td.door ? true : (td && td.door);
     if (op === 'wall') return w.wall(x, y) !== 0 || (td && td.door);
-    if (op === 'furn') { const want = ITEMS[item].place; return t === want || (want === T.DOOR_CLOSED && td && td.door) || [-1, 0, 1].some(d => w.tile(x + d, y) === want && want === T.WORKBENCH); }
+    if (op === 'furn') { const want = ITEMS[item].place; return t === want || (want === T.DOOR_CLOSED && td && td.door) || ((want === T.WORKBENCH || want === T.CHAIR) && !!this.inHouse(q => q === want)); }
     return true;
+  },
+  // the first tile inside the house room matching pred (furniture can stand anywhere in it)
+  inHouse(pred) {
+    const h = this.houseSpot; if (!h) return null;
+    const w = G.world;
+    for (let y = h[1] - 5; y <= h[1] - 1; y++) for (let x = h[0] + 1; x <= h[0] + 9; x++) if (pred(w.tile(x, y))) return [x, y];
+    return null;
+  },
+  houseBench() { return this.houseSpot ? this.inHouse(t => t === T.WORKBENCH) : this.nearestTile(t => t === T.WORKBENCH, 10, 6, this.base); },
+  // a click tile for `item` on the house floor: the planned column if it fits, else the nearest free one (never right inside the door)
+  houseFurnSpot(item, prefX) {
+    const h = this.houseSpot, w = G.world, t = ITEMS[item].place, td = TILES[t];
+    const mw = td.multi ? td.multi[0] : 1, mh = td.multi ? td.multi[1] : 1, y = h[1] - 1;
+    const xs = []; for (let x = h[0] + 2; x <= h[0] + 9; x++) xs.push(x);
+    xs.sort((a, b) => Math.abs(a - prefX) - Math.abs(b - prefX));
+    for (const x of xs) {
+      const ox = x - Math.floor((mw - 1) / 2), oy = y - (mh - 1);
+      if (ox < h[0] + 2 || ox + mw - 1 > h[0] + 9) continue;
+      if (w.canPlaceObject(ox, oy, t)) return [x, y];
+    }
+    return null;
   },
   // ================= bosses: the end goal (King Skibidi, Eye of Ohio, Tung Tung Tung Sahur, then the Wall in Ohio) =================
   // get the summon item (craft it, or farm the monster drop it is missing), go home, summon it, and let the tactic layer fight

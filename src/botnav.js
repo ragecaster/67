@@ -279,13 +279,13 @@ Object.assign(Bot, {
     for (const [dx, dy] of m.digs || []) {
       const t = w.tile(dx, dy);
       if (t && TILES[t].solid) {
-        if (TILES[t].door) { if (t === T.DOOR_CLOSED) this.rightClickWorld(dx, dy); continue; }
+        if (TILES[t].door) { if (t === T.DOOR_CLOSED) { this.rightClickWorld(dx, dy); this.doorOpened = [dx, dy]; } continue; }
         if (!p.inReach(dx, dy)) break;
         if (this.dig(dx, dy) === 'fail') { nav.replan = true; nav.cooldown = 0; this.replanWhy = 'dig-fail'; }
         return false;
       }
     }
-    for (let j = 0; j < 3; j++) for (const xx of [n.x, n.x + 1]) if (w.tile(xx, n.y - j) === T.DOOR_CLOSED) { this.rightClickWorld(xx, n.y - j); return false; }
+    for (let j = 0; j < 3; j++) for (const xx of [n.x, n.x + 1]) if (w.tile(xx, n.y - j) === T.DOOR_CLOSED) { this.rightClickWorld(xx, n.y - j); this.doorOpened = [xx, n.y - j]; return false; }
     // 2) move the body there
     const targetCx = n.x * TS + 16, dxp = targetCx - p.cx;
     // moves that deliberately leave the ground (drop/fall/leap/jump) may walk off an edge; plain walks may not
