@@ -358,6 +358,11 @@ const Bot = {
         cd['place:' + item] = G.tick + 1500;
         this.setAct({ id: 'place:' + item, kind: 'reflex' }, this.taskCraftAtBase([item, 0, 'placeonly']), foes); return;
       }
+      // wood runs everything (house, platforms, arenas, perches): by day on the surface, top it up before it runs out
+      if (this.houseFinished && !G.isNight() && this.count('wood') - this.reserved('wood') < 50 && this.feet()[1] < G.world.worldSurface + 5 && !(cd.wood > G.tick)) {
+        cd.wood = G.tick + 6000;
+        this.setAct({ id: 'chop:stock', kind: 'reflex' }, this.taskChop(this.count('wood') + 70), foes); return;
+      }
       // keep ~30 wood platforms on hand (15 wood, crafted by hand on the spot): pillars, arenas, perches
       if (this.houseFinished && this.count('wood_platform') < 12 && this.count('wood') - this.reserved('wood') >= 25 && !(cd.plat > G.tick)) {
         cd.plat = G.tick + 3000;
@@ -861,8 +866,13 @@ const Bot = {
     return {
       step() {
         if (self.count('wood') >= target) { this.done = true; return; }
+        if (this.plant) { const r = self.plantAcorn(this.plant); if (r === 'fail') (self.badAcorn = self.badAcorn || new Set()).add(this.plant.join(',')); if (r !== false) this.plant = null; return; }
         if (!tree || G.world.tile(tree[0], tree[1]) !== T.TREE) {
-          tree = self.nearestTile((t, x, y) => t === T.TREE && G.world.treeType(x, y) === TREE_BASE && !self.nearLava(x, y), 140, 40);
+          const isBase = (t, x, y) => t === T.TREE && G.world.treeType(x, y) === TREE_BASE && !self.nearLava(x, y);
+          tree = self.nearestTile(isBase, 40, 20);
+          // no tree close by: an acorn grows one on the spot (felled trees drop 1-2 acorns, so this keeps itself going)
+          if (!tree && self.has('acorn')) { const sp = self.acornSpot(); if (sp) { this.plant = sp; return; } }
+          if (!tree) tree = self.nearestTile(isBase, 140, 40);
           if (!tree) { self.log('no trees nearby, exploring'); this.done = true; self.task = self.taskExplore(); return; }
         }
         const [tx, ty] = tree;
@@ -872,6 +882,34 @@ const Bot = {
         if (r) { self.selectSlot(self.bestSlot('axe')); self.aimTile(tx, ty); self.clickHold(); self.goal = 'chopping (' + self.count('wood') + '/' + target + ')'; }
       },
     };
+  },
+  // a grass cell on the surface within 16 tiles with room for a tree (no tree within 2 columns, open above)
+  acornSpot() {
+    const w = G.world, [fx] = this.feet();
+    for (let d = 3; d <= 16; d++) for (const x of [fx + d, fx - d]) {
+      const y = topSolid(w, x) - 1;
+      if (y < 5 || w.tile(x, y) || !(w.tile(x, y + 1) === T.GRASS || w.tile(x, y + 1) === T.CORRUPT_GRASS || w.tile(x, y + 1) === T.SNOW)) continue;
+      if ([-2, -1, 1, 2].some(i => w.tile(x + i, y) === T.TREE) || (this.badAcorn && this.badAcorn.has(x + ',' + y))) continue;
+      if (this.base && Math.abs(x - this.base[0]) < 8) continue;   // not in the yard
+      let open = true; for (let j = 1; j <= 10 && open; j++) if (w.tile(x, y - j)) open = false;
+      if (open) return [x, y];
+    }
+    return null;
+  },
+  // walk next to the spot and place an acorn on it: true once a tree stands there, 'fail' when it won't take
+  plantAcorn(sp) {
+    const w = G.world, [x, y] = sp;
+    if (w.tile(x, y) === T.TREE) return true;
+    if (w.tile(x, y)) return 'fail';
+    const r = this.moveTo(x + (this.feet()[0] < x ? -2 : 2), y, 1);
+    if (r === 'fail') return 'fail';
+    if (!r && !this.p().inReach(x, y)) return false;
+    const s = this.slotOf(it => it.id === 'acorn');
+    if (s < 0) return 'fail';
+    if (s > 9) { this.ensureHotbar(s); return false; }
+    this.selectSlot(s); this.aimTile(x, y); if (this.p().itemAnim === 0) this.clickOnce();
+    sp.tries = (sp.tries || 0) + 1;
+    return sp.tries > 60 ? 'fail' : false;
   },
   taskBreakAt(pos, label, tool) {
     const self = this;
@@ -892,7 +930,7 @@ const Bot = {
   taskTrash() {
     const self = this;
     const junk = ['dirt_block', 'sand_block', 'clay_block', 'mud_block', 'ash_block', 'snow_block', 'ice_block', 'ebonstone_block', 'cobweb', 'mushroom', 'acorn', 'daybloom', 'blinkroot', 'cactus', 'sandstone_block', 'ebonsand_block', 'wallpaper_block', 'carpet_block', 'granite', 'marble', 'meme67_block', 'bone', 'stone_block', 'glass', 'gel', 'lens'];
-    const keep = { dirt_block: 60, stone_block: 60, gel: 99, lens: 6, bone: 7, glass: 10 };
+    const keep = { dirt_block: 60, stone_block: 60, gel: 99, lens: 6, bone: 7, glass: 10, acorn: 30 };   // acorns grow trees on the spot
     if (this.hell && this.hell.x0) Object.assign(keep, { dirt_block: 400, stone_block: 700, ash_block: 300 });   // the Wall runway is ~450 blocks
     this.goal = 'cleaning inventory';
     let step = 0;
@@ -901,14 +939,36 @@ const Bot = {
         self.uiBusy = true;
         const p = self.p();
         if (step === 0) { if (!UI.invOpen) self.press('Escape'); step = 1; return; }
-        // shift-click (trash) the first junk stack beyond what we keep
-        const i = p.inv.findIndex((s, k) => k >= 10 && s && junk.includes(s.id) && invCount(p.inv, s.id) > (keep[s.id] || 0));
+        // shift-click (trash) the first junk stack beyond what we keep, then gear we've outgrown
+        let i = p.inv.findIndex((s, k) => k >= 10 && s && junk.includes(s.id) && invCount(p.inv, s.id) > (keep[s.id] || 0));
+        if (i < 0) i = p.inv.findIndex((s, k) => k >= 10 && s && self.obsolete(s.id));
         if (i < 0 || step > 40) { if (UI.invOpen) self.press('Escape'); this.done = true; self.uiBusy = false; return; }
         Input.keys.Shift = true; Input.shift = true;
         const [x, y] = self.slotPos(i); self.uiClick(x, y);
         step++;
       },
     };
+  },
+  // gear that can only take up a slot now: a weapon other than The 67 once we have it (it's best in slot up to the Wall), else one
+  // weaker than our best; a tool tier below our best of its kind; armor no better than what we wear; arrows with no bow kept.
+  // Nothing a planned craft has reserved.
+  obsolete(id) {
+    const it = ITEMS[id], p = this.p();
+    if (!it || this.reserved(id) > 0 || it.consumable || it.ammoType && id !== 'wooden_arrow') return false;
+    const inv = p.inv.filter(Boolean).map(s => s.id);
+    if (it.pick || it.axe || it.hammer) {
+      const k = it.pick ? 'pick' : it.axe ? 'axe' : 'hammer';
+      return inv.some(o => o !== id && (ITEMS[o][k] || 0) > (it[k] || 0) && !!ITEMS[o].pick === !!it.pick);
+    }
+    if (it.armor) { const cur = p.armor[{ head: 0, body: 1, legs: 2 }[it.armor]]; return !!cur && (ITEMS[cur.id].defense || 0) >= (it.defense || 0); }
+    const power = o => { const q = ITEMS[o]; return expectedHit(q) * 60 / Math.max(6, q.useAnim || q.useTime); };
+    if (id === 'wooden_arrow') return this.owns('the_67') && !inv.some(o => ITEMS[o].ammo === 'arrow' && !this.obsolete(o));
+    if (it.damage && !it.ammoType && it.use) {
+      if (id === 'the_67') return false;
+      if (this.owns('the_67')) return true;
+      return inv.some(o => o !== id && ITEMS[o].damage && !ITEMS[o].ammoType && !ITEMS[o].pick && !ITEMS[o].axe && !ITEMS[o].hammer && !ITEMS[o].consumable && power(o) > power(id) * 1.2);
+    }
+    return false;
   },
   // equip / use an item, tracked by id (its slot is looked up live every step, so it can't loop on a stale slot)
   taskEquip(id) {
