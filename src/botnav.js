@@ -226,7 +226,8 @@ Object.assign(Bot, {
     const ng = this.nav;
     const moved = !ng || Math.abs(ng.tx - tx) > 2 || Math.abs(ng.ty - ty) > 2 || ng.tol !== tol;
     // a moving goal (chasing an enemy) must not trigger a full A* every tick
-    const needPlan = !ng || (moved && (G.tick - ng.at >= 25 || Math.abs(ng.tx - tx) + Math.abs(ng.ty - ty) > 12)) || ng.replan || (G.tick - ng.at > 900);
+    // (an empty plan is retried once its cooldown is over: it used to sit there for 900 ticks)
+    const needPlan = !ng || (moved && (G.tick - ng.at >= 25 || Math.abs(ng.tx - tx) + Math.abs(ng.ty - ty) > 12)) || ng.replan || (G.tick - ng.at > 900) || (!ng.path.length && G.tick >= (ng.cooldown || 0));
     if (needPlan) {
       if (ng && ng.cooldown > G.tick && Math.abs(ng.tx - tx) <= 2 && Math.abs(ng.ty - ty) <= 2) { this.nav.replan = false; }
       else {
@@ -277,7 +278,9 @@ Object.assign(Bot, {
     let found = -1;
     for (let j = Math.max(0, nav.i - 2); j < Math.min(nav.path.length, nav.i + 8); j++) {
       const q = nav.path[j];
-      if (Math.abs(p.cx - (q.x * TS + 16)) < 9 && q.y === ny) found = j;
+      // (< 8 px: exactly the band in which nodeOf() puts us on that node; with 9 the bot could count a step as done that
+      // nodeOf() never agreed with, and stood still between 'path-end' and a 1-step replan forever)
+      if (Math.abs(p.cx - (q.x * TS + 16)) < 8 && q.y === ny) found = j;
     }
     if (found >= nav.i - 1 && found >= 0 && settled) { if (found + 1 > nav.i) nav.lastProgress = G.tick; nav.i = found + 1; }
     else if (found < 0 && settled && nav.i > 0) {

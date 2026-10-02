@@ -1,5 +1,6 @@
 // Early-game timeline: when the house, stations and first metal gear are done, deaths, and where the time goes.
-// usage: node early.js <ticks> <seed> [teacher|jev]   env LOG=file dumps every bot log line (with tick), SNAPAT=t1,t2 SNAPDIR=dir saves snapshots
+// usage: node early.js <ticks> <seed> [teacher|jev]   env LOG=file dumps every bot log line (with tick), SNAPAT=t1,t2 SNAPDIR=dir saves snapshots,
+//   TRACE=t0,n,every adds a per-tick trace (position, goal, nav step, keys) to the log from tick t0 for n ticks
 const run = require('./harness');
 const fs = require('fs');
 const [TICKS, SEED, MODE] = [parseInt(process.argv[2] || '120000'), process.argv[3] || 'evalA', process.argv[4] || 'teacher'];
@@ -17,7 +18,7 @@ run(async (page) => {
   for (let done = 0; done < TICKS; done += CH) {
     const snap = SNAPAT.find(t => t > done && t <= done + CH);
     const k = snap ? snap - done : CH;
-    const r = await page.evaluate((k) => {
+    const r = await page.evaluate(([k, TR]) => {
       const W = window.__e, p = G.player;
       for (let i = 0; i < k; i++) {
         Bot.wantsDraw = false; G.update(); if (Bot.wantsDraw || G.tick % 1200 === 0) G.draw(); Input.endFrame();
@@ -33,6 +34,10 @@ run(async (page) => {
           if (!M.def5 && p.calc.defense >= 5) M.def5 = G.tick;
         }
         if (G.tick === 60000 || G.tick === 120000) W.deathsAt[G.tick] = Bot.deaths;
+        if (TR && G.tick >= TR[0] && G.tick < TR[0] + TR[1] && G.tick % (TR[2] || 10) === 0) {
+          const nv = Bot.nav, nx = nv && nv.path && nv.path[nv.i];
+          W.lines.push(`${G.tick} T feet ${Bot.feet()} v ${p.vx.toFixed(1)},${p.vy.toFixed(1)} g${p.onGround ? 1 : 0} life ${Math.round(p.life)} held ${(p.inv[p.sel] || {}).id} | ${Bot.goal} | why ${Bot.why} | nav ${nv ? (nv.tx + ',' + nv.ty + ' i' + nv.i + '/' + nv.path.length + (nx ? ' next ' + nx.move.t + '@' + nx.x + ',' + nx.y : '') + (nv.cooldown > G.tick ? ' cd' : '')) : '-'} keys ${['a', 'd', ' '].filter(k => Input.keys[k]).join('')} ${Bot.dbg || ''}`);
+        }
         if (G.tick % 50) continue;
         const g = (p.dead ? 'dead' : (Bot.goal || '-')).replace(/\d+/g, '#').replace(/\(.*?\)/g, '').trim().split(' ').slice(0, 3).join(' ');
         const key = (G.isNight() ? 'N ' : 'D ') + g; W.goal[key] = (W.goal[key] || 0) + 50;
@@ -40,7 +45,7 @@ run(async (page) => {
         const pl = (Bot.plan && Bot.plan.label || '-').replace(/\(.*\)/, '').trim(); W.plan[pl] = (W.plan[pl] || 0) + 50;
       }
       return `t=${G.tick} deaths=${Bot.deaths} life=${p.life}/${p.lifeMax} def=${p.calc.defense} at=${Bot.feet()} | ${Bot.plan && Bot.plan.label} | ${Bot.goal}`;
-    }, k);
+    }, [k, process.env.TRACE ? process.env.TRACE.split(',').map(Number) : null]);
     console.error(r);
     if (snap && process.env.SNAPDIR) { await page.saveSnap(process.env.SNAPDIR + '/' + SEED + '_' + snap + '.json'); console.error('snap ' + snap); done = snap - CH; }
   }
