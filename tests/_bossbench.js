@@ -38,7 +38,7 @@ run(async (page) => {
       Bot.wantsDraw = false; G.update(); if (Bot.wantsDraw) G.draw(); Input.endFrame();
       const b = G.npcs.find(n => n.boss && !n.dead);
       if (b && !f) f = { t: G.tick, life0: b.life, taken: 0, last: p.life };
-      if (TRACE && b && G.tick % (+TRACE || 30) === 0) out.trace = (out.trace || []).concat([[G.tick, Math.round(b.cx - p.cx), Math.round(b.cy - p.cy), Math.round(p.life), Math.round(b.life), b.state, Bot.goal, Bot.why, Bot.act && Bot.act.id, p.selected, p.inv[p.selected] && p.inv[p.selected].id, Bot.feet(), Object.keys(Input.keys).filter(k => Input.keys[k]).join('')].join(' ')]);
+      if (TRACE && b && G.tick % (+TRACE || 30) === 0) out.trace = (out.trace || []).concat([[G.tick, Math.round(b.cx - p.cx), Math.round(b.cy - p.cy), Math.round(p.life), Math.round(b.life), b.state, Bot.goal, Bot.why, Bot.act && Bot.act.id, p.selected, p.inv[p.selected] && p.inv[p.selected].id, Bot.feet(), Object.keys(Input.keys).filter(k => Input.keys[k]).join(''), Bot.perch && [-2,-1,0,1].map(dy => [0,1,2].map(i => G.world.tile(Bot.perchSpot()[0] + Bot.perch[3] * i, Bot.perchSpot()[1] + dy) ? 'X' : '.').join('')).join('/')].join(' ')]);
       if (f) { if (p.life < f.last) f.taken += f.last - p.life; f.last = p.life; }
       if (f && (!b || p.dead)) {
         f.dur = (G.tick - f.t) / 60; f.result = G.world.flags[KEY] ? 'WIN' : p.dead ? 'DIED' : 'despawn';

@@ -464,7 +464,7 @@ const Bot = {
       else if (d > want + 200 || !lineOfSight(G.world, p.cx, p.cy, n.cx, n.cy)) { if (d > 400 || this.stuck > 20) tile(); else this.holdSafe(toward); }
       if (n.boss && (G.tick % 90 < 12 || G.projectiles.some(q => q.hostile && !q.dead && dist(q.cx, q.cy, p.cx, p.cy) < 120))) this.jump();
     }
-    if (p.collidedX && p.onGround) this.jump();
+    if (p.collidedX && p.onGround && !(this.perch && /^tung-(perch|ledge)/.test(this.why))) this.jump();   // never hop the perch fence
     // aim (lead moving targets with projectiles) and attack when it can land
     let ax = n.cx, ay = n.cy;
     if (!melee && it.use !== 'throw') { const sp = it.shootSpeed || 8, t = Math.min(45, d / sp); ax += (n.vx || 0) * t; ay += (n.vy || 0) * t - d * 0.015; }
@@ -1194,7 +1194,8 @@ const Bot = {
           if (key === 'tung_sahur') {
             if (!self.perch && self.count('wood_platform') < self.LEDGE && self.count('wood') >= 5) { sub = self.taskCraftAtBase(['wood_platform', Math.ceil((self.LEDGE - self.count('wood_platform')) / 2)]); return; }
             const perch = self.perch || (self.count('wood_platform') >= self.LEDGE && self.spareBlocks() - self.count('wood') >= self.PERCH_H + 2 ? self.tungPerch(home) : null);
-            if (perch && !self.onPerch()) { self.goal = 'building a perch for ' + name; if (self.climbPerch() === 'fail') { self.log('no perch for ' + name + ', fighting on the ground'); self.perch = null; self.perchFailed = G.tick; } return; }
+            const climbed = perch ? self.climbPerch() : true;   // true once on the spot with the fence up
+            if (perch && climbed !== true) { self.goal = 'building a perch for ' + name; if (climbed === 'fail') { self.log('no perch for ' + name + ', fighting on the ground'); self.perch = null; self.perchFailed = G.tick; } return; }
           }
           const s = SDK.slotOf(B.item);
           if (s > 9) { self.ensureHotbar(s); return; }
@@ -1288,7 +1289,19 @@ const Bot = {
   perchFail(why) { this.log('perch: ' + why); return 'fail'; },
   climbPerch() {
     const pr = this.perch, p = this.p(), w = G.world, [fx, fy] = this.feet(), dir = pr[3];
-    if (this.onPerch()) { if (Math.abs(p.vx) > 0.4) this.hold(p.vx > 0 ? 'a' : 'd'); return true; }
+    if (this.onPerch()) {
+      if (Math.abs(p.vx) > 0.4) this.hold(p.vx > 0 ? 'a' : 'd');
+      // a 2-block fence past the spot: night flyers' knockback must not throw us off the end of the ledge
+      const [sx, sy] = this.perchSpot(), fxc = sx + dir;
+      for (const fy2 of [sy, sy - 1]) if (!w.tile(fxc, fy2) && !pr.noFence) {
+        const bs = this.spareBlockSlot(false);
+        if (bs < 0 || (this.fenceTries = (this.fenceTries || 0) + 1) > 240) { pr.noFence = true; break; }
+        if (bs > 9) { this.ensureHotbar(bs); return false; }
+        this.selectSlot(bs); this.aimTile(fxc, fy2); if (p.itemAnim === 0) this.clickOnce();
+        return false;
+      }
+      return true;
+    }
     const onTop = fy <= pr[1] + 1 && p.onGround && fy >= pr[1] - 1 && Math.abs(fx - pr[0]) <= this.LEDGE;
     if (onTop) {
       if (fx === pr[0] && fy !== pr[1] && w.tile(pr[0] + dir, pr[1] + 1) !== T.PLATFORM) { pr[1] = fy; return false; }   // the pillar top is where we stand
@@ -1312,11 +1325,15 @@ const Bot = {
       if (fx !== sx) this.hold(sx > fx ? 'd' : 'a');
       return false;
     }
-    if (fx !== pr[0]) {
+    // the pillar from an earlier attempt is still standing: pillar up again right beside it (away from the ledge)
+    if (w.solid(pr[0], pr[2]) && w.solid(pr[0], pr[1] + 1) && !pr.climb) pr.climb = pr[0] - dir;
+    const cc = pr.climb != null ? pr.climb : pr[0];
+    if (pr.climb != null && fx === cc && fy <= pr[1] + 1 && p.onGround) { this.hold(dir > 0 ? 'd' : 'a'); return false; }   // up: step over onto the old pillar
+    if (fx !== cc) {
       if (fy < pr[2] - 8 && p.onGround) return this.perchFail('up on the wrong column ' + fx + ',' + fy);   // up in the air on the wrong column
       // standing right next to the spot on the same ground: the pillar can just as well go here
-      if (Math.abs(fx - pr[0]) <= 3 && Math.abs(fy - pr[2]) <= 2 && p.onGround && this.perchOpen(fx, fy, pr[3])) { pr[0] = fx; pr[2] = fy; pr[1] = fy - this.PERCH_H; }
-      else { const r = this.moveTo(pr[0], pr[2], 1); return r === 'fail' ? this.perchFail('cannot walk to the pillar spot') : false; }
+      if (pr.climb == null && Math.abs(fx - pr[0]) <= 3 && Math.abs(fy - pr[2]) <= 2 && p.onGround && this.perchOpen(fx, fy, pr[3])) { pr[0] = fx; pr[2] = fy; pr[1] = fy - this.PERCH_H; }
+      else { const r = this.moveTo(cc, pr[2], pr.climb != null ? 0 : 1); return r === 'fail' ? this.perchFail('cannot walk to the pillar spot') : false; }
     }
     const bs = this.spareBlockSlot(false);
     if (bs < 0) return this.perchFail('out of blocks (' + this.spareBlocks() + ' spare)');
