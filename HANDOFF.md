@@ -3,7 +3,39 @@
 This is a Terraria clone with Gen Z / Gen Alpha brainrot memes. It runs in the browser with plain JS and a canvas, and there's no build step. It's live at https://ragecaster.github.io/67/ (GitHub Pages deploys from `main`, root).
 Watch the playtest bot at https://ragecaster.github.io/67/?bot&turbo=4. In the game, F8 toggles the bot and F9 cycles its speed from 1x to 64x.
 
-## Session 4 stop point: the boss rush (read this first)
+## Session 5: the owner's gameplay feedback (read this first)
+
+The owner watched the bot and asked for player-like play. Here is what each request led to. Everything is committed on local `main` (not pushed).
+
+- **Eye of Ohio arena and dodging** (`eyeDance`, `eyeSim`, `eyeArenaSite`, `arenaTrees`; the arena branch is in `taskBoss`):
+  - Before summoning, the bot fells any trees in the way. It then builds a pillar plus a 30-platform strip about 8 tiles over the ground (20+ platforms is accepted if the strip gets cut short).
+  - During the fight it replans every 4 ticks: 45 short move/jump plans, each simulated 100 ticks ahead against a copy of the Eye AI. Keep `eyeSim` in step with `bosses.js eye()`.
+  - The offline model is `tools/jev/eyesim.py`: 0 dash hits per 1000 ticks, against ~5–10 for plain strafing.
+  - Bench (`ARENA=1 REPS=n SEED=… node tests/_bossbench.js eye_of_cthulhu n140`): 18/18 wins on 9 worlds, ~40 damage per fight, 0–2 boss hits. Before: 1/10 wins at 100 life, 100–150 damage.
+  - On the arena or perch, small mobs are shot from where the bot stands (`anchored`): chasing them walked it off the edge.
+- **Platforms instead of dirt:**
+  - Navigation pillars use wood platforms first (`climbSlot`). A platform pillar works as a ladder afterwards.
+  - The bot keeps 10 platforms in reserve (`PLATFORM_KEEP`) and about 30 crafted.
+  - **Tung's perch stays solid blocks**, because Tung lands on platforms and leaps again.
+  - Perch and arena pillars walk to the exact column (tolerance 1 left the bot standing beside it forever).
+- **Crystals:** any aura crystal within 40 tiles is taken whatever the plan is, with a one-time re-decision when one comes within 30 tiles.
+- **The 67 is best in slot through the Wall.** The Wall gate is now dps 80, there are no arrows unless a bow is the weapon, and no Ohio/hellstone gear is in `PLAN_*` or `JEV_GOALS` (that's why the bot was mining Hellstone in lava). Demonite goes to the Nightmare pickaxe, then Brainrot (shadow) armor while defense is below 16 (`brainrotWants`, `brainrotNeeds`).
+  - The chunk farm now hunts Doomscrollers stuck in the chasms; they fill the spawn cap. It's still slow, about 1 chunk per 3k ticks.
+- **Inventory:** when the bag is full, the bot shift-click-trashes outgrown gear (`obsolete()`; `tests/trashtest.js`). Game fix: clicking the trash slot with a held item now deletes the old trash item (it used to swap).
+- **Wood:** a reflex chops when wood is under 50 by day. `taskChop` plants acorns, which grow a tree instantly, when no tree is within 40 tiles (`tests/acorntest.js`). Acorns are kept (30).
+- **Not done:**
+  - Ohio descent and lava safety beyond avoiding lava-adjacent ore.
+  - The owner's ideas for Ohio: clear room left/right so demons come into the open, dig a drain pocket under hellstone, use platforms over lava.
+  - Tung remains the weakest fight (~3/8 first-fight wins at 140 life on the bench, the same as before).
+- **Bench caveat:** the bench is not run-to-run deterministic. Compare over several seeds and runs, never a single run.
+- **Boss rush, rules, 330k ticks, 6 seeds** (outputs in `tools/jev/data/rush/`):
+  - HEAD `b5b`: 11 bosses, 3/3 on 2 seeds (302k, 313k), 2 Eye kills.
+  - `s5c`: 11 bosses, 2 seeds (190k, 236k), 4 Eye kills.
+  - Final `s5d`: 10 bosses, 2 seeds (233k, 319k), 4 Eye kills.
+  - The Eye kill rate doubled and completions come sooner. The overall rate is unchanged within the noise; Tung and slow gold for The 67 are the bottlenecks now.
+  - The retrained TerraJev weights from session 4 are still uncommitted and not evaluated.
+
+## Session 4 stop point: the boss rush
 
 **Active goal from the owner:** TerraJev (the learned policy, `TerraJev.mode = 'jev'`, falling back to the rules when its confidence is below 0.3) kills **King Skibidi, the Eye of Ohio and Tung Tung Tung Sahur within 1.5 h of real-time play = 324,000 ticks** (60 ticks/s). The first target was 1 h (216k ticks); the owner relaxed it. One day/night cycle is 86,400 ticks and the game starts at 13,500 ticks into day 0, so the nights fall at 40.5–72.9k, 127–159k, 213–246k and 300–332k. The Eye and Tung can only be summoned at night.
 
