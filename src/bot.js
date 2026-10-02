@@ -1636,7 +1636,22 @@ const Bot = {
         const n = self.brainrotNeeds();   // shrinks as bars and pieces get made
         const chunksOk = self.count('rotten_chunk') >= n.chunks, oreOk = self.count('demonite_ore') >= n.ore;
         if (!self.brainrotWants().length || (chunksOk && oreOk)) { this.done = true; return; }
-        if (!chunksOk) { const bx = w.biomes.rotX; self.moveTo(bx + (Math.floor(self.t / 900) % 2 ? 20 : -20), topSolid(w, bx) - 1, 4); self.goal = 'hunting Doomscrollers for chunks (' + self.count('rotten_chunk') + '/' + n.chunks + ')'; return; }
+        if (!chunksOk) {
+          // Doomscrollers get stuck in the chasms below (out of sight, never dying) and fill the spawn cap, so no new ones come:
+          // go down to them like a player would (the digging A*, to the floor under one), give up on one after 900 ticks
+          const P = self.p(), ign = self.ignore = self.ignore || {};
+          const prey = G.npcs.filter(m => m.type === 'eater_of_souls' && !m.dead && Math.abs(m.cx - P.cx) < 1600 && Math.abs(m.cy - P.cy) < 1000 && !(ign[m.uid] > G.tick))
+            .sort((a, b) => dist(a.cx, a.cy, P.cx, P.cy) - dist(b.cx, b.cy, P.cx, P.cy))[0];
+          self.goal = 'hunting Doomscrollers for chunks (' + self.count('rotten_chunk') + '/' + n.chunks + ')';
+          if (prey) {
+            if (this.preyId !== prey.uid) { this.preyId = prey.uid; this.preySince = G.tick; }
+            if (G.tick - this.preySince > 900) { ign[prey.uid] = G.tick + 3600; this.preyId = null; return; }
+            const px = Math.floor(prey.cx / TS); let py = Math.floor(prey.cy / TS); while (py < w.h - 1 && !w.solid(px, py + 1) && py - Math.floor(prey.cy / TS) < 12) py++;
+            if (self.moveTo(px, py, 3) === 'fail') ign[prey.uid] = G.tick + 1800;
+            return;
+          }
+          const bx = w.biomes.rotX; self.moveTo(bx + (Math.floor(self.t / 900) % 2 ? 20 : -20), topSolid(w, bx) - 1, 4); return;
+        }
         if (!this.sub || this.sub.done) this.sub = self.taskMine('ore', () => self.count('demonite_ore') >= self.brainrotNeeds().ore, [T.DEMONITE]);
         this.sub.step();
       },

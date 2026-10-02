@@ -15,7 +15,7 @@ async function applyStage(page, STAGE) {
       p.armor[0] = { id: 'gold_helmet', count: 1 }; p.armor[1] = { id: 'gold_chainmail', count: 1 }; p.armor[2] = { id: 'gold_greaves', count: 1 }; p.lifeMax = 300; p.life = 300;
     }
     if (stage === 'posteye') {   // right after the Eye: The 67, iron armor (below the Wall's defense gate), its demonite drop
-      G.world.flags.eye_of_cthulhu = true; G.world.flags.king_slime = true; give('the_67'); give('demonite_ore', 60); give('iron_bar', 10);
+      G.world.flags.eye_of_cthulhu = true; G.world.flags.king_slime = true; G.world.flags.tung_sahur = true; give('the_67'); give('demonite_ore', 60); give('iron_bar', 10);
       p.armor[0] = { id: 'iron_helmet', count: 1 }; p.armor[1] = { id: 'iron_chainmail', count: 1 }; p.armor[2] = { id: 'iron_greaves', count: 1 }; p.lifeMax = 300; p.life = 300;
     }
     if (stage === 'hell') { give('nightmare_pickaxe'); give('demonite_bar', 12); give('the_67'); p.lifeMax = 300; p.life = 300; }
