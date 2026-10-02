@@ -50,6 +50,8 @@ Object.assign(Bot, {
     const p = this.p(), boss = foes.some(n => n.boss);
     if (boss || !this.base) return null;
     const [fx, fy] = this.feet(), dHome = Math.abs(fx - this.base[0]) + Math.abs(fy - this.base[1]);
+    // in Ohio home is ~470 tiles up through lava: potions (the 40% reflex) are the way out, not running
+    if (fy > G.world.hellLayer - 20 && this.potionCount() > 0) return null;
     if (p.life < p.lifeMax * 0.35 && dHome > 6) return 'flee';     // badly hurt away from home: go home, enemies or not
     return null;
   },
@@ -143,6 +145,9 @@ Object.assign(Bot, {
       if (has('flee') && d < 200) { (this.fledFrom = this.fledFrom || {})[n.uid] = fled + 1; return 'flee'; }   // far away: carry on, don't run from shadows
       const any = cands.find(c => c.kind === 'fight' || c.kind === 'kite'); if (any) return any.id;
     }
+    // resume a committed long trip (Ohio, a boss, the Brainrot) after a fight instead of re-planning from scratch
+    const parkedTrip = this.parked && Object.keys(this.parked).find(id => /^(hell|boss:|brainrot)/.test(id) && has(id) && !this.parked[id].task.done);
+    if (parkedTrip && life >= 0.6) return parkedTrip;
     if (life < 0.6 && has('rest')) return 'rest';
     if (life < 0.6 && has('home')) return 'home';              // don't sit around hurt in a cave: heal at the house
     const plan = this.plan || this.planFrontier(cands);

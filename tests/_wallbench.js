@@ -10,9 +10,10 @@ run(async (page) => {
     p.armor = ['gold_helmet', 'gold_chainmail', 'gold_greaves'].map(id => ({ id, count: 1 }));
     ['king_slime', 'eye_of_cthulhu', 'tung_sahur'].forEach(k => G.world.flags[k] = true);
     for (let i = 0; i < 3; i++) { G.update(); Input.endFrame(); }
-    Bot.base = Bot.feet(); Bot.houseSpot = Bot.feet(); Bot.houseFinished = true;
-    Bot.setAct({ id: 'hell', kind: 'hell' }, Bot.taskHell(), []);
-  });
+      });
+  // build the house first (the plan wants one), then go
+  await page.evaluate(() => { for (let i = 0; i < 200000 && !(Bot.houseValid() && Bot.houseFinished); i++) { Bot.wantsDraw = false; G.update(); if (Bot.wantsDraw) G.draw(); Input.endFrame(); }
+    Bot.setAct({ id: 'hell', kind: 'hell' }, Bot.taskHell(), []); });
   for (let k = 0; k < 20; k++) {
     const t0 = Date.now();
     const r = await page.evaluate(() => {

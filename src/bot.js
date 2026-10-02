@@ -221,7 +221,7 @@ const Bot = {
     // watchdog: abandon tasks that make no progress (no movement, no inventory change)
     const sig = Math.round(p.x / 48) + ',' + Math.round(p.y / 48) + '|' + p.inv.reduce((n, s) => n + (s ? s.count : 0), 0);
     if (sig !== this.progSig) { this.progSig = sig; this.progAt = G.tick; }
-    if (this.task && G.tick - this.progAt > 2400 && !/^(hiding|resting|waiting)/.test(this.goal || '')) {   // standing still is the point of these
+    if (this.task && G.tick - this.progAt > 2400 && !/^(hiding|resting|waiting|going down to Ohio)/.test(this.goal || '') && !(this.act && this.act.kind === 'hell' && G.tick - this.progAt < 9000)) {   // the Ohio trip has its own failure handling   // standing still is the point of these
       this.log('watchdog: abandoning "' + this.goal + '" (no progress)');
       this.cooldowns = this.cooldowns || {}; this.cooldowns[this.lastTaskId || this.goal] = G.tick + 3600;
       this.task = null; this.nav = null; this.progAt = G.tick; this.watchdogs = (this.watchdogs || 0) + 1;
@@ -261,6 +261,7 @@ const Bot = {
     if (!A || !this.task || this.task.done) return true;
     if (this.foesNear().some(n => !A.seen.has(n.uid))) return true;
     if (p.life < A.life - p.lifeMax * 0.15) return true;
+    if (['hell', 'boss', 'brainrot'].includes(A.kind)) return false;   // long trips stay committed (enemies and big hits still interrupt above)
     return G.tick - A.at >= (ACT_COMBAT.includes(A.kind) ? 60 : 1800);
   },
   decideAct() {
@@ -1093,15 +1094,22 @@ const Bot = {
         if (H.ph === 'descend') {
           self.goal = 'going to Ohio';
           if (fy === H.y && Math.abs(fx - H.col) <= 2) { H.ph = 'bridge'; self.milestone('reached Ohio'); }
-          else if (H.shaft) {   // the route is too long for the planner: dig straight down above the island
-            const r = self.digShaft(H.col, H.y);
-            if (r === 'fail') { H.shaft = false; return fail(this, 'shaft blocked'); }
-            if (r === true) { const r2 = self.moveTo(H.col, H.y, 1); if (r2 === true) { H.ph = 'bridge'; self.milestone('reached Ohio'); } }
-            return;
-          } else {
-            const r = self.moveTo(H.col, H.y, 1);
-            if (r === true) { H.ph = 'bridge'; self.milestone('reached Ohio'); }
-            else if (r === 'fail' && (this.fails = (this.fails || 0) + 1) > 1) { H.shaft = true; self.log('Ohio: no path down, digging a shaft at ' + H.col); }
+          else {
+            // the whole route is too long for one plan: go down in legs of ~45 tiles (the planner handles drops and digging)
+            if (!this.leg) {   // fixed until reached or failed
+              let lx = H.col + (this.legShift || 0); const ly = Math.min(H.y, fy + 45), b = w.backrooms;
+              // the Backrooms are a real room underground: entering it means the EXIT sign teleports us back up. Go around it.
+              if (b && fy < b.y0 + b.h + 4 && ly > b.y0 - 6 && lx > b.x0 - 8 && lx < b.x0 + b.w + 8) lx = Math.abs(fx - (b.x0 - 10)) < Math.abs(fx - (b.x0 + b.w + 10)) ? b.x0 - 10 : b.x0 + b.w + 10;
+              this.leg = [lx, ly];
+            }
+            const [legX, legY] = this.leg;
+            const r = self.moveTo(legX, legY, legY === H.y ? 1 : 6);
+            if (r === true) { this.legFails = 0; this.leg = null; if (legY === H.y) { H.ph = 'bridge'; self.milestone('reached Ohio'); } }
+            else if (r === 'fail') {
+              this.leg = null; this.legFails = (this.legFails || 0) + 1; this.legShift = [0, 12, -12, 24, -24][this.legFails % 5];
+              if (this.legFails > 10) return fail(this, 'cannot reach the island');
+            }
+            self.goal = 'going down to Ohio (' + (H.y - fy) + ' tiles to go)';
             return;
           }
         }
@@ -1141,23 +1149,6 @@ const Bot = {
         if (r === 'fail') huntT = 0;
       },
     };
-  },
-  // dig a 2-wide shaft straight down from the surface at column tx until depth ty (or until we stand above the island).
-  // Lava right below: step the shaft sideways. Returns true when at depth, 'fail' when it can't continue.
-  digShaft(tx, ty) {
-    const w = G.world, p = this.p(), [fx, fy] = this.feet();
-    if (fy >= ty - 1) return true;
-    const sh = this.shaftSt || (this.shaftSt = { x: tx, tries: 0 });
-    if (Math.abs(fx - sh.x) > 1 && fy < w.worldSurface + 2) { const r = this.moveTo(sh.x, fy, 1); if (r === 'fail') sh.x = fx; this.goal = 'walking to the shaft spot'; return false; }
-    if (Math.abs(fx - sh.x) > 1) sh.x = fx;           // already underground: keep digging where we are
-    const lava = [1, 2, 3].some(j => [0, 1].some(i => w.liq(fx + i, fy + j) > 20 && w.ltype[w.idx(fx + i, fy + j)] === 1));
-    if (lava) { sh.x = fx + (sh.side = sh.side || (Math.random() < 0.5 ? -3 : 3)); if (++sh.tries > 20) return 'fail'; this.hold(sh.side > 0 ? 'd' : 'a'); return false; }
-    this.goal = 'digging down to Ohio (' + (ty - fy) + ' tiles to go)';
-    for (const [x, y] of [[fx, fy + 1], [fx + 1, fy + 1], [fx, fy + 2], [fx + 1, fy + 2]]) {
-      const t = w.tile(x, y);
-      if (t && TILES[t] && TILES[t].solid) { if (this.dig(x, y) === 'fail') { if (++sh.tries > 20) return 'fail'; sh.x = fx + 2; } return false; }
-    }
-    return false;   // nothing below: we are falling down the shaft
   },
   // the Wall: stay ahead of its face, keep firing The 67 at it, hop over eye lasers
   wallFight(n) {
