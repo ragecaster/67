@@ -415,8 +415,8 @@ const UI = {
       lines.push([it.name + (h.stack.count > 1 ? ' (' + h.stack.count + ')' : ''), RARE_COLORS[it.rare || 0]]);
       if (it.damage && !it.ammoType) {
         const kind = { melee: 'melee', ranged: 'ranged', magic: 'magic', thrown: 'thrown' }[it.dmgType] || '';
-        lines.push([(it.fixedDamage ? 67 : Math.round(G.player.finalDamage(it, it.damage))) + ' ' + kind + ' damage', '#fff']);
-        lines.push([(it.fixedDamage ? 0 : G.player.calc.crit) + '% critical strike chance', '#fff']);
+        lines.push([Math.round(G.player.finalDamage(it, it.damage)) + ' ' + kind + ' damage' + (it.sixSeven ? ' (' + Math.round(it.sixSeven * 100) + '%: 67)' : ''), '#fff']);
+        lines.push([G.player.calc.crit + '% critical strike chance', '#fff']);
         const ut = it.useTime;
         lines.push([ut <= 8 ? 'Insanely fast speed' : ut <= 20 ? 'Very fast speed' : ut <= 25 ? 'Fast speed' : ut <= 30 ? 'Average speed' : ut <= 35 ? 'Slow speed' : 'Very slow speed', '#fff']);
         if (it.kb) lines.push([it.kb >= 9 ? 'Insane knockback' : it.kb >= 6 ? 'Strong knockback' : it.kb >= 4 ? 'Average knockback' : 'Weak knockback', '#fff']);

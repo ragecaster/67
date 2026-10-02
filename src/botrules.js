@@ -23,9 +23,9 @@ Object.assign(Bot, {
     const p = this.p(), ws = this.bestWeaponSlot(n || null);
     if (ws < 0) return { dps: 0, melee: true };
     const it = ITEMS[p.inv[ws].id];
-    let dmg = it.fixedDamage ? 67 : it.damage;
+    let dmg = it.damage;
     if (it.ammo) { const a = p.findAmmo(it.ammo); if (a >= 0) dmg += ITEMS[p.inv[a].id].damage || 0; }
-    if (n && !it.fixedDamage) dmg = Math.max(1, dmg - (n.defense || 0) * 0.5);
+    dmg = n ? expectedHit(Object.assign({}, it, { damage: dmg }), n.defense || 0) : expectedHit(Object.assign({}, it, { damage: dmg }));
     const melee = (it.use === 'swing' || it.use === 'thrust') && !it.shoot;
     return { dps: dmg * 60 / Math.max(6, it.useAnim || it.useTime), melee };
   },
@@ -67,10 +67,10 @@ Object.assign(Bot, {
     const ws = this.bestWeaponSlot(fake);
     if (ws < 0) return { ok: false, margin: -9 };
     const it = ITEMS[p.inv[ws].id], melee = (it.use === 'swing' || it.use === 'thrust') && !it.shoot;
-    let dmg = it.fixedDamage ? 67 : it.damage;
+    let dmg = it.damage;
     if (it.ammo) { const a = p.findAmmo(it.ammo); if (a >= 0) dmg += ITEMS[p.inv[a].id].damage || 0; }
-    if (!it.fixedDamage) dmg = Math.max(1, dmg - (B.defense || 0) * 0.5);
-    const eff = dmg * 60 / Math.max(6, it.useAnim || it.useTime) * (melee || it.fixedDamage ? 0.9 : 0.4);
+    dmg = expectedHit(Object.assign({}, it, { damage: dmg }), B.defense || 0);
+    const eff = dmg * 60 / Math.max(6, it.useAnim || it.useTime) * (melee || it.sixSeven ? 0.9 : 0.4);
     const tKill = B.life / eff, incoming = Math.max(1, B.damage - p.calc.defense * 0.5) * 0.25;
     const heal = 50 * Math.min(this.potionCount(), 1 + Math.floor(tKill / 60));
     const margin = (p.lifeMax + heal - incoming * tKill) / p.lifeMax;
@@ -107,7 +107,7 @@ Object.assign(Bot, {
     // the nightmare pickaxe (and shadow armor) needs rotten chunks + demonite from the Brainrot biome: that skill farms both
     if (pick < 65 && R.pick >= 65) reqs.push({ label: 'farm the Brainrot for a nightmare pickaxe', ids: new Set(['brainrot', 'craft:nightmare_pickaxe']) });
     const losing = key !== 'wall_of_flesh' ? !this.bossSim(key).ok : dps < R.dps;
-    if (losing) for (const id of PLAN_WEAPONS) { const it = ITEMS[id]; if (it && (it.fixedDamage ? 67 : it.damage) * 60 / Math.max(6, it.useAnim || it.useTime) > dps * 1.15) reqs.push({ label: 'better weapon', item: id }); }
+    if (losing) for (const id of PLAN_WEAPONS) { const it = ITEMS[id]; if (it && expectedHit(it) * 60 / Math.max(6, it.useAnim || it.useTime) > dps * 1.15) reqs.push({ label: 'better weapon', item: id }); }
     if (p.calc.defense < R.def) for (const id of PLAN_ARMOR) {
       const it = ITEMS[id]; if (!it || !it.armor) continue;
       const cur = p.armor[{ head: 0, body: 1, legs: 2 }[it.armor]];

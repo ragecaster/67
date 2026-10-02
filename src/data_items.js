@@ -3,6 +3,11 @@
 const ITEMS = {};
 const RARE_COLORS = ['#ffffff', '#9696ff', '#96ff96', '#ffc896', '#ff9696', '#ff96ff', '#d2a0ff', '#ffd700'];
 
+// average damage one hit lands on a target with `def` defense (The 67: most hits are normal, some land as exactly 67)
+function expectedHit(it, def = 0) {
+  const normal = Math.max(1, (it.damage || 0) - def * 0.5);
+  return it.sixSeven ? (1 - it.sixSeven) * normal + it.sixSeven * 67 : normal;
+}
 function defItem(id, o) {
   const it = Object.assign({
     id, name: id, img: 'items/' + id, stack: 1, value: 0, rare: 0, tooltip: '',
@@ -192,7 +197,7 @@ defItem('molten_greaves', { name: 'Ohio Greaves', img: 'items/Molten_Greaves', a
 defItem('nights_edge', { name: "Sigma's Edge", img: "items/Night's_Edge", use: 'swing', useTime: 21, damage: 42, kb: 4.5, dmgType: 'melee', rare: 3, value: 54000, scale: 1.15, tooltip: 'The final form of the grindset.' });
 
 // meme weapons
-defItem('the_67', { name: 'The Six Seven', img: 'gen/item_67', use: 'swing', useTime: 20, damage: 67, fixedDamage: true, kb: 6.7, dmgType: 'melee', shoot: 'sixseven', shootSpeed: 9, rare: 7, value: 67670, scale: 1.1, tooltip: 'Always deals exactly 67 damage.\nFires alternating 6s and 7s. 🤲\n"SIX SEVEEEN"' });
+defItem('the_67', { name: 'The Six Seven', img: 'gen/item_67', use: 'swing', useTime: 20, damage: 20, sixSeven: 0.2, kb: 6.7, dmgType: 'melee', shoot: 'sixseven', shootSpeed: 9, rare: 7, value: 67670, scale: 1.1, tooltip: '20% of hits deal exactly 67 damage.\nFires alternating 6s and 7s. 🤲\n"SIX SEVEEEN"' });
 defItem('tung_bat', { name: 'Tung Bat', img: 'gen/item_tung_bat', use: 'swing', useTime: 26, damage: 30, kb: 11, dmgType: 'melee', rare: 3, value: 40000, scale: 1.2, onHit: 'tung', tooltip: 'Massive knockback.\nTung tung tung tung tung tung tung tung tung.' });
 defItem('skibidi_plunger', { name: 'Skibidi Plunger', img: 'gen/item_plunger', use: 'throw', useTime: 20, damage: 13, kb: 6, dmgType: 'thrown', shoot: 'plunger', shootSpeed: 11, rare: 1, value: 5000, autoReuse: true, tooltip: 'Throws a returning plunger.\nDop dop dop yes yes.' });
 

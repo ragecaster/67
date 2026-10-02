@@ -541,7 +541,7 @@ class Player {
       for (const [px, py] of pts) {
         if (px > n.x - 6 && px < n.x + n.w + 6 && py > n.y - 6 && py < n.y + n.h + 6) {
           const dmg = this.finalDamage(it, it.damage);
-          n.hitBy(this.swingId, it.fixedDamage ? 67 : dmg, it.kb, this.cx < n.x + n.w / 2 ? 1 : -1, this.calc.crit, it);
+          n.hitBy(this.swingId, dmg, it.kb, this.cx < n.x + n.w / 2 ? 1 : -1, this.calc.crit, it);
           if (it.shoot === 'starfury_star') { }
           break;
         }
@@ -563,7 +563,7 @@ class Player {
         playSound('item9', 0.5);
       } else if (it.shoot === 'sixseven') {
         const ang = Math.atan2(my - this.cy, mx - this.cx);
-        G.spawnProjectile('sixseven', this.cx, this.cy, Math.cos(ang) * it.shootSpeed, Math.sin(ang) * it.shootSpeed, 67, 4, this, { glyph: this.swingId % 2 ? 7 : 6 });
+        G.spawnProjectile('sixseven', this.cx, this.cy, Math.cos(ang) * it.shootSpeed, Math.sin(ang) * it.shootSpeed, this.finalDamage(it, it.damage), 4, this, { glyph: this.swingId % 2 ? 7 : 6 });
       }
     }
   }

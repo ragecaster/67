@@ -67,7 +67,8 @@ class NPC {
   immuneTo(swingId) { return this.immune['s' + swingId] > 0 || this.def.dontTakeDamage; }
   hitBy(swingId, dmg, kb, dir, critChance, item) {
     this.immune['s' + swingId] = 60;
-    this.takeDamage(dmg, kb, dir, critChance, item && item.fixedDamage, item);
+    const six = item && item.sixSeven && Math.random() < item.sixSeven;
+    this.takeDamage(six ? 67 : dmg, kb, dir, critChance, six, item);
     if (item && item.onHit === 'fire') this.buffs.on_fire = 240;
     if (item && item.onHit === 'tung') { Synth.tung(0.5); combatText(this.cx, this.y - 10, 'TUNG!', '#e8c898', { life: 30 }); }
     if (item && item.onHit === 'liminal' && !this.boss && !Net.isClient && Math.random() < 0.25 && !this.dead) {

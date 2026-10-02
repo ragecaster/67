@@ -138,7 +138,7 @@ function jevStateFeatures(bot, enemy) {
   const potions = p.inv.reduce((n, s) => n + (s && ITEMS[s.id].heal && ITEMS[s.id].potion ? s.count : 0), 0);
   const ranged = p.inv.some(s => s && ITEMS[s.id].damage && (ITEMS[s.id].use === 'shoot' || ITEMS[s.id].shoot) && !(ITEMS[s.id].ammo && p.findAmmo(ITEMS[s.id].ammo) < 0));
   const ws = bot.bestWeaponSlot(enemy || null), wit = ws >= 0 ? ITEMS[p.inv[ws].id] : null;
-  const dps = wit ? (wit.fixedDamage ? 67 : wit.damage) * 60 / Math.max(6, wit.useTime) : 0;
+  const dps = wit ? expectedHit(wit) * 60 / Math.max(6, wit.useTime) : 0;
   const zone = fy < w.worldSurface ? 0 : fy < w.rockLayer ? 1 : fy < w.hellLayer ? 2 : 3;
   const base = bot.base || [fx, fy], dBase = Math.abs(fx - base[0]) + Math.abs(fy - base[1]);
   const near = G.npcs.filter(n => !n.friendly && !n.town && !n.dead && n.alpha > 0.5);
@@ -181,7 +181,7 @@ function jevActFeatures(bot, c, cur) {
   v.push(bot.plan && bot.plan.test(c) ? 1 : 0, c.odds == null ? 0 : clamp(c.odds, -2, 2));
   if (n) {
     const dx = n.cx - p.cx, dy = n.cy - p.cy, ws = bot.bestWeaponSlot(n), it = ws >= 0 ? ITEMS[p.inv[ws].id] : null;
-    const dps = it ? Math.max(1, (it.fixedDamage ? 67 : it.damage) - (n.defense || 0) * 0.5) * 60 / Math.max(6, it.useTime) : 1;
+    const dps = it ? expectedHit(it, n.defense || 0) * 60 / Math.max(6, it.useTime) : 1;
     v.push(1, Math.min(Math.hypot(dx, dy), 900) / 300, clamp(dy / 300, -3, 3), n.life / n.lifeMax, Math.max(1, n.damage - p.calc.defense * 0.5) / Math.max(20, p.life),
       n.boss ? 1 : 0, (n.def.noGravity || ['flyer', 'bat', 'smiler'].includes(n.def.ai)) ? 1 : 0, Math.min(n.life / dps, 30) / 10);
   } else v.push(0, 0, 0, 0, 0, 0, 0, 0);

@@ -60,7 +60,7 @@ const SDK = {
     p.inv.forEach((s, i) => {
       if (!s) return; const it = ITEMS[s.id];
       if (!it.damage || it.ammoType || it.consumable || it.pick || it.axe || it.hammer) return;
-      const k = this.kindOf(s.id), d = it.fixedDamage ? 67 : it.damage;
+      const k = this.kindOf(s.id), d = expectedHit(it);
       if (k === 'ranged' && !(it.ammo && p.findAmmo(it.ammo) < 0) && d > ranged.dmg) ranged = { slot: i, dmg: d, id: s.id };
       if (k === 'melee' && d > melee.dmg) melee = { slot: i, dmg: d, id: s.id };
     });

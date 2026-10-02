@@ -145,8 +145,8 @@ class Projectile {
         if (n.friendly || n.dead || this.hit[n.uid] > 0) continue;
         if (rectsOverlap(this, n)) {
           this.hit[n.uid] = 20;
-          const dmg = this.type === 'sixseven' ? 67 : this.damage;
-          n.takeDamage(dmg, this.kb, this.vx > 0 ? 1 : -1, this.owner.calc ? this.owner.calc.crit : 4, this.type === 'sixseven');
+          const six = this.type === 'sixseven' && Math.random() < ITEMS.the_67.sixSeven;
+          n.takeDamage(six ? 67 : this.damage, this.kb, this.vx > 0 ? 1 : -1, this.owner.calc ? this.owner.calc.crit : 4, six);
           if (this.d.fire) n.buffs.on_fire = 240;
           if (this.d.explode) { this.explode(world); return; }
           if (this.d.kind === 'boomerang') { this.returning = true; continue; }
