@@ -176,7 +176,7 @@ Object.assign(Bot, {
     if (life < 0.6 && has('rest')) return 'rest';
     if (life < 0.6 && has('home')) return 'home';              // don't sit around hurt in a cave: heal at the house
     const plan = this.plan || this.planFrontier(cands);
-    const nightBoss = plan.boss && BOSS_SUMMON[plan.boss] && BOSS_SUMMON[plan.boss].night && plan.label.startsWith('fight');
+    const nightBoss = plan.boss && BOSS_SUMMON[plan.boss] && BOSS_SUMMON[plan.boss].night && (plan.label.startsWith('fight') || (plan.label.startsWith('summon item') && BOSS_FARM[(Object.entries(this.rawNeeds(BOSS_SUMMON[plan.boss].item, 1)).find(([id, n]) => this.count(id) < n) || [])[0]] === 'night'));   // lenses only drop at night: that is the night's work, not a reason to hide
     // concrete on-plan actions beat wandering: explore only when nothing on the plan is actionable
     let on = cands.filter(c => plan.test(c));
     // night only matters on the surface: mining, crystals and crafting at the base carry on (underground spawns don't change at night)
