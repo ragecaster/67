@@ -5,9 +5,12 @@
 const BOSS_ORDER = ['king_slime', 'eye_of_cthulhu', 'tung_sahur', 'wall_of_flesh'];
 // what "ready" means for each boss: max life, defense, weapon damage/second, healing potions, arrows (if we use a bow)
 const BOSS_READY = {
-  king_slime: { lifeMax: 120, def: 6, dps: 25, potions: 3, pick: 40 },
-  eye_of_cthulhu: { lifeMax: 200, def: 10, dps: 35, potions: 5, pick: 50, arrows: 150 },
-  tung_sahur: { lifeMax: 240, def: 14, dps: 45, potions: 8, pick: 50, arrows: 200 },
+// The first three are measured (tests/_bossbench.js n100/n140/c100): with The 67 and no armor, King and the Eye cost ~100-130 life
+// (King kills a 100-life player, 140 = two aura crystals wins both); Tung is fought from a perch it can't reach.
+// So the gate is The 67 + two crystals, not armor (a full iron set is ~75 bars and cost most of an hour).
+  king_slime: { lifeMax: 140, def: 0, dps: 60, potions: 0, pick: 40 },
+  eye_of_cthulhu: { lifeMax: 140, def: 0, dps: 60, potions: 0, pick: 40 },
+  tung_sahur: { lifeMax: 100, def: 0, dps: 60, potions: 0, pick: 40 },
   wall_of_flesh: { lifeMax: 300, def: 16, dps: 100, potions: 10, pick: 65, arrows: 300 },
 };
 // upgrade paths the plan walks (cheapest first)
@@ -57,7 +60,17 @@ Object.assign(Bot, {
   },
 
   // ================= progression plan =================
-  nextBoss() { return BOSS_ORDER.find(k => !G.world.flags[k]) || null; },
+  nextBoss() {
+    const w = G.world, left = BOSS_ORDER.filter(k => !w.flags[k] && k !== 'wall_of_flesh');
+    if (!left.length) return w.flags.wall_of_flesh ? null : 'wall_of_flesh';
+    const night = G.isNight(), armed = this.weaponDps(null).dps >= BOSS_READY.king_slime.dps;
+    // a summon in hand that works right now
+    const now = left.find(k => this.has(BOSS_SUMMON[k].item) && (!BOSS_SUMMON[k].night || night) && this.bossReady(k));
+    if (now) return now;
+    // night: the Eye's lenses only drop now (if we can fight), then Tung's bones; day: King (gel + gold), then the night bosses' materials
+    const order = night && armed ? ['eye_of_cthulhu', 'tung_sahur', 'king_slime'] : ['king_slime', 'tung_sahur', 'eye_of_cthulhu'];
+    return order.find(k => left.includes(k));
+  },
   // boss fight simulator, calibrated on measured fights (tests/_bossbench.js): we land ~0.9 of melee / ~0.4 of ranged damage,
   // and take ~0.25 contact hits per second
   bossSim(key) {
@@ -71,7 +84,8 @@ Object.assign(Bot, {
     if (it.ammo) { const a = p.findAmmo(it.ammo); if (a >= 0) dmg += ITEMS[p.inv[a].id].damage || 0; }
     dmg = expectedHit(Object.assign({}, it, { damage: dmg }), B.defense || 0);
     const eff = dmg * 60 / Math.max(6, it.useAnim || it.useTime) * (melee || it.sixSeven ? 0.9 : 0.4);
-    const tKill = B.life / eff, incoming = Math.max(1, B.damage - p.calc.defense * 0.5) * 0.25;
+    const reach = key === 'tung_sahur' ? 0.15 : 1;   // fought from the perch (taskBoss): only stray logs land
+    const tKill = B.life / eff, incoming = Math.max(1, B.damage - p.calc.defense * 0.5) * 0.25 * reach;
     const heal = 50 * Math.min(this.potionCount(), 1 + Math.floor(tKill / 60));
     const margin = (p.lifeMax + heal - incoming * tKill) / p.lifeMax;
     return { ok: margin > 0.3, margin, tKill };
@@ -80,7 +94,7 @@ Object.assign(Bot, {
     const R = BOSS_READY[key]; if (!R) return true;
     const p = this.p();
     if (p.lifeMax < R.lifeMax || p.calc.defense < R.def) return false;
-    if (key !== 'wall_of_flesh' && !this.bossSim(key).ok) return false;    // would we actually win?
+    if (this.weaponDps(null).dps < R.dps) return false;   // measured: weapon + life are what decide these fights (bossSim misjudges The 67's piercing shots)
     // potions are on the plan, but not a hard gate: the recipe needs gel, mushrooms and glass, which may simply not be around
     if (key === 'wall_of_flesh') return this.readyForWall ? this.readyForWall() : true;
     return true;
@@ -106,7 +120,7 @@ Object.assign(Bot, {
     if (pick < R.pick) for (const id of PLAN_PICKS) if ((ITEMS[id] && ITEMS[id].pick || 0) > pick) reqs.push({ label: 'better pickaxe', item: id });
     // the nightmare pickaxe (and shadow armor) needs rotten chunks + demonite from the Brainrot biome: that skill farms both
     if (pick < 65 && R.pick >= 65) reqs.push({ label: 'farm the Brainrot for a nightmare pickaxe', ids: new Set(['brainrot', 'craft:nightmare_pickaxe']) });
-    const losing = key !== 'wall_of_flesh' ? !this.bossSim(key).ok : dps < R.dps;
+    const losing = dps < R.dps;
     if (losing) for (const id of PLAN_WEAPONS) { const it = ITEMS[id]; if (it && expectedHit(it) * 60 / Math.max(6, it.useAnim || it.useTime) > dps * 1.15) reqs.push({ label: 'better weapon', item: id }); }
     if (p.calc.defense < R.def) for (const id of PLAN_ARMOR) {
       const it = ITEMS[id]; if (!it || !it.armor) continue;
@@ -116,6 +130,9 @@ Object.assign(Bot, {
     if (p.lifeMax < R.lifeMax) reqs.push({ label: 'more max life', ids: new Set(['crystal', 'explore']) });
     if (this.potionCount() < R.potions) reqs.push({ label: 'healing potions', item: 'lesser_healing_potion' });
     if (R.arrows && this.rangedSlot() >= 0 && this.count('wooden_arrow') < R.arrows) reqs.push({ label: 'arrows', item: 'wooden_arrow' });
+    // the summon item itself (and its ingredients) before the fight
+    const S = BOSS_SUMMON[key];
+    if (S && !this.has(S.item)) reqs.push({ label: 'summon item', item: S.item });
     reqs.push({ label: 'fight ' + BOSS_TYPES[key].name, ids: new Set(key === 'wall_of_flesh' ? ['hell'] : ['boss:' + key]) });
     // the first requirement some candidate can actually advance
     for (const r of reqs) {
@@ -123,7 +140,9 @@ Object.assign(Bot, {
       if (r.item && !byId('craft:' + r.item) && ![...ids].some(byId)) continue;
       if ([...ids].some(byId)) return { label: r.label + (r.item ? ' (' + r.item.replace(/_/g, ' ') + ')' : ''), boss: key, test: c => ids.has(c.id) };
     }
-    return { label: 'explore for ' + BOSS_TYPES[key].name + ' materials', boss: key, test: c => c.id === 'explore' || c.kind === 'ore' };
+    // nothing actionable: explore, or mine an ore the plan actually needs (not whatever copper is closest)
+    const wanted = new Set(['gold_ore', 'silver_ore', 'iron_ore', 'copper_ore'].filter(ore => [this.committed && this.committed.item, 'the_67', S && S.item].some(id => id && !this.owns(id) && (this.rawNeeds(id, 1)[ore] || 0) > this.count(ore))));
+    return { label: 'explore for ' + BOSS_TYPES[key].name + ' materials', boss: key, test: c => c.id === 'explore' || (c.kind === 'ore' && wanted.has(c.id.slice(4))) };
   },
 
   // ================= the scripted teacher =================
@@ -131,6 +150,7 @@ Object.assign(Bot, {
     const p = this.p(), has = id => cands.find(c => c.id === id);
     const boss = foes.find(n => n.boss);
     if (boss) {   // use whichever weapon lands more: kite only when the best weapon is a ranged one
+      if (has('heal') && p.life < p.lifeMax * 0.5) return 'heal';
       const ws = this.bestWeaponSlot(boss), it = ws >= 0 ? ITEMS[p.inv[ws].id] : null;
       const ranged = it && !(it.use === 'swing' || it.use === 'thrust');
       return ((ranged && has('kite:' + boss.uid)) || has('fight:' + boss.uid) || has('kite:' + boss.uid) || cands[0]).id;
@@ -152,9 +172,12 @@ Object.assign(Bot, {
     if (life < 0.6 && has('home')) return 'home';              // don't sit around hurt in a cave: heal at the house
     const plan = this.plan || this.planFrontier(cands);
     const nightBoss = plan.boss && BOSS_SUMMON[plan.boss] && BOSS_SUMMON[plan.boss].night && plan.label.startsWith('fight');
-    if (has('shelter') && !nightBoss) return 'shelter';
     // concrete on-plan actions beat wandering: explore only when nothing on the plan is actionable
     let on = cands.filter(c => plan.test(c));
+    // night only matters on the surface: mining, crystals and crafting at the base carry on (underground spawns don't change at night)
+    const nightWork = on.some(c => ['ore', 'stone', 'crystal', 'craft', 'boss', 'brainrot'].includes(c.kind));
+    if (has('shelter') && !nightBoss && !nightWork) return 'shelter';
+    if (nightWork && G.isNight()) on = on.filter(c => !['chop', 'build', 'explore'].includes(c.kind));
     if (on.some(c => c.id !== 'explore')) on = on.filter(c => c.id !== 'explore');
     if (on.length) return on.sort((a, b) => (b.ready == null ? 1 : b.ready) - (a.ready == null ? 1 : a.ready) || (a.dist || 0) - (b.dist || 0))[0].id;
     if (has('chop') && this.count('wood') < 60) return 'chop';
