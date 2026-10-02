@@ -9,3 +9,4 @@ tools/jev/data/
 __pycache__/
 tools/jev/old_v1/
 tools/jev/cand_*
+tools/jev/snaps/

@@ -102,6 +102,8 @@ Object.assign(Bot, {
     if (!this.houseValid() || !this.houseFinished) reqs.push({ label: 'build a house', ids: new Set(['build', 'chop']) });
     for (const st of ['furnace', 'iron_anvil']) if (!this.stationPlaced(st === 'iron_anvil' ? 'anvil' : st)) reqs.push({ label: 'place ' + st, item: st });
     if (pick < R.pick) for (const id of PLAN_PICKS) if ((ITEMS[id] && ITEMS[id].pick || 0) > pick) reqs.push({ label: 'better pickaxe', item: id });
+    // the nightmare pickaxe (and shadow armor) needs rotten chunks + demonite from the Brainrot biome: that skill farms both
+    if (pick < 65 && R.pick >= 65) reqs.push({ label: 'farm the Brainrot for a nightmare pickaxe', ids: new Set(['brainrot', 'craft:nightmare_pickaxe']) });
     const losing = key !== 'wall_of_flesh' ? !this.bossSim(key).ok : dps < R.dps;
     if (losing) for (const id of PLAN_WEAPONS) { const it = ITEMS[id]; if (it && (it.fixedDamage ? 67 : it.damage) * 60 / Math.max(6, it.useAnim || it.useTime) > dps * 1.15) reqs.push({ label: 'better weapon', item: id }); }
     if (p.calc.defense < R.def) for (const id of PLAN_ARMOR) {
