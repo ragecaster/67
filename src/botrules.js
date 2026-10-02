@@ -179,6 +179,10 @@ Object.assign(Bot, {
     if (parkedTrip && life >= 0.6) return parkedTrip;
     if (life < 0.6 && has('rest')) return 'rest';
     if (life < 0.6 && has('home')) return 'home';              // don't sit around hurt in a cave: heal at the house
+    // an aura crystal close by is always worth the detour (+20 max life for a few hundred ticks): grab the ones we pass on the
+    // way, instead of only once the plan reaches "more max life" (that used to be after The 67, walking past crystals all along)
+    const cr = has('crystal');
+    if (cr && cr.dist <= 40 && life >= 0.6) return 'crystal';
     const plan = this.plan || this.planFrontier(cands);
     const nightBoss = plan.boss && BOSS_SUMMON[plan.boss] && BOSS_SUMMON[plan.boss].night && plan.label.startsWith('fight');
     // concrete on-plan actions beat wandering: explore only when nothing on the plan is actionable

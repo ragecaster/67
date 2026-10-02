@@ -119,8 +119,9 @@ Object.assign(Bot, {
   },
   // what to pillar up with: wood platforms first (a platform pillar is a ladder afterwards: jump up through it, land on a higher
   // rung; nothing to dig out of the way later), then spare blocks
+  PLATFORM_KEEP: 10,
   climbSlot() {
-    if (this.count('wood_platform') - this.reserved('wood_platform') > 0) { const s = this.slotOf(it => it.id === 'wood_platform'); if (s >= 0) return s; }
+    if (this.count('wood_platform') - this.reserved('wood_platform') > this.PLATFORM_KEEP) {   // the last 10 are for Tung's ledge / the arena const s = this.slotOf(it => it.id === 'wood_platform'); if (s >= 0) return s; }
     return this.spareBlockSlot(true);
   },
   spareBlocks() { return ['dirt_block', 'ash_block', 'mud_block', 'sand_block', 'clay_block', 'snow_block', 'stone_block', 'wood'].reduce((n, id) => n + Math.max(0, this.count(id) - this.reserved(id)), 0); },

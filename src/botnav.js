@@ -82,7 +82,7 @@ const Nav = {
   plan(sx, sy, goalFn, heur, maxNodes = 16000) {
     this.stamp = (this.stamp || 0) + 1;
     this.power = this.pickPower();
-    this.blocks = Bot.spareBlocks() + Bot.count('wood_platform'); // only blocks we may spend (not the ones reserved for the current goal); platforms pillar too
+    this.blocks = Bot.spareBlocks() + Math.max(0, Bot.count('wood_platform') - Bot.PLATFORM_KEEP); // only blocks we may spend (not the ones reserved for the current goal); platforms pillar too
     this.avoidBackrooms = !G.inBackrooms(G.player);
     const w = G.world, WW = w.w, N = WW * w.h;
     if (!this.gA || this.gA.length !== N) { this.gA = new Float64Array(N); this.gS = new Uint32Array(N); this.fromA = new Int32Array(N); this.mvA = new Uint8Array(N); this.fallA = new Uint8Array(N); this.vertA = new Uint8Array(N); }

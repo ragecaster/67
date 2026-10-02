@@ -335,6 +335,12 @@ const Bot = {
     if (this.foesNear().some(n => !A.seen.has(n.uid))) return true;
     if (p.life < A.life - p.lifeMax * 0.15) return true;
     if (['hell', 'boss', 'brainrot'].includes(A.kind)) return false;   // long trips stay committed (enemies and big hits still interrupt above)
+    // an aura crystal comes within 30 tiles while we're busy with something else: think again (teacherPick grabs it)
+    // (once per crystal: a re-decision restarts the current task, so it must not fire again while we can't or won't go)
+    if (A.kind !== 'crystal' && G.tick % 60 === 0 && p.lifeMax < 400 && p.life >= p.lifeMax * 0.6 && !(this.cooldowns && this.cooldowns.crystal > G.tick)) {
+      const c = this.findCrystal(), [fx, fy] = this.feet();
+      if (c && Math.abs(c[0] - fx) + Math.abs(c[1] - fy) <= 30 && this.crystalPinged !== c[0] + ',' + c[1]) { this.crystalPinged = c[0] + ',' + c[1]; return true; }
+    }
     return G.tick - A.at >= (ACT_COMBAT.includes(A.kind) ? 60 : 1800);
   },
   decideAct() {
