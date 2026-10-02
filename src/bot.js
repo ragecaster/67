@@ -988,7 +988,9 @@ const Bot = {
             self.goal = 'waiting for night to summon ' + name; self.moveTo(home[0] - 6, home[1], 3); return;
           }
           const perched = key === 'tung_sahur' && self.perch && Math.abs(fx - self.perch[0]) <= self.LEDGE + 1 && fy >= self.perch[1] - 2 && fy <= self.perch[2] + 1;
-          if (!perched && (Math.abs(fx - home[0]) > 25 || Math.abs(fy - home[1]) > 12)) { self.goal = 'heading home to summon ' + name; self.moveTo(home[0] - 6, home[1], 3); return; }
+          // the Eye and King come to wherever we are: summon on the surface right here (Tung needs the perch by the house)
+          if (key !== 'tung_sahur' && fy > topSolid(w, fx) + 3) { self.goal = 'climbing to the surface to summon ' + name; if (self.moveTo(fx, topSolid(w, fx) - 1, 3) === 'fail') self.moveTo(home[0] - 6, home[1], 3); return; }
+          if (key === 'tung_sahur' && !perched && (Math.abs(fx - home[0]) > 25 || Math.abs(fy - home[1]) > 12)) { self.goal = 'heading home to summon ' + name; self.moveTo(home[0] - 6, home[1], 3); return; }
           if (p.life < p.lifeMax * 0.85) { self.goal = 'healing up before ' + name; return; }
           if (!self.bossReady(key)) { self.log('not ready for ' + name + ' yet'); this.done = true; return; }
           // Tung only reaches ~12 tiles up (leap), its shockwaves run along the ground and its logs arc ~8 tiles high:
@@ -1023,9 +1025,21 @@ const Bot = {
           const crowdD = G.npcs.filter(n => !n.friendly && !n.boss && !n.town && !n.dead && Math.abs(n.cx - self.p().cx) < 1600 && Math.abs(n.cy - self.p().cy) < 1000).length;
           this.clogD = crowdD >= 8 ? (this.clogD || 0) + 1 : 0;
           if (!this.deepT || this.clogD > 900 || (this.deepFails || 0) > 2) {
+            const clogged = this.clogD > 900;
             this.clogD = 0; this.deepFails = 0; this.deepSide = -(this.deepSide || 1);
             const x0 = this.lastDeepX || home[0];
-            this.deepT = [clamp(x0 + this.deepSide * randInt(25, 45), 60, w.w - 60), clamp(w.rockLayer + randInt(15, 45), w.rockLayer + 5, w.hellLayer - 30)];
+            if (clogged) self.log('cavern farm clogged (' + crowdD + ' monsters), moving 150 tiles over');
+            // clogged: far enough that the stuck monsters despawn (150+ tiles); otherwise roam nearby
+            this.deepT = [clamp(x0 + this.deepSide * (clogged ? 150 : randInt(25, 45)), 60, w.w - 60), clamp(w.rockLayer + randInt(15, 45), w.rockLayer + 5, w.hellLayer - 30)];
+          }
+          // a bone carrier on screen (skeletons, miners spawn in side caves and rarely find us): go get it, digging if needed
+          const P = self.p(), prey = drop === 'bone' && G.npcs.filter(n => (n.type === 'skeleton' || n.type === 'undead_miner') && !n.dead && Math.abs(n.cx - P.cx) < 1000 && Math.abs(n.cy - P.cy) < 640 && !(self.ignore && self.ignore[n.uid] > G.tick))
+            .sort((a, b) => dist(a.cx, a.cy, P.cx, P.cy) - dist(b.cx, b.cy, P.cx, P.cy))[0];
+          if (prey) {
+            self.goal = 'hunting ' + prey.name + ' for bones (' + self.count('bone') + '/' + need[1] + ')';
+            const r = self.moveTo(Math.floor(prey.cx / TS), Math.floor((prey.y + prey.h - 1) / TS), 2);
+            if (r === 'fail') (self.ignore = self.ignore || {})[prey.uid] = G.tick + 1800;
+            return;
           }
           const r = self.moveTo(this.deepT[0], this.deepT[1], 4);
           if (r === 'fail') this.deepFails = (this.deepFails || 0) + 1;

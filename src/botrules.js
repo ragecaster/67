@@ -8,9 +8,9 @@ const BOSS_READY = {
 // The first three are measured (tests/_bossbench.js n100/n140/c100): with The 67 and no armor, King and the Eye cost ~100-130 life
 // (King kills a 100-life player, 140 = two aura crystals wins both); Tung is fought from a perch it can't reach.
 // So the gate is The 67 + two crystals, not armor (a full iron set is ~75 bars and cost most of an hour).
-  king_slime: { lifeMax: 140, def: 0, dps: 60, potions: 0, pick: 40 },
-  eye_of_cthulhu: { lifeMax: 140, def: 0, dps: 60, potions: 0, pick: 40 },
-  tung_sahur: { lifeMax: 100, def: 0, dps: 60, potions: 0, pick: 40 },
+  king_slime: { lifeMax: 140, def: 0, dps: 60, potions: 0, pick: 35 },
+  eye_of_cthulhu: { lifeMax: 140, def: 0, dps: 60, potions: 0, pick: 35 },
+  tung_sahur: { lifeMax: 100, def: 0, dps: 60, potions: 0, pick: 35 },   // copper mines everything up to gold
   wall_of_flesh: { lifeMax: 300, def: 16, dps: 100, potions: 10, pick: 65, arrows: 300 },
 };
 // upgrade paths the plan walks (cheapest first)
@@ -47,6 +47,8 @@ Object.assign(Bot, {
     const margin = (p.life + heal - incoming * tKill) / p.lifeMax;
     return { ok: margin > 0.15, margin, tKill };
   },
+  // max life plus what carried potions add over a boss fight (bench: 100 life + 5 potions beats King like 140 life does)
+  effLife() { return this.p().lifeMax + 12 * Math.min(this.potionCount(), 4); },
   potionCount() { return this.p().inv.reduce((n, s) => n + (s && ITEMS[s.id].heal && ITEMS[s.id].potion ? s.count : 0), 0); },
   // reflexes the model is never asked about
   survivalReflex(foes) {
@@ -68,8 +70,11 @@ Object.assign(Bot, {
     const now = left.find(k => this.has(BOSS_SUMMON[k].item) && (!BOSS_SUMMON[k].night || night) && this.bossReady(k));
     if (now) return now;
     // night: the Eye's lenses only drop now (if we can fight), then Tung's bones; day: King (gel + gold), then the night bosses' materials
-    const order = night && armed ? ['eye_of_cthulhu', 'tung_sahur', 'king_slime'] : ['king_slime', 'tung_sahur', 'eye_of_cthulhu'];
-    return order.find(k => left.includes(k));
+    // By day: Tung's bones first (the summon must be ready for the one night that fits in an hour; King can wait for day 3),
+    // then King; a night boss whose summon is already in hand has nothing left to do by day. The Eye by day only crafts its summon.
+    if (night && armed) return ['eye_of_cthulhu', 'tung_sahur', 'king_slime'].find(k => left.includes(k));
+    const dayable = k => !(BOSS_SUMMON[k].night && this.has(BOSS_SUMMON[k].item)) && (k !== 'eye_of_cthulhu' || this.count('lens') >= 6);
+    return ['tung_sahur', 'king_slime', 'eye_of_cthulhu'].find(k => left.includes(k) && dayable(k)) || left[0];
   },
   // boss fight simulator, calibrated on measured fights (tests/_bossbench.js): we land ~0.9 of melee / ~0.4 of ranged damage,
   // and take ~0.25 contact hits per second
@@ -93,7 +98,7 @@ Object.assign(Bot, {
   bossReady(key) {
     const R = BOSS_READY[key]; if (!R) return true;
     const p = this.p();
-    if (p.lifeMax < R.lifeMax || p.calc.defense < R.def) return false;
+    if (this.effLife() < R.lifeMax || p.calc.defense < R.def) return false;
     if (this.weaponDps(null).dps < R.dps) return false;   // measured: weapon + life are what decide these fights (bossSim misjudges The 67's piercing shots)
     // potions are on the plan, but not a hard gate: the recipe needs gel, mushrooms and glass, which may simply not be around
     if (key === 'wall_of_flesh') return this.readyForWall ? this.readyForWall() : true;
@@ -127,7 +132,7 @@ Object.assign(Bot, {
       const cur = p.armor[{ head: 0, body: 1, legs: 2 }[it.armor]];
       if ((it.defense || 0) > (cur ? ITEMS[cur.id].defense || 0 : 0)) reqs.push({ label: 'more defense', item: id });
     }
-    if (p.lifeMax < R.lifeMax) reqs.push({ label: 'more max life', ids: new Set(['crystal', 'explore']) });
+    if (this.effLife() < R.lifeMax) reqs.push({ label: 'more max life', ids: new Set(['crystal', 'explore']) });
     if (this.potionCount() < R.potions) reqs.push({ label: 'healing potions', item: 'lesser_healing_potion' });
     if (R.arrows && this.rangedSlot() >= 0 && this.count('wooden_arrow') < R.arrows) reqs.push({ label: 'arrows', item: 'wooden_arrow' });
     // the summon item itself (and its ingredients) before the fight
