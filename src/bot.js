@@ -945,6 +945,9 @@ const Bot = {
         }
         this.fails = 0;
         if (op === 'clear' || op === 'dig') { self.dig(x, y); return; }
+        // furniture standing where a wall/floor block belongs (a bench that landed on a bump): take it out first, the block can't go into an occupied cell
+        const occ = w.tile(x, y);
+        if (op === 'block' && occ && TILES[occ] && !TILES[occ].solid && !TILES[occ].cut && !TILES[occ].door) { if (self.dig(x, y) === 'fail') i++; return; }
         const id = op === 'block' ? 'wood' : op === 'wall' ? 'wood_wall' : item;
         const s = self.slotOf(it => it.id === id);
         if (s < 0) { if (id === 'wood') { self.task = self.taskChop(self.count('wood') + 30); } else self.task = self.taskCraftAtBase([id, 1]); return; }
