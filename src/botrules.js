@@ -126,7 +126,9 @@ Object.assign(Bot, {
     // the nightmare pickaxe (and shadow armor) needs rotten chunks + demonite from the Brainrot biome: that skill farms both
     if (pick < 65 && R.pick >= 65) reqs.push({ label: 'farm the Brainrot for a nightmare pickaxe', ids: new Set(['brainrot', 'craft:nightmare_pickaxe']) });
     const losing = dps < R.dps;
-    if (losing) for (const id of PLAN_WEAPONS) { const it = ITEMS[id]; if (it && expectedHit(it) * 60 / Math.max(6, it.useAnim || it.useTime) > dps * 1.15) reqs.push({ label: 'better weapon', item: id }); }
+    // The 67 is the only weapon that meets the boss gate: don't spend its silver/gold on a stopgap sword on the way
+    if (losing && !this.owns('the_67') && key !== 'wall_of_flesh') reqs.push({ label: 'better weapon', item: 'the_67' });
+    else if (losing) for (const id of PLAN_WEAPONS) { const it = ITEMS[id]; if (it && expectedHit(it) * 60 / Math.max(6, it.useAnim || it.useTime) > dps * 1.15) reqs.push({ label: 'better weapon', item: id }); }
     if (p.calc.defense < R.def) for (const id of PLAN_ARMOR) {
       const it = ITEMS[id]; if (!it || !it.armor) continue;
       const cur = p.armor[{ head: 0, body: 1, legs: 2 }[it.armor]];
