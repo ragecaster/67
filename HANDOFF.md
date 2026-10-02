@@ -3,6 +3,73 @@
 This is a Terraria clone with Gen Z / Gen Alpha brainrot memes. It runs in the browser with plain JS and a canvas, and there's no build step. It's live at https://ragecaster.github.io/67/ (GitHub Pages deploys from `main`, root).
 Watch the playtest bot at https://ragecaster.github.io/67/?bot&turbo=4. In the game, F8 toggles the bot and F9 cycles its speed from 1x to 64x.
 
+## Session 4 stop point: the boss rush (read this first)
+
+**Active goal from the owner:** TerraJev (the learned policy, `TerraJev.mode = 'jev'`, falling back to the rules when its confidence is below 0.3) kills **King Skibidi, the Eye of Ohio and Tung Tung Tung Sahur within 1.5 h of real-time play = 324,000 ticks** (60 ticks/s). The first target was 1 h (216k ticks); the owner relaxed it. One day/night cycle is 86,400 ticks and the game starts at 13,500 ticks into day 0, so the nights fall at 40.5–72.9k, 127–159k, 213–246k and 300–332k. The Eye and Tung can only be summoned at night.
+
+**Where it stands:**
+- The scripted rules (`TerraJev.mode='teacher'`) kill all 3 within 330k ticks on **2 of 6 eval seeds** (evalF at 221.7k, evalA at 319.0k; run `u2`) and on 2 of 8 training worlds. King dies on every seed.
+- TerraJev was retrained by imitation (pure BC) on 8 teacher rollouts (12.5k decisions, 96% agreement). The weights are **installed in `src/terrajev_weights.js` and `tools/jev/terrajev_act.pt` but not committed**, and **not evaluated yet** (the eval was stopped right after it started). Next step:
+  `cd tests && for s in evalA evalB evalC evalD evalE evalF; do node bosstime.js 330000 $s jev ../tools/jev/cand_weights.js > ../tools/jev/data/rush/j1_$s.txt 2>&1 & done`
+  The goal is met when TerraJev's `BOSSES 3 ... third=<tick>` comes in under 324000.
+- Everything is committed on local `main` and **nothing is pushed** (the owner said to ask before pushing; Pages deploys from `main`). The owner's own commit "lol idk" also lives on `main`.
+
+**Environment (after a reboot, `/tmp` is wiped):**
+- `export NODE_PATH=/Users/allison/.npm/_npx/e41f203b7505f1fb/node_modules CHROME_PATH=$HOME/Library/Caches/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-mac-arm64/chrome-headless-shell`
+- Python: `tools/jev/.venv/bin/python`.
+- Local game: `python3 -m http.server 6767` from the repo root, then http://localhost:6767/?bot&turbo=8.
+- Scratch outputs live in `tools/jev/data/rush/` (git-ignored).
+- The machine has 8 cores; about 12 headless browsers in parallel is the practical limit.
+
+**Tools added this session (all in `tests/` unless noted):**
+- `bosstime.js <ticks> <seed> teacher|jev [weights]`: boss kill ticks, ticks per plan step and per on-screen goal, events.
+- `jevprofile.js`: on-screen time shares.
+- `_bossbench.js <boss> <loadout>`: one boss fight with a fixed loadout. Loadouts: e67, n100, n140, n100p, c100… Tung goes through the real perch task; set `TRACE=<n>` for a per-n-tick trace.
+- `_lensbench.js` and `_bonebench.js`: farming rates.
+- `jevcollect.js`: `MODE=teacher` records the rules' play for imitation.
+- `jeveval.js`: the score now adds up to +20 per boss for killing it early.
+- `tools/jev/analyze.py`: where the rollout reward goes, per action kind.
+- Debug scripts in `tools/jev/data/rush/` (git-ignored):
+  - `dbg_plan.js <ticks> <seed> <every>`: planner state, candidates, cooldowns.
+  - `dbg_boss.js <seed> <t0> <t1>`: boss fight trace.
+  - `dbg_lens.js`: nearby monsters, lenses and bones.
+  - `dbg_fights.js`: per-fight stats.
+
+**What changed (and why):**
+- **The 67 was nerfed at the owner's request:** 20 damage with a 20% chance per hit to land exactly 67 (`sixSeven: 0.2`). Use `expectedHit(it, def)` (in `data_items.js`) for any damage estimate; `fixedDamage` is gone.
+- **Boss gate (`BOSS_READY`, `bossReady`, botrules.js):** The 67 (weapon dps ≥ 60) plus `effLife()` ≥ 140 for King and the Eye. `effLife` is max life + 12 per potion, up to 4 potions. Defense and armor don't matter and the copper pick is enough. These numbers come from benches: with The 67 and no armor, King kills a 100-life player and 140 life wins; the Eye barely wins at 100. `bossSim` misjudges The 67's piercing shots and is no longer used.
+- **`nextBoss()`:**
+  - If a summon in hand works right now, use it.
+  - At night with The 67: the Eye, then Tung, then King.
+  - By day: Tung's bones first, then King. Night bosses with nothing to do by day are hidden from the candidates, and the plan hunts life crystals instead ("more max life (waiting for night)").
+- **The plan pursues only The 67 as the boss weapon.** A silver broadsword crafted on the way ate its silver.
+- **`teacherPick`:** no hiding at night while ore, crystal, craft or boss work is on the plan (underground spawns don't change at night). It drinks potions during boss fights.
+- **Tung (`taskBoss` → `tungPerch` / `climbPerch` / `onPerch` / `tungDance`, bot.js):**
+  - The bot pillars 32 tiles up next to wherever it is on the surface, lays an 8-platform wood ledge (projectiles pass through platforms), stands one tile short of the end, and builds a 2-block fence past it so night flyers can't knock it off.
+  - Tung's leap can't reach that height. Bench result: Tung dead in about 28 s with 0 damage taken.
+  - The stall detector and the hop-on-bump both skip while perched. On the ground, `tungDance` kites as a fallback.
+- **The Eye and King are summoned on the surface wherever the bot is**, not at home.
+- **Farming (in `taskBoss`):**
+  - Surface drops (gel, lenses) are farmed about 90 tiles from town, because town NPCs cut spawns 3×.
+  - The spawn cap counts every hostile within 100×62 tiles, including cave monsters far below, and those only despawn 150+ tiles away. So the farm moves 160 tiles when 6+ monsters clog it.
+  - Bones: the bot roams the caverns with the digging A*, hunts visible skeletons and undead miners (giving up on one after 900 ticks), and relocates 150 tiles when clogged.
+  - Any farm with no drop in 8000 ticks steps aside for 6000 ticks.
+- **Other fixes:**
+  - Explore heads into the depth band of the ore the plan is missing (`oreWanted`).
+  - The explore fallback only counts ores the plan actually needs (it used to mine copper forever).
+  - Hand recipes (wood platforms) are crafted in place.
+  - Only the best feasible gear tier per slot is offered as a craft candidate (the owner asked to skip obsolete tiers).
+  - `bruteForce` (unstick) never swings at stone its pickaxe can't break; in Brainrot pits it pillars out instead.
+- **Early game (subagent branch, merged into main):** the house goes up in 2–5k ticks (it used to take up to 200k), stations are inside the house, mining is safer, there are fewer deaths, and smelting is batched.
+
+**Known remaining bottlenecks (biggest first):**
+1. Getting The 67 takes 60k–200k ticks on some worlds: 24 gold + 28 silver ore, gold only below the rock layer, and crafting means walking home. Making the resolver gather everything first was tried and reverted (it stalled when the second ore wasn't visible yet).
+2. Lens farming at night is slow or variable on some worlds; the bench near a town-less home gets 6 lenses in 5–12k ticks.
+3. Fights in general take 25–45% of all ticks (hundreds of short, interrupted fights).
+4. Run-to-run variance is large, so always compare on all 6 eval seeds (evalA–F).
+
+**Ideas the owner mentioned:** rush the best gear you can mine and skip intermediate tiers (done for the boss path and the craft menu). The owner also watches the bot live and likes it.
+
 ## Current focus: the playtest bot (`src/bot.js`, `src/botnav.js`, `src/botplan.js`)
 
 The owner asked for a bot that plays through the whole game **using only the same inputs a human uses**: held keys, mouse position, clicks, key presses and inventory UI clicks. It must not teleport or edit the world. The point is to find bugs, and it runs fast via turbo.
