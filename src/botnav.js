@@ -177,6 +177,8 @@ const Nav = {
         const [c, d] = this.space(x, y + 1, 0, 0);
         if (c < Infinity && c > 0) push(x, y + 1, cost + 1 + c, k, { t: 'down', digs: d });
         else if (c === 0 && !this.standable(x, y)) push(x, y + 1, cost + 0.5 + (fallA[k] > 8 ? 2 : 0), k, { t: 'fall', digs: [] });
+        // standing on platforms only (no solid floor under us): hold S and drop through them, like a player
+        else if (c === 0 && !w.solid(x, y + 1) && !w.solid(x + 1, y + 1)) push(x, y + 1, cost + 0.6, k, { t: 'fall', digs: [] });
       }
       // climb straight up: swim, or pillar with blocks
       {
@@ -321,16 +323,26 @@ Object.assign(Bot, {
         if (col === undefined) col = cands[0];
       }
       this.pillarCol = col;
+      const bsP = this.climbSlot(), plat = bsP >= 0 && p.inv[bsP] && p.inv[bsP].id === 'wood_platform';
       // furniture/objects standing in the cell (a chair, a pot...) block placement: break them first, while we still stand there
       const occ = w.tile(col, row);
       if (occ && !TILES[occ].solid && !TILES[occ].cut) { if (this.dig(col, row) === 'fail') { nav.replan = true; this.replanWhy = 'pillar-blocked'; } return false; }
-      const bs = this.climbSlot(); // platforms first; never the blocks reserved for the current goal; wood last (it's for the house)
+      const bs = bsP; // platforms first; never the blocks reserved for the current goal, never wood blocks
       if (bs < 0) { nav.replan = true; this.replanWhy = 'no-blocks'; this.wantPlatforms = G.tick; return false; }
       if (bs > 9) { this.ensureHotbar(bs); return false; }
       this.selectSlot(bs);
-      // jump, then drop the block under us as soon as our feet clear the target cell (a held jump rises ~6 tiles: out of build reach)
-      if (p.onGround) this.jump();
-      else if (p.y + p.h < (n.y + 1) * TS - 2) { this.aimTile(col, row); this.clickOnce(); }
+      if (p.onGround) { this.jump(); return false; }
+      // platforms make a sparse ladder: a held jump lifts the feet ~6 rows, so one rung near the top of each jump is enough
+      // (a rung needs something to attach to: a tile beside/above it or a background wall, which shafts and caves have;
+      // in open air each one has to sit on the last, so there we fall back to one per row)
+      if (plat) {
+        let top = n.y; for (let j = nav.i + 1; j < nav.path.length && nav.path[j].move.t === 'pillar' && nav.path[j].x === n.x; j++) top = nav.path[j].y;
+        const r = Math.ceil((p.y + p.h) / TS), anchored = (cx, cy) => w.tile(cx - 1, cy) || w.tile(cx + 1, cy) || w.tile(cx, cy - 1) || w.tile(cx, cy + 1) || w.wall(cx, cy);
+        if (r > top && r <= row && !w.tile(col, r) && anchored(col, r) && (p.vy > -0.8 || r === top + 1)) { this.aimTile(col, r); this.clickOnce(); return false; }
+        if (p.vy < -0.8 || anchored(col, Math.max(top + 1, r))) { this.jump(); return false; }   // still rising: keep the key held
+      }
+      // blocks (or nothing to anchor a rung to): one per row, placed as soon as our feet clear the target cell
+      if (p.y + p.h < (n.y + 1) * TS - 2) { this.aimTile(col, row); this.clickOnce(); }
       else this.jump();
       return false;
     }
@@ -354,6 +366,8 @@ Object.assign(Bot, {
     if (Math.abs(dxp) > 2) this.hold(dxp > 0 ? 'd' : 'a');
     // dropping onto a node: momentum carries ~3 px/tick, so brake once above it instead of sailing past the ledge
     else if ((m.t === 'drop' || m.t === 'fall') && Math.abs(p.vx) > 0.8) Input.keys[p.vx > 0 ? 'a' : 'd'] = true;
+    // falling down past platforms (our own ladders, arenas): hold S until the feet reach the node we're going to
+    if (m.t === 'fall' && Math.floor((p.y + p.h - 1) / TS) < n.y) Input.keys.s = true;
     if (n.y < ny || m.t === 'jump' || m.t === 'swim' || m.t === 'leap') {
       if (p.onGround || p.wet || p.vy < 0) this.jump();
     }
