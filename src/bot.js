@@ -336,6 +336,8 @@ const Bot = {
     if (!A || !this.task || this.task.done) return true;
     if (this.foesNear().some(n => !A.seen.has(n.uid))) return true;
     if (p.life < A.life - p.lifeMax * 0.15) return true;
+    // a pillar/bridge ran out of platforms and we have wood: craft some now (they're hand-crafted on the spot)
+    if (this.wantPlatforms > G.tick - 60 && A.id !== 'craft:platforms' && this.count('wood') - this.reserved('wood') >= 13) return true;
     if (['hell', 'boss', 'brainrot'].includes(A.kind)) return false;   // long trips stay committed (enemies and big hits still interrupt above)
     // an aura crystal comes within 30 tiles while we're busy with something else: think again (teacherPick grabs it)
     // (once per crystal: a re-decision restarts the current task, so it must not fire again while we can't or won't go)
@@ -366,9 +368,11 @@ const Bot = {
         this.setAct({ id: 'chop:stock', kind: 'reflex' }, this.taskChop(this.count('wood') + 70), foes); return;
       }
       // keep ~30 wood platforms on hand (15 wood, crafted by hand on the spot): pillars, arenas, perches
-      if (this.houseFinished && this.count('wood_platform') < 12 && this.count('wood') - this.reserved('wood') >= 25 && !(cd.plat > G.tick)) {
-        cd.plat = G.tick + 3000;
-        this.setAct({ id: 'craft:platforms', kind: 'reflex' }, this.taskCraftAtBase(['wood_platform', 15]), foes); return;
+      // (wood is never placed as a block: pillars and bridges use these, so turn spare wood into them as soon as we're low)
+      const spareWood = this.count('wood') - this.reserved('wood') - 10;
+      if (this.houseFinished && this.count('wood_platform') < 30 && spareWood >= 3 && (!(cd.plat > G.tick) || this.wantPlatforms > G.tick - 600)) {
+        cd.plat = G.tick + 600; this.wantPlatforms = 0;
+        this.setAct({ id: 'craft:platforms', kind: 'reflex' }, this.taskCraftAtBase(['wood_platform', Math.min(spareWood, 20)]), foes); return;
       }
       const kit = this.earlyWeaponTask();
       if (kit) { this.setAct({ id: 'kit:iron_broadsword', kind: 'reflex' }, kit, foes); return; }
@@ -674,12 +678,12 @@ const Bot = {
     if (t && s >= 0 && s <= 9) { this.aimTile(t[0], t[1]); this.clickHold(); this.hold(u.dir > 0 ? 'd' : 'a'); if (G.tick % 24 < 3 || p.collidedX) this.jump(); return; }
     // walled in by stone we can't break (a Brainrot pit): pillar straight up out of it
     const hard = targets.some(([x, y]) => { const q = w.tile(x, y); return q && TILES[q].solid && TILES[q].minPick > pow; });
-    const bs = hard ? this.spareBlockSlot(true) : -1;
+    const bs = hard ? this.climbSlot() : -1;
     if (bs >= 0) {
       if (bs > 9) { this.ensureHotbar(bs); return; }
       this.selectSlot(bs); this.goal = 'pillaring out of a pit';
       const col = Math.floor(p.cx / TS), row = Math.floor((p.y + p.h - 1) / TS) + 1;
-      if (p.onGround) this.jump(); else if (p.vy >= -1 && !w.solid(col, row)) { this.aimTile(col, row); this.clickOnce(); }
+      if (p.onGround) this.jump(); else if (p.vy >= -1 && !w.tile(col, row)) { this.aimTile(col, row); this.clickOnce(); }
       return;
     }
     this.hold(u.dir > 0 ? 'd' : 'a');

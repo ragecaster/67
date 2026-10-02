@@ -118,14 +118,14 @@ Object.assign(Bot, {
     }
     return -1;
   },
-  // what to pillar up with: wood platforms first (a platform pillar is a ladder afterwards: jump up through it, land on a higher
-  // rung; nothing to dig out of the way later), then spare blocks
+  // what to pillar up / bridge with: wood platforms first (a platform pillar is a ladder afterwards: jump up through it, land on
+  // a higher rung; nothing to dig out of the way later), then spare dirt/stone, never wood blocks
   PLATFORM_KEEP: 10,
   climbSlot() {
     // (the last PLATFORM_KEEP are for Tung's ledge / the arena)
     if (this.count('wood_platform') - this.reserved('wood_platform') > this.PLATFORM_KEEP) { const s = this.slotOf(it => it.id === 'wood_platform'); if (s >= 0) return s; }
-    return this.spareBlockSlot(true);
+    return this.spareBlockSlot(false);   // never raw wood blocks: wood becomes platforms (the restock reflex crafts them)
   },
-  spareBlocks() { return ['dirt_block', 'ash_block', 'mud_block', 'sand_block', 'clay_block', 'snow_block', 'stone_block', 'wood'].reduce((n, id) => n + Math.max(0, this.count(id) - this.reserved(id)), 0); },
+  spareBlocks(withWood = true) { return ['dirt_block', 'ash_block', 'mud_block', 'sand_block', 'clay_block', 'snow_block', 'stone_block'].concat(withWood ? ['wood'] : []).reduce((n, id) => n + Math.max(0, this.count(id) - this.reserved(id)), 0); },
   crystalBad(c) { return !!(this.badCrystals && this.badCrystals.has(c[0] + ',' + c[1])); },
 });

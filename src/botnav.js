@@ -82,7 +82,7 @@ const Nav = {
   plan(sx, sy, goalFn, heur, maxNodes = 16000) {
     this.stamp = (this.stamp || 0) + 1;
     this.power = this.pickPower();
-    this.blocks = Bot.spareBlocks() + Math.max(0, Bot.count('wood_platform') - Bot.PLATFORM_KEEP); // only blocks we may spend (not the ones reserved for the current goal); platforms pillar too
+    this.blocks = Bot.spareBlocks(false) + Math.max(0, Bot.count('wood_platform') - Bot.PLATFORM_KEEP); // only blocks we may spend (not the ones reserved for the current goal); platforms pillar too
     this.avoidBackrooms = !G.inBackrooms(G.player);
     const w = G.world, WW = w.w, N = WW * w.h;
     if (!this.gA || this.gA.length !== N) { this.gA = new Float64Array(N); this.gS = new Uint32Array(N); this.fromA = new Int32Array(N); this.mvA = new Uint8Array(N); this.fallA = new Uint8Array(N); this.vertA = new Uint8Array(N); }
@@ -325,7 +325,7 @@ Object.assign(Bot, {
       const occ = w.tile(col, row);
       if (occ && !TILES[occ].solid && !TILES[occ].cut) { if (this.dig(col, row) === 'fail') { nav.replan = true; this.replanWhy = 'pillar-blocked'; } return false; }
       const bs = this.climbSlot(); // platforms first; never the blocks reserved for the current goal; wood last (it's for the house)
-      if (bs < 0) { nav.replan = true; this.replanWhy = 'no-blocks'; return false; }
+      if (bs < 0) { nav.replan = true; this.replanWhy = 'no-blocks'; this.wantPlatforms = G.tick; return false; }
       if (bs > 9) { this.ensureHotbar(bs); return false; }
       this.selectSlot(bs);
       // jump, then drop the block under us as soon as our feet clear the target cell (a held jump rises ~6 tiles: out of build reach)
@@ -338,10 +338,10 @@ Object.assign(Bot, {
       // fill every missing floor cell under the next node's two body columns, nearest to where we stand first (each one attaches to the last)
       const dir = n.x > nx ? 1 : -1, row = n.y + 1;
       const cols = dir > 0 ? [n.x, n.x + 1] : [n.x + 1, n.x];
-      const col = cols.find(c => !(w.tile(c, row) && TILES[w.tile(c, row)].solid));
+      const col = cols.find(c => !(w.tile(c, row) && (TILES[w.tile(c, row)].solid || w.tile(c, row) === T.PLATFORM)));
       if (col !== undefined) {
-        const bs = this.spareBlockSlot(true);
-        if (bs < 0) { nav.replan = true; this.replanWhy = 'no-blocks'; return false; }
+        const bs = this.climbSlot();   // platforms first (walkable, and nothing to dig back out), never wood blocks
+        if (bs < 0) { nav.replan = true; this.replanWhy = 'no-blocks'; this.wantPlatforms = G.tick; return false; }
         if (bs > 9) { this.ensureHotbar(bs); return false; }
         this.selectSlot(bs);
         this.aimTile(col, row);
