@@ -146,7 +146,9 @@ Object.assign(Bot, {
     const plan = this.plan || this.planFrontier(cands);
     const nightBoss = plan.boss && BOSS_SUMMON[plan.boss] && BOSS_SUMMON[plan.boss].night && plan.label.startsWith('fight');
     if (has('shelter') && !nightBoss) return 'shelter';
-    const on = cands.filter(c => plan.test(c));
+    // concrete on-plan actions beat wandering: explore only when nothing on the plan is actionable
+    let on = cands.filter(c => plan.test(c));
+    if (on.some(c => c.id !== 'explore')) on = on.filter(c => c.id !== 'explore');
     if (on.length) return on.sort((a, b) => (b.ready == null ? 1 : b.ready) - (a.ready == null ? 1 : a.ready) || (a.dist || 0) - (b.dist || 0))[0].id;
     if (has('chop') && this.count('wood') < 60) return 'chop';
     return (has('explore') || cands[cands.length - 1]).id;

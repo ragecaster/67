@@ -499,7 +499,7 @@ const Bot = {
         pickGain: it.pick ? (it.pick - pickPow) / 20 : 0, ready: have / total, needs: Math.log1p(total) / 6,
       });
     }
-    if (p.lifeMax < 400) { const c = this.nearestTile(t => t === T.LIFE_CRYSTAL, 120, 90); if (c && !this.crystalBad(c)) add('crystal', 'crystal', () => this.taskBreakAt(c, 'aura crystal', 'pick'), { dist: Math.abs(c[0] - this.feet()[0]) + Math.abs(c[1] - this.feet()[1]) }); }
+    if (p.lifeMax < 400) { const c = this.findCrystal(); if (c) add('crystal', 'crystal', () => this.taskBreakAt(c, 'aura crystal', 'pick'), { dist: Math.abs(c[0] - this.feet()[0]) + Math.abs(c[1] - this.feet()[1]) }); }
     for (const key of Object.keys(BOSS_SUMMON)) {
       if (w.flags[key] || !this.houseValid()) continue;
       const B = BOSS_SUMMON[key], needs = this.rawNeeds(B.item, 1);
@@ -527,6 +527,25 @@ const Bot = {
       return false; // monster drops (gel, lens, chunks, boss loot), obsidian... come from the boss/biome skills
     }
     return false;
+  },
+  // aura crystals sit in the underground/caverns, usually far outside the local scan: remember every one on the map
+  // (rescanned every 3000 ticks) and go for the nearest one that hasn't failed before
+  findCrystal() {
+    const w = G.world;
+    if (!this.crystals || G.tick - this.crystals.at > 3000) {
+      const list = [];
+      for (let y = w.worldSurface; y < w.hellLayer; y++) for (let x = 1; x < w.w - 1; x++)
+        if (w.tile(x, y) === T.LIFE_CRYSTAL && w.tile(x - 1, y) !== T.LIFE_CRYSTAL && w.tile(x, y - 1) !== T.LIFE_CRYSTAL) list.push([x, y]);
+      this.crystals = { at: G.tick, list };
+    }
+    const [fx, fy] = this.feet();
+    let best = null, bd = 1e9;
+    for (const c of this.crystals.list) {
+      if (w.tile(c[0], c[1]) !== T.LIFE_CRYSTAL || this.crystalBad(c)) continue;
+      const d = Math.abs(c[0] - fx) + Math.abs(c[1] - fy) * 1.5;
+      if (d < bd) { bd = d; best = c; }
+    }
+    return best;
   },
   taskGoHome() {
     const self = this;
