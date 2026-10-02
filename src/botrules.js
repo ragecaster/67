@@ -162,7 +162,7 @@ Object.assign(Bot, {
     }
     const life = p.life / p.lifeMax;
     if (has('heal') && life < 0.5) return 'heal';
-    if (foes.length && (dist(foes[0].cx, foes[0].cy, p.cx, p.cy) < 200 || this.fightOdds(foes[0]).ok)) {
+    if (foes.length && dist(foes[0].cx, foes[0].cy, p.cx, p.cy) < 150) {   // don't chase monsters across the screen: let them come while we work
       const n = foes[0], odds = this.fightOdds(n), d = dist(n.cx, n.cy, p.cx, p.cy);
       const fled = (this.fledFrom && this.fledFrom[n.uid]) || 0;
       const flying = n.def.noGravity || ['flyer', 'bat', 'smiler'].includes(n.def.ai);
