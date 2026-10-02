@@ -11,7 +11,9 @@ const BOSS_READY = {
   king_slime: { lifeMax: 140, def: 0, dps: 60, potions: 0, pick: 35 },
   eye_of_cthulhu: { lifeMax: 140, def: 0, dps: 60, potions: 0, pick: 35 },
   tung_sahur: { lifeMax: 100, def: 0, dps: 60, potions: 0, pick: 35 },   // copper mines everything up to gold
-  wall_of_flesh: { lifeMax: 300, def: 16, dps: 100, potions: 10, pick: 65, arrows: 300 },
+  // The 67 is best in slot up to the Wall (its homing 6s and 7s land ~220/s there; Night's Edge is melee only and costs a hellstone
+  // sword + Tung's bat; Brainrot/Ohio bows land far less): the gate is The 67, and demonite goes into armor and the pickaxe
+  wall_of_flesh: { lifeMax: 300, def: 16, dps: 80, potions: 10, pick: 65, arrows: 300 },
 };
 // upgrade paths the plan walks (cheapest first)
 const PLAN_WEAPONS = ['the_67', 'lights_bane', 'fiery_greatsword', 'nights_edge', 'gold_broadsword', 'silver_broadsword', 'iron_broadsword', 'copper_broadsword', 'gold_bow', 'iron_bow', 'demon_bow', 'molten_fury'];  // best first: the plan takes the first one it can make progress on
@@ -127,8 +129,11 @@ Object.assign(Bot, {
     if (pick < 65 && R.pick >= 65) reqs.push({ label: 'farm the Brainrot for a nightmare pickaxe', ids: new Set(['brainrot', 'craft:nightmare_pickaxe']) });
     const losing = dps < R.dps;
     // The 67 is the only weapon that meets the boss gate: don't spend its silver/gold on a stopgap sword on the way
-    if (losing && !this.owns('the_67') && key !== 'wall_of_flesh') reqs.push({ label: 'better weapon', item: 'the_67' });
+    if (losing && !this.owns('the_67')) reqs.push({ label: 'better weapon', item: 'the_67' });
     else if (losing) for (const id of PLAN_WEAPONS) { const it = ITEMS[id]; if (it && expectedHit(it) * 60 / Math.max(6, it.useAnim || it.useTime) > dps * 1.15) reqs.push({ label: 'better weapon', item: id }); }
+    // below the Wall's defense gate after the Eye: the Brainrot set (its chunks only drop from Doomscrollers, so the farm skill gets them)
+    if (p.calc.defense < R.def && G.world.flags.eye_of_cthulhu && this.brainrotWants().some(id => id.startsWith('shadow_')))
+      reqs.push({ label: 'Brainrot armor', ids: new Set(['brainrot', ...this.SHADOW_SET.map(id => 'craft:' + id), 'craft:demonite_bar']) });
     if (p.calc.defense < R.def) for (const id of PLAN_ARMOR) {
       const it = ITEMS[id]; if (!it || !it.armor) continue;
       const cur = p.armor[{ head: 0, body: 1, legs: 2 }[it.armor]];
@@ -136,7 +141,9 @@ Object.assign(Bot, {
     }
     if (this.effLife() < R.lifeMax) reqs.push({ label: 'more max life', ids: new Set(['crystal', 'explore']) });
     if (this.potionCount() < R.potions) reqs.push({ label: 'healing potions', item: 'lesser_healing_potion' });
-    if (R.arrows && this.rangedSlot() >= 0 && this.count('wooden_arrow') < R.arrows) reqs.push({ label: 'arrows', item: 'wooden_arrow' });
+    // arrows only for a bow we'd actually fight with (The 67 counts as ranged, it fires 6s and 7s, but needs no ammo)
+    const rs = this.rangedSlot();
+    if (R.arrows && rs >= 0 && ITEMS[p.inv[rs].id].ammo === 'arrow' && this.count('wooden_arrow') < R.arrows) reqs.push({ label: 'arrows', item: 'wooden_arrow' });
     // the summon item itself (and its ingredients) before the fight
     const S = BOSS_SUMMON[key];
     if (S && !this.has(S.item)) reqs.push({ label: 'summon item', item: S.item });

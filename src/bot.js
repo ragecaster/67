@@ -763,7 +763,8 @@ const Bot = {
       if (B.night && !G.isNight() && this.ticksToNight() > 2500 && (this.has(B.item) || (key === 'eye_of_cthulhu' && this.count('lens') < 6))) continue;
       add('boss:' + key, 'boss', () => this.taskBoss(key), { ready: have / total, boss: key, value: BOSS_TYPES[key].life / 4000 });
     }
-    if (w.flags.eye_of_cthulhu && !this.hasBetterPick(65)) add('brainrot', 'brainrot', () => this.taskBrainrot(), { ready: Math.min(1, this.count('rotten_chunk') / 6) });
+    const bn = w.flags.eye_of_cthulhu && this.brainrotWants().length ? this.brainrotNeeds() : null;   // (materials in hand: the crafts take over)
+    if (bn && (this.count('rotten_chunk') < bn.chunks || this.count('demonite_ore') < bn.ore)) add('brainrot', 'brainrot', () => this.taskBrainrot(), { ready: Math.min(1, this.count('rotten_chunk') / 6) });
     if (this.hasBetterPick(65) && !w.flags.wall_of_flesh) add('hell', 'hell', () => this.taskHell(), { ready: Math.min(1, p.lifeMax / 300) });
     add('explore', 'explore', () => this.taskExplore());
     if (this.base) add('home', 'home', () => this.taskGoHome(), { dist: Math.abs(this.base[0] - this.feet()[0]) + Math.abs(this.base[1] - this.feet()[1]) });
@@ -1549,15 +1550,34 @@ const Bot = {
   onPerch() { if (!this.perch) return false; const [sx, sy] = this.perchSpot(), [fx, fy] = this.feet(); return Math.abs(fx - sx) <= 1 && fy >= sy - 4 && fy <= sy + 1; },
   ticksToNight() { const w = G.world; return w.dayTime ? DAY_LEN - w.time : 0; },
   taskEye() { return this.taskBoss('eye_of_cthulhu'); },
+  // what the Brainrot still owes us: the nightmare pickaxe (Ohio's hellstone), then the Brainrot armor set while we're below the
+  // Wall's defense gate (The 67 stays the weapon: Light's Bane / the Brainrot bow land far less)
+  SHADOW_SET: ['shadow_helmet', 'shadow_scalemail', 'shadow_greaves'],
+  brainrotWants() {
+    const p = this.p(), out = [];
+    if (!this.hasBetterPick(65)) out.push('nightmare_pickaxe');
+    if (p.calc.defense < BOSS_READY.wall_of_flesh.def) for (const id of this.SHADOW_SET) {
+      const cur = p.armor[{ head: 0, body: 1, legs: 2 }[ITEMS[id].armor]];
+      if (!this.owns(id) && (cur ? ITEMS[cur.id].defense || 0 : 0) < ITEMS[id].defense) out.push(id);
+    }
+    return out;
+  },
+  brainrotNeeds() {
+    const acc = {};
+    for (const id of this.brainrotWants()) this.rawNeeds(id, 1, acc);
+    return { chunks: acc.rotten_chunk || 0, ore: acc.demonite_ore || 0 };
+  },
   taskBrainrot() {
     const self = this, w = G.world;
-    this.goal = 'farming Brainrot (chunks ' + this.count('rotten_chunk') + '/6, bars ' + this.count('demonite_bar') + '/12)';
+    const N = this.brainrotNeeds();
+    this.goal = 'farming Brainrot (chunks ' + this.count('rotten_chunk') + '/' + N.chunks + ', ore ' + this.count('demonite_ore') + '/' + N.ore + ')';
     return {
       step() {
-        if (self.hasBetterPick(65)) { this.done = true; return; }
-        if (self.count('rotten_chunk') >= 6 && self.count('demonite_ore') + self.count('demonite_bar') * 3 >= 36) { this.done = true; return; }
-        if (self.count('rotten_chunk') < 6) { const bx = w.biomes.rotX; self.moveTo(bx + (Math.floor(self.t / 900) % 2 ? 20 : -20), topSolid(w, bx) - 1, 4); self.goal = 'hunting Doomscrollers for chunks'; return; }
-        if (!this.sub || this.sub.done) this.sub = self.taskMine('ore', () => self.count('demonite_ore') + self.count('demonite_bar') * 3 >= 36, [T.DEMONITE]);
+        const n = self.brainrotNeeds();   // shrinks as bars and pieces get made
+        const chunksOk = self.count('rotten_chunk') >= n.chunks, oreOk = self.count('demonite_ore') >= n.ore;
+        if (!self.brainrotWants().length || (chunksOk && oreOk)) { this.done = true; return; }
+        if (!chunksOk) { const bx = w.biomes.rotX; self.moveTo(bx + (Math.floor(self.t / 900) % 2 ? 20 : -20), topSolid(w, bx) - 1, 4); self.goal = 'hunting Doomscrollers for chunks (' + self.count('rotten_chunk') + '/' + n.chunks + ')'; return; }
+        if (!this.sub || this.sub.done) this.sub = self.taskMine('ore', () => self.count('demonite_ore') >= self.brainrotNeeds().ore, [T.DEMONITE]);
         this.sub.step();
       },
     };

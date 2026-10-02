@@ -121,7 +121,8 @@ Object.assign(Bot, {
   // rung; nothing to dig out of the way later), then spare blocks
   PLATFORM_KEEP: 10,
   climbSlot() {
-    if (this.count('wood_platform') - this.reserved('wood_platform') > this.PLATFORM_KEEP) {   // the last 10 are for Tung's ledge / the arena const s = this.slotOf(it => it.id === 'wood_platform'); if (s >= 0) return s; }
+    // (the last PLATFORM_KEEP are for Tung's ledge / the arena)
+    if (this.count('wood_platform') - this.reserved('wood_platform') > this.PLATFORM_KEEP) { const s = this.slotOf(it => it.id === 'wood_platform'); if (s >= 0) return s; }
     return this.spareBlockSlot(true);
   },
   spareBlocks() { return ['dirt_block', 'ash_block', 'mud_block', 'sand_block', 'clay_block', 'snow_block', 'stone_block', 'wood'].reduce((n, id) => n + Math.max(0, this.count(id) - this.reserved(id)), 0); },

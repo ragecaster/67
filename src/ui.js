@@ -256,7 +256,11 @@ const UI = {
     txt(ctx, formatAura(invMoney(p.inv)), x0, y0 + 5 * (SLOT + GAP) + 16, '#ffd23a', 13);
     const tx = bx, ty = y0 + 4 * (SLOT + GAP);
     const thot = this.drawSlot(ctx, tx, ty, p.trash, { color: 'rgba(120,40,40,0.8)', label: 'Trash' });
-    if (thot && Input.mClick) { const m = p.mouseItem; p.mouseItem = p.trash; p.trash = m; }
+    // dropping a held item on the trash deletes whatever was in it for good; with an empty cursor, the last trashed item comes back
+    if (thot && Input.mClick) {
+      if (p.mouseItem) { p.trash = p.mouseItem; p.mouseItem = null; playSound('grab', 0.4); }
+      else if (p.trash) { p.mouseItem = p.trash; p.trash = null; }
+    }
     // buttons
     let by = y0;
     const btn = (label, fn) => { if (this.button(ctx, bx, by, 110, 26, label)) fn(); by += 30; };
