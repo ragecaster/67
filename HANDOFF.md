@@ -101,3 +101,11 @@ Jev (Open-Jev / NanoJev / AgentJev on Hugging Face; I could not fetch them: the 
 - The model returns probabilities; take argmax (or sample with temperature) and let the existing executors do it. Log (state, options, choice, outcome) to build a dataset: death causes, edge falls and premature Wall are exactly the cases where a learned policy should beat the thresholds.
 - Training signal: this bot already produces cheap, deterministic rollouts (headless, ~1000 ticks/s, snapshots), so fine-tune on rollouts that survived/succeeded, or use the model only as a critic ("will this sortie end in death?") first.
 - Practical first step: define the state/options schema in JS, run the existing rule policy through it and log it (no model yet), then plug a model behind the same interface. Needs the weights locally (`hf download aimeigaoshou/agent-jev`, or NanoJev) and a small Python bridge to the headless browser.
+
+## Session 3b: goal "TerraJev kills all 3 bosses (King, Eye, Tung) within 200k ticks" — NOT met
+
+Baselines measured at 200k ticks (`tests/jeveval.js`): teacher/rules: evalA 1 boss (King @126k), evalB 2 (Tung @139k, King @187k), evalC 0; jev (built-in weights): evalA 0 bosses, score -1 (worse than the rules; it picked from the model 818 times vs 1 teacher fallback). No torch in the sandbox, so `tools/jev/loop.sh` training could not be run.
+
+Where the ticks go (`tests/bosstime.js 200000 evalA teacher`): The 67 only at ~57k (anvil @29k, gold+silver mining after), 140 life ~72k, so most of night 1 (54k–86k) is gone before the bot can fight; bone farming for Tung's Kentongan ate ~50k ticks (7 bones should need ~7 skeleton kills; spawn rate in the cavern is ~1/95 ticks, so the farm/hunt logic is the problem, see `tests/_bonebench.js`); a night was also lost to the Backrooms noclip block. Only two nights fit in 200k (54k–86k, 140k–173k), so Eye and Tung must each get one, King by day.
+
+Next steps: (1) make The 67 (or a cheaper dps≥60 weapon) arrive by ~40k; (2) fix bone/lens farming throughput; (3) avoid the noclip block; (4) then make jev >= teacher (raise `TerraJev.confidence`/fall back to rules until a retrained model beats the incumbent). Wall of Brainrot work is on hold (see the Ohio section: runway ~50/320 tiles after 150k ticks, premature Wall summons).
