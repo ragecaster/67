@@ -352,6 +352,11 @@ const Bot = {
         cd['place:' + item] = G.tick + 1500;
         this.setAct({ id: 'place:' + item, kind: 'reflex' }, this.taskCraftAtBase([item, 0, 'placeonly']), foes); return;
       }
+      // keep ~30 wood platforms on hand (15 wood, crafted by hand on the spot): pillars, arenas, perches
+      if (this.houseFinished && this.count('wood_platform') < 12 && this.count('wood') - this.reserved('wood') >= 25 && !(cd.plat > G.tick)) {
+        cd.plat = G.tick + 3000;
+        this.setAct({ id: 'craft:platforms', kind: 'reflex' }, this.taskCraftAtBase(['wood_platform', 15]), foes); return;
+      }
       const kit = this.earlyWeaponTask();
       if (kit) { this.setAct({ id: 'kit:iron_broadsword', kind: 'reflex' }, kit, foes); return; }
       if (p.inv.slice(10).filter(s => !s).length < 4 && !(this.cooldowns && this.cooldowns.trash > G.tick)) { (this.cooldowns = this.cooldowns || {}).trash = G.tick + 1800; this.setAct({ id: 'trash', kind: 'reflex' }, this.taskTrash(), foes); return; }
@@ -453,7 +458,11 @@ const Bot = {
     const it = ITEMS[p.inv[ws].id], melee = (it.use === 'swing' || it.use === 'thrust') && !it.shoot;
     const dx = n.cx - p.cx, dy = n.cy - p.cy, d = Math.hypot(dx, dy), toward = dx > 0 ? 'd' : 'a', away = dx > 0 ? 'a' : 'd';
     const tile = () => this.moveTo(Math.floor(n.cx / TS), Math.floor((n.y + n.h - 1) / TS), 1);
-    if (n.type === 'tung_sahur' && !melee) this.tungDance(n, dx, d, toward, away);
+    // on our arena strip or Tung's perch, small fry is shot from where we stand: chasing it walks us off the edge
+    const anchored = !melee && n.type !== 'eye_of_cthulhu' && n.type !== 'tung_sahur' && (this.onArena() || this.onPerch());
+    if (anchored) this.why = 'anchored';
+    else if (n.type === 'tung_sahur' && !melee) this.tungDance(n, dx, d, toward, away);
+    else if (n.type === 'eye_of_cthulhu' && !melee && !this.noEyeDance) this.eyeDance(n);
     else if (melee) {
       if (n.boss && Math.abs(dx) < 40 && Math.abs(dy) < 60) this.holdSafe(G.tick % 160 < 80 ? away : toward);   // don't stand inside a boss
       else if (Math.abs(dx) > 26 || Math.abs(dy) > 50) { if (Math.abs(dy) > 90 || this.stuck > 20 || d > 260) tile(); else this.holdSafe(toward); }
@@ -464,7 +473,7 @@ const Bot = {
       else if (d > want + 200 || !lineOfSight(G.world, p.cx, p.cy, n.cx, n.cy)) { if (d > 400 || this.stuck > 20) tile(); else this.holdSafe(toward); }
       if (n.boss && (G.tick % 90 < 12 || G.projectiles.some(q => q.hostile && !q.dead && dist(q.cx, q.cy, p.cx, p.cy) < 120))) this.jump();
     }
-    if (p.collidedX && p.onGround && !(this.perch && /^tung-(perch|ledge)/.test(this.why))) this.jump();   // never hop the perch fence
+    if (p.collidedX && p.onGround && !(this.perch && /^(tung-(perch|ledge)|eye-dodge|anchored)/.test(this.why))) this.jump();   // never hop the perch fence
     // aim (lead moving targets with projectiles) and attack when it can land
     let ax = n.cx, ay = n.cy;
     if (!melee && it.use !== 'throw') { const sp = it.shootSpeed || 8, t = Math.min(45, d / sp); ax += (n.vx || 0) * t; ay += (n.vy || 0) * t - d * 0.015; }
@@ -495,6 +504,81 @@ const Bot = {
     if (key && !(key === toward && this.dropAhead(-dirAway))) { this.hold(key); this.lastDanceKey = key; }
     if (wave || (adx < 120 && n.state === 'swing')) this.jump();
     this.why = 'tung-dance';
+  },
+  // The Eye of Ohio's dash is ballistic, and the next one aims at wherever we stand when it starts (7-10 px/tick; running takes
+  // ~40 ticks to reach 3 px/tick, so a late sidestep never works). So, like a player who knows the pattern: every 4 ticks try
+  // 45 short plans (run left/right/stand still, maybe turn around after 12 or 30 ticks, maybe jump after 0/8/16/26 ticks)
+  // 100 ticks ahead against a copy of its AI on flat ground, and follow the one that stays clear by the widest margin.
+  // An offline model of exactly this (tools/jev/eyesim.py) took plain strafing from ~5 (phase 1) / ~10 (phase 2) contact
+  // hits per 1000 ticks to 0, on arenas from 20 to 56 tiles wide.
+  EYE_PLANS: (() => { const o = []; for (const d of [-1, 1, 0]) for (const s of [999, 12, 30]) for (const j of [-1, 0, 8, 16, 26]) o.push([d, s, j]); return o; })(),
+  eyeDance(n) {
+    const p = this.p(), [fx, fy] = this.feet();
+    let A = this.eyeArena;
+    // on (or jumping over) the arena strip: its floor and ends; knocked off it: the ground here, +-28 tiles
+    const ar = this.arena && fx >= this.arena.x0 - 4 && fx <= this.arena.x1 + 4 && fy <= this.arena.floor - 1 ? this.arena : null;
+    if (A && A.uid === n.uid && !!A.onArena !== !!ar) A = null;
+    if (!A || A.uid !== n.uid) {
+      A = this.eyeArena = ar ? { uid: n.uid, x0: ar.x0 * TS, x1: ar.x1 * TS, floor: ar.floor * TS } : { uid: n.uid, x0: (fx - 28) * TS, x1: (fx + 28) * TS, floor: null };
+      A.dir = 1; A.plan = null; A.onArena = !!ar;
+    }
+    if (p.onGround && !A.onArena) A.floor = p.y + p.h;   // uneven ground: the model's floor is where we last stood
+    if (!A.plan || A.t >= 4) {
+      const floor = A.floor != null ? A.floor : p.y + p.h;
+      let best = null;
+      for (const pl of this.EYE_PLANS) {
+        const r = this.eyeSim(p, n, pl, 100, floor, A.x0, A.x1 + TS);   // the arena's ends are walls in the model
+        const sc = r.sep - (pl[2] >= 0 ? 0.5 : 0) - (pl[0] !== A.dir ? 1 : 0) - (pl[1] !== 999 ? 0.3 : 0);
+        if (!best || sc > best.sc) best = { sc, pl };
+      }
+      A.plan = best.pl; A.t = 0;
+      if (best.pl[0]) A.dir = best.pl[0];
+    }
+    const [d1, sAt, jAt] = A.plan, t = A.t++;
+    const d = t < sAt ? d1 : -d1;
+    // never run (or jump) past an end: past the far one is the fence and a fall, past the near one the open pillar side
+    const pastEnd = d > 0 ? p.cx > A.x1 + TS - 14 : d < 0 ? p.cx < A.x0 + 14 : false;
+    if (d && !pastEnd) this.hold(d > 0 ? 'd' : 'a');
+    if (pastEnd && Math.abs(p.vx) > 0.5) this.hold(p.vx > 0 ? 'a' : 'd');
+    if (jAt >= 0 && !pastEnd && t >= jAt && t < jAt + 16) Input.keys[' '] = true;   // held like the plan simulated it (fresh press, then full height)
+    this.why = 'eye-dodge ' + (d > 0 ? 'R' : d < 0 ? 'L' : '-') + (jAt >= 0 ? ' j' + jAt : '');
+  },
+  // one plan against a copy of the Eye AI (keep in step with bosses.js eye() and the movement in player.js), flat floor at `floor`:
+  // returns the closest gap between the two boxes (negative = hit; earlier hits score worse) and where we end up
+  eyeSim(p0, n, [d1, sAt, jAt], look, floor, wx0, wx1) {
+    const ms = p0.calc.moveSpeed || 1, mx = 3 * ms, acc = 0.08 * ms, slow = 0.2 * ms, PW = p0.w, PH = p0.h, EW = n.w, EH = n.h;
+    let x = p0.x, y = p0.y, vx = p0.vx, vy = p0.vy, jump = p0.jump || 0, held = !!p0.jumpHeld, ground = p0.onGround;
+    let ex = n.x, ey = n.y, evx = n.vx, evy = n.vy, st = n.ai[2] === 1 ? 'spin' : n.state, a1 = n.ai[1], dashes = n.dashes || 0, ph2 = n.ai[2] >= 2;
+    let minSep = 1e9;
+    for (let t = 0; t < look; t++) {
+      const d = t < sAt ? d1 : -d1, J = jAt >= 0 && t >= jAt && t < jAt + 16;
+      if (d < 0) { if (vx > -mx) { if (vx > slow) vx -= slow; vx -= acc; if (vx < -mx) vx = -mx; } }
+      else if (d > 0) { if (vx < mx) { if (vx < -slow) vx += slow; vx += acc; if (vx > mx) vx = mx; } }
+      else { const s = ground ? slow : slow * 0.5; vx = vx > s ? vx - s : vx < -s ? vx + s : 0; }
+      if (J) { if (jump > 0) { vy = -5.01; jump--; } else if (!held && ground) { vy = -5.01; jump = 15; } held = true; } else { jump = 0; held = false; }
+      vy = Math.min(vy + 0.4, 10); x += vx; y += vy;
+      if (x < wx0) { x = wx0; vx = 0; } else if (x + PW > wx1) { x = wx1 - PW; vx = 0; }
+      if (y + PH >= floor) { y = floor - PH; vy = 0; ground = true; } else ground = false;
+      const pcx = x + PW / 2, pcy = y + PH / 2;
+      // the Eye
+      if (st === 'spin') { evx *= 0.95; evy *= 0.95; ex += evx; ey += evy; if (++a1 >= 120) { st = 'hover'; a1 = 0; ph2 = true; } }
+      else if (st === 'hover') {
+        const spd = ph2 ? 8 : 6, ea = ph2 ? 0.2 : 0.15;
+        evx += clamp(pcx - (ex + EW / 2), -1, 1) * ea; evy += clamp(pcy - 230 - (ey + EH / 2), -1, 1) * ea;
+        const v = Math.hypot(evx, evy); if (v > spd) { evx *= spd / v; evy *= spd / v; }
+        ex += evx; ey += evy;
+        if (++a1 > (ph2 ? 120 : 280)) { st = 'dash'; a1 = 0; dashes = 0; }
+      } else {
+        if (a1 === 0) { const a = Math.atan2(pcy - (ey + EH / 2), pcx - (ex + EW / 2)), sp = ph2 ? 10 : 7; evx = Math.cos(a) * sp; evy = Math.sin(a) * sp; }
+        a1++; ex += evx; ey += evy;
+        if (a1 > 40) { evx *= 0.95; evy *= 0.95; }
+        if (a1 > (ph2 ? 55 : 70)) { a1 = 0; if (++dashes >= (ph2 ? 5 : 3)) st = 'hover'; }
+      }
+      const sep = Math.max(Math.abs(pcx - (ex + EW / 2)) - (PW + EW) / 2, Math.abs(pcy - (ey + EH / 2)) - (PH + EH) / 2);
+      if (sep < minSep) minSep = sep;
+      if (sep < 0) return { sep: sep - (look - t), cx: pcx };
+    }
+    return { sep: Math.min(minSep, 40), cx: x + PW / 2 };
   },
   skillHeal() { const self = this; return { step() { self.press('h'); self.goal = 'drinking a potion'; this.done = true; } }; },
   skillFlee() {
@@ -1205,14 +1289,53 @@ const Bot = {
             self.goal = 'waiting for night to summon ' + name; self.moveTo(home[0] - 6, home[1], 3); return;
           }
           // every boss comes to wherever we are: get to the surface right here (Tung's perch gets built next to us)
-          if (fy > topSolid(w, fx) + 3 && !(key === 'tung_sahur' && self.perch && Math.abs(fx - self.perch[0]) <= self.LEDGE + 1)) { self.goal = 'climbing to the surface to summon ' + name; if (self.moveTo(fx, topSolid(w, fx) - 1, 3) === 'fail') self.moveTo(home[0] - 6, home[1], 3); return; }
+          if (fy > topSolid(w, fx) + 3 && !(self.perch && (self.perch.kind === 'arena') === (key === 'eye_of_cthulhu') && Math.abs(fx - self.perch[0]) <= (self.perch.len || self.LEDGE) + 1)) { self.goal = 'climbing to the surface to summon ' + name; if (self.moveTo(fx, topSolid(w, fx) - 1, 3) === 'fail') self.moveTo(home[0] - 6, home[1], 3); return; }
           if (p.life < p.lifeMax * 0.85) { self.goal = 'healing up before ' + name; return; }
           if (!self.bossReady(key)) { self.log('not ready for ' + name + ' yet'); this.done = true; return; }
+          // The Eye: like a player, fight it from a long flat strip of wood platforms ~8 tiles over the ground. Running on flat
+          // footing is what lets eyeDance's dash planner work (its model assumes a flat floor), zombies and toilets can't reach it,
+          // and the Eye's dashes and our shots pass through platforms.
+          if (key === 'eye_of_cthulhu' && !(self.arenaFailed && G.tick - self.arenaFailed < 20000)) {
+            const L = self.ARENA_LEN;
+            if (self.perch && (self.perch.kind !== 'arena' || (Math.abs(fx - self.perch[0]) > 80 && !self.onArena()))) self.perch = null;
+            const want = L + 14;   // the strip plus a platform pillar up to it (blocks do the pillar if wood is short)
+            if (!self.perch && self.count('wood_platform') < want && self.count('wood') >= 1 && !this.crafted) {
+              this.crafted = true;
+              sub = self.taskCraftAtBase(['wood_platform', Math.min(self.count('wood'), Math.ceil((want - self.count('wood_platform')) / 2))]); return;
+            }
+            if (!self.perch && self.count('wood_platform') < L) {
+              const need = Math.ceil((L - self.count('wood_platform')) / 2);
+              if ((this.chops = (this.chops || 0) + 1) <= 2) { sub = self.taskChop(need + 5); return; }   // 15 wood buys the whole strip
+              self.log('not enough wood for an arena, fighting on the ground'); self.arenaFailed = G.tick;
+            } else {
+              const site = self.perch || self.eyeArenaSite([fx, fy]);
+              if (!site) { self.log('no arena site here, fighting on the ground'); self.arenaFailed = G.tick; }
+              else {
+                self.perch = site;
+                const pr0 = self.perch, trees = pr0.cleared ? [] : self.arenaTrees(pr0[0], pr0[2], pr0[1], pr0[3], L);   // (once building, our own pillar is in the way)
+                if (!trees) { self.log('arena site got blocked, picking another'); self.perch = null; return; }
+                if (trees.length) {   // fell the trees in the way, nearest first, standing beside the trunk
+                  const [tx, ty] = trees.sort((a, b) => Math.abs(a[0] - fx) - Math.abs(b[0] - fx))[0];
+                  self.goal = 'clearing trees for the ' + name + ' arena';
+                  const side = fx <= tx ? tx - 1 : tx + 1, r = self.moveTo(side, ty, 1);
+                  if (r === 'fail') { self.log('cannot reach a tree in the arena, fighting on the ground'); self.perch = null; self.arenaFailed = G.tick; return; }
+                  if (r || self.p().inReach(tx, ty)) { const ax = self.bestSlot('axe'); if (ax > 9) { self.ensureHotbar(ax); return; } self.selectSlot(ax); self.aimTile(tx, ty); self.clickHold(); }
+                  return;
+                }
+                pr0.cleared = true;
+                const r = self.climbPerch();
+                if (r === 'fail') { self.log('arena build failed, fighting on the ground'); self.perch = null; self.arenaFailed = G.tick; return; }
+                if (r !== true) { self.goal = 'building an arena for ' + name; return; }
+                const pr = self.perch, far = pr[0] + pr[3] * (pr.len - 2), near = pr[0] + pr[3] * 3;
+                self.arena = { x0: Math.min(near, far), x1: Math.max(near, far), floor: pr[1] + 1 };
+              }
+            }
+          }
           // Tung only reaches ~12 tiles up (leap), its shockwaves run along the ground and its logs arc ~8 tiles high:
           // fight it from a 25-tile pillar next to the house, like a human would
           if (key === 'tung_sahur') {
             if (!self.perch && self.count('wood_platform') < self.LEDGE && self.count('wood') >= 5) { sub = self.taskCraftAtBase(['wood_platform', Math.ceil((self.LEDGE - self.count('wood_platform')) / 2)]); return; }
-            if (self.perch && Math.abs(fx - self.perch[0]) > 80 && !self.onPerch()) self.perch = null;   // an old perch far away: build a new one here
+            if (self.perch && ((Math.abs(fx - self.perch[0]) > 80 && !self.onPerch()) || self.perch.kind === 'arena')) self.perch = null;   // an old perch far away (or the Eye's low arena): build a new one here
             const perch = self.perch || (self.count('wood_platform') >= self.LEDGE && self.spareBlocks() - self.count('wood') >= self.PERCH_H + 2 ? self.tungPerch([fx, fy]) : null);
             const climbed = perch ? self.climbPerch() : true;   // true once on the spot with the fence up
             if (perch && climbed !== true) { self.goal = 'building a perch for ' + name; if (climbed === 'fail') { self.log('no perch for ' + name + ', fighting on the ground'); self.perch = null; self.perchFailed = G.tick; } return; }
@@ -1299,6 +1422,42 @@ const Bot = {
     }
     return null;
   },
+  // Eye arena: a pillar up to `stand` and a strip of ARENA_LEN platforms along row stand+1, 7+ rows over the highest ground under it
+  // (ground mobs can't jump that high) and at most 20 over the lowest (a knock off the edge must not be a deadly fall)
+  ARENA_LEN: 30,
+  eyeArenaSite(at) {
+    const w = G.world, L = this.ARENA_LEN;
+    let best = null;
+    for (const off of [0, -12, 12, -24, 24, -40, 40, -60, 60]) for (const dir of [1, -1]) {
+      const x = at[0] + off, gy = topSolid(w, x) - 1;
+      if (gy < 5 || Math.abs(gy - at[1]) > 30) continue;
+      let hi = 1e9, lo = -1e9;
+      for (let i = 0; i <= L + 1; i++) { const t = topSolid(w, x + dir * i); if (t < 0) { hi = -1; break; } hi = Math.min(hi, t); lo = Math.max(lo, t); }
+      if (hi < 0) continue;   // water under it
+      const stand = hi - 9;   // feet row; platforms on stand+1, 7 clear rows above the highest ground
+      if (lo - stand > 21 || gy - stand < 4) continue;
+      const trees = this.arenaTrees(x, gy, stand, dir, L);
+      if (!trees) continue;
+      const cost = trees.length * 3 + Math.abs(off) / 12;
+      if (!best || cost < best.cost) { const pr = [x, stand, gy, dir]; pr.len = L; pr.kind = 'arena'; best = { cost, pr }; }
+    }
+    return best && best.pr;
+  },
+  // what stands where the pillar, the strip and its headroom go: null if anything but trees (and low plants), else the trees to
+  // fell first (their lowest trunk cell; chopping it brings the whole tree down and pays for the platforms)
+  arenaTrees(x, gy, stand, dir, L) {
+    const w = G.world, trees = new Map();
+    const cell = (cx, y) => {
+      const t = w.tile(cx, y); if (!t) return true;
+      if (t === T.TREE) { let b = y; while (w.tile(cx, b + 1) === T.TREE) b++; trees.set(cx, [cx, b]); return true; }
+      return !!(TILES[t].cut && y > stand + 1);
+    };
+    for (let y = stand - 3; y <= gy; y++) if (!cell(x, y)) return null;   // the pillar column
+    // the strip and its headroom (one row of slack below: the pillar can top out a row lower, and the strip comes with it)
+    for (let i = 1; i <= L + 1; i++) for (let y = stand - 4; y <= stand + 2; y++) if (!cell(x + dir * i, y)) return null;
+    return [...trees.values()];
+  },
+  onArena() { const pr = this.perch; if (!pr || pr.kind !== 'arena') return false; const [fx, fy] = this.feet(); return fy === pr[1] && (fx - pr[0]) * pr[3] >= 0 && (fx - pr[0]) * pr[3] <= pr.len; },
   // open sky over the pillar column (nothing at all in it) and the ledge (plants are fine low down)
   perchOpen(x, gy, dir) {
     const w = G.world;
@@ -1308,7 +1467,7 @@ const Bot = {
     }
     return true;
   },
-  perchSpot() { const pr = this.perch; return [pr[0] + pr[3] * (this.LEDGE - 1), pr[1]]; },
+  perchSpot() { const pr = this.perch; return [pr[0] + pr[3] * ((pr.len || this.LEDGE) - 1), pr[1]]; },
   // walk to the pillar column and pillar straight up (jump, drop a block under our feet as they clear the next cell),
   // then lay the platform ledge (each one attaches to the last) and walk out to the spot one short of its end
   perchFail(why) { this.log('perch: ' + why); return 'fail'; },
@@ -1327,14 +1486,16 @@ const Bot = {
       }
       return true;
     }
-    const onTop = fy <= pr[1] + 1 && p.onGround && fy >= pr[1] - 1 && Math.abs(fx - pr[0]) <= this.LEDGE;
+    const onTop = fy <= pr[1] + 1 && p.onGround && fy >= pr[1] - 1 && Math.abs(fx - pr[0]) <= (pr.len || this.LEDGE);
     if (onTop) {
       if (fx === pr[0] && fy !== pr[1] && w.tile(pr[0] + dir, pr[1] + 1) !== T.PLATFORM) { pr[1] = fy; return false; }   // the pillar top is where we stand
       const row = pr[1] + 1;
       // ledge: the first missing platform cell, placed from where we stand
-      let k = 1; while (k <= this.LEDGE && w.tile(pr[0] + dir * k, row) === T.PLATFORM) k++;
-      if (k <= this.LEDGE) {
-        if (!this.has('wood_platform')) return this.perchFail('out of platforms');
+      let k = 1; while (k <= (pr.len || this.LEDGE) && w.tile(pr[0] + dir * k, row) === T.PLATFORM) k++;
+      if (k <= (pr.len || this.LEDGE)) {
+        // an arena strip that's 20+ long is plenty (the dash dodge works on 20 tiles): stop there rather than fail
+        const shortOk = pr.kind === 'arena' && k - 1 >= 20, cut = () => { pr.len = k - 1; this.log('arena strip ends at ' + (k - 1) + ' platforms'); return false; };
+        if (!this.has('wood_platform')) return shortOk ? cut() : this.perchFail('out of platforms');
         const s = this.slotOf(it => it.id === 'wood_platform');
         if (s > 9) { this.ensureHotbar(s); return false; }
         this.selectSlot(s);
@@ -1343,7 +1504,7 @@ const Bot = {
         if (Math.abs(p.vx) > 0.4) this.hold(p.vx > 0 ? 'a' : 'd');
         this.aimTile(pr[0] + dir * k, row); if (p.itemAnim === 0) this.clickOnce();
         if (!this.perchPlace || this.perchPlace.k !== k) this.perchPlace = { k, at: G.tick };
-        else if (G.tick - this.perchPlace.at > 300) return this.perchFail('platform ' + k + ' would not place');
+        else if (G.tick - this.perchPlace.at > 300) return shortOk ? cut() : this.perchFail('platform ' + k + ' would not place');
         return false;
       }
       const [sx] = this.perchSpot();
@@ -1351,27 +1512,32 @@ const Bot = {
       return false;
     }
     // the pillar from an earlier attempt is still standing: pillar up again right beside it (away from the ledge)
-    if (w.solid(pr[0], pr[2]) && w.solid(pr[0], pr[1] + 1) && !pr.climb) pr.climb = pr[0] - dir;
+    if (w.solid(pr[0], pr[2]) && w.solid(pr[0], pr[1] + 1) && !pr.climb) pr.climb = pr[0] - dir;   // (a platform pillar is a ladder: we just jump up it)
     const cc = pr.climb != null ? pr.climb : pr[0];
     if (pr.climb != null && fx === cc && fy <= pr[1] + 1 && p.onGround) { this.hold(dir > 0 ? 'd' : 'a'); return false; }   // up: step over onto the old pillar
     if (fx !== cc) {
-      if (fy < pr[2] - 8 && p.onGround) return this.perchFail('up on the wrong column ' + fx + ',' + fy);   // up in the air on the wrong column
+      if (fy < pr[2] - 8 && p.onGround && pr.kind !== 'arena') return this.perchFail('up on the wrong column ' + fx + ',' + fy);   // up in the air on the wrong column
       // standing right next to the spot on the same ground: the pillar can just as well go here
-      if (pr.climb == null && Math.abs(fx - pr[0]) <= 3 && Math.abs(fy - pr[2]) <= 2 && p.onGround && this.perchOpen(fx, fy, pr[3])) { pr[0] = fx; pr[2] = fy; pr[1] = fy - this.PERCH_H; }
-      else { const r = this.moveTo(cc, pr[2], pr.climb != null ? 0 : 1); return r === 'fail' ? this.perchFail('cannot walk to the pillar spot') : false; }
+      const openHere = pr.kind === 'arena' ? (t => t && !t.length)(this.arenaTrees(fx, fy, pr[1], pr[3], pr.len)) : this.perchOpen(fx, fy, pr[3]);
+      if (pr.climb == null && Math.abs(fx - pr[0]) <= 3 && Math.abs(fy - pr[2]) <= 2 && p.onGround && openHere) { pr[0] = fx; pr[2] = fy; if (pr.kind !== 'arena') pr[1] = fy - this.PERCH_H; }
+      else { const r = this.moveTo(cc, pr[2], 0); return r === 'fail' ? this.perchFail('cannot walk to the pillar spot') : false; }   // exactly there (tolerance 1 "arrives" next to it and never climbs)
     }
-    const bs = this.spareBlockSlot(false);
+    // the arena's pillar is platforms when there are enough left for the strip too (no dirt to dig back out), else blocks
+    const ledgeLeft = (pr.len || this.LEDGE) - [...Array(pr.len || this.LEDGE)].filter((_, i) => w.tile(pr[0] + dir * (i + 1), pr[1] + 1) === T.PLATFORM).length;
+    // (not Tung's perch: Tung lands on any platform on the way up and leaps again, so its pillar stays solid blocks)
+    const plat = pr.kind === 'arena' && this.count('wood_platform') >= ledgeLeft + Math.max(0, fy - pr[1]) + 2;
+    const bs = plat ? this.slotOf(it => it.id === 'wood_platform') : this.spareBlockSlot(false);
     if (bs < 0) return this.perchFail('out of blocks (' + this.spareBlocks() + ' spare)');
     if (bs > 9) { this.ensureHotbar(bs); return false; }
     this.selectSlot(bs);
-    // the cell on top of the stack under us; place it once our feet have cleared it
-    const col = Math.floor(p.cx / TS);
-    let top = Math.floor((p.y + p.h - 1) / TS) + 1; while (top < pr[2] + 2 && !w.solid(col, top)) top++;
+    // the cell on top of the stack under us (blocks or platforms); place it once our feet have cleared it
+    const col = Math.floor(p.cx / TS), under = y => w.solid(col, y) || w.tile(col, y) === T.PLATFORM;
+    let top = Math.floor((p.y + p.h - 1) / TS) + 1; while (top < pr[2] + 2 && !under(top)) top++;
     const cell = top - 1;
     const occ = w.tile(col, cell);
-    if (occ && !TILES[occ].solid) { if (this.dig(col, cell) === 'fail') return this.perchFail('cannot clear ' + TILES[occ].name); return false; }   // grass, a sapling...
+    if (occ && !TILES[occ].solid && occ !== T.PLATFORM) { if (this.dig(col, cell) === 'fail') return this.perchFail('cannot clear ' + TILES[occ].name); return false; }   // grass, a sapling...
     if (p.onGround) this.jump();
-    else if (p.y + p.h <= cell * TS - 1 && !w.solid(col, cell)) { this.aimTile(col, cell); this.clickOnce(); }
+    else if (p.y + p.h <= cell * TS - 1 && !w.tile(col, cell)) { this.aimTile(col, cell); this.clickOnce(); }
     return false;
   },
   onPerch() { if (!this.perch) return false; const [sx, sy] = this.perchSpot(), [fx, fy] = this.feet(); return Math.abs(fx - sx) <= 1 && fy >= sy - 4 && fy <= sy + 1; },
