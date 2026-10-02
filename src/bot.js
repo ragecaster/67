@@ -1037,6 +1037,9 @@ const Bot = {
           const P = self.p(), prey = drop === 'bone' && G.npcs.filter(n => (n.type === 'skeleton' || n.type === 'undead_miner') && !n.dead && Math.abs(n.cx - P.cx) < 1000 && Math.abs(n.cy - P.cy) < 640 && !(self.ignore && self.ignore[n.uid] > G.tick))
             .sort((a, b) => dist(a.cx, a.cy, P.cx, P.cy) - dist(b.cx, b.cy, P.cx, P.cy))[0];
           if (prey) {
+            // a skeleton in a side cave we can't reach (or that keeps walking away) must not hold the farm hostage: give up after 700 ticks and move on
+            if (this.chaseUid !== prey.uid) { this.chaseUid = prey.uid; this.chaseSince = G.tick; }
+            if (G.tick - this.chaseSince > 700) { (self.ignore = self.ignore || {})[prey.uid] = G.tick + 6000; this.chaseUid = null; this.clogD = 901; this.deepT = null; self.log('giving up chasing ' + prey.name + ', moving the bone farm'); return; }
             self.goal = 'hunting ' + prey.name + ' for bones (' + self.count('bone') + '/' + need[1] + ')';
             const r = self.moveTo(Math.floor(prey.cx / TS), Math.floor((prey.y + prey.h - 1) / TS), 2);
             if (r === 'fail') (self.ignore = self.ignore || {})[prey.uid] = G.tick + 1800;
