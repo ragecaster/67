@@ -571,8 +571,20 @@ const Bot = {
     if (s >= 0 && s <= 9) this.selectSlot(s);
     // dig the column ahead at head and feet height (and above, to open a way up)
     const targets = [[ahead, fy], [ahead, fy - 1], [fx + u.dir, fy - 1], [fx + u.dir, fy - 3], [fx, fy - 3]];
-    const t = targets.find(([x, y]) => { const q = w.tile(x, y); return q && TILES[q].solid && !TILES[q].unbreakable && !Bot.isProtected(x, y); });
-    if (t && s >= 0 && s <= 9) { this.aimTile(t[0], t[1]); this.clickHold(); }
+    // only what our pickaxe can actually break (Brainrot stone needs 65, orbs need a hammer): swinging at the rest never ends
+    const pow = s >= 0 ? ITEMS[p.inv[s].id].pick || 0 : 0;
+    const t = targets.find(([x, y]) => { const q = w.tile(x, y), td = TILES[q]; return q && td.solid && !td.unbreakable && !td.needHammer && td.minPick <= pow && !Bot.isProtected(x, y); });
+    if (t && s >= 0 && s <= 9) { this.aimTile(t[0], t[1]); this.clickHold(); this.hold(u.dir > 0 ? 'd' : 'a'); if (G.tick % 24 < 3 || p.collidedX) this.jump(); return; }
+    // walled in by stone we can't break (a Brainrot pit): pillar straight up out of it
+    const hard = targets.some(([x, y]) => { const q = w.tile(x, y); return q && TILES[q].solid && TILES[q].minPick > pow; });
+    const bs = hard ? this.spareBlockSlot(true) : -1;
+    if (bs >= 0) {
+      if (bs > 9) { this.ensureHotbar(bs); return; }
+      this.selectSlot(bs); this.goal = 'pillaring out of a pit';
+      const col = Math.floor(p.cx / TS), row = Math.floor((p.y + p.h - 1) / TS) + 1;
+      if (p.onGround) this.jump(); else if (p.vy >= -1 && !w.solid(col, row)) { this.aimTile(col, row); this.clickOnce(); }
+      return;
+    }
     this.hold(u.dir > 0 ? 'd' : 'a');
     if (G.tick % 24 < 3 || p.collidedX) this.jump();
   },
@@ -644,12 +656,21 @@ const Bot = {
         pickGain: it.pick ? (it.pick - pickPow) / 20 : 0, ready: have / total, needs: Math.log1p(total) / 6,
       });
     }
+    // skip obsolete tiers: per gear slot only the strongest piece that can be worked on now stays on the menu
+    // (copper armor makes wood armor pointless; going straight for gold skips copper/iron/silver when gold is reachable)
+    const slotOf = id => { const it = ITEMS[id]; if (it.armor) return 'armor:' + it.armor; if (it.pick && /_pickaxe$/.test(id)) return 'pick'; if (/_broadsword$/.test(id)) return 'sword'; if (/_bow$/.test(id)) return 'bow'; return null; };
+    const power = id => { const it = ITEMS[id]; return it.armor ? it.defense || 0 : it.pick ? it.pick : expectedHit(it) * 60 / Math.max(6, it.useAnim || it.useTime); };
+    const bestIn = {};
+    for (const c of out) if (c.kind === 'craft') { const k = slotOf(c.item); if (k && (!bestIn[k] || power(c.item) > power(bestIn[k]))) bestIn[k] = c.item; }
+    for (let i = out.length - 1; i >= 0; i--) { const c = out[i]; if (c.kind !== 'craft') continue; const k = slotOf(c.item); if (k && bestIn[k] !== c.item) out.splice(i, 1); }
     if (p.lifeMax < 400) { const c = this.findCrystal(); if (c) add('crystal', 'crystal', () => this.taskBreakAt(c, 'aura crystal', 'pick'), { dist: Math.abs(c[0] - this.feet()[0]) + Math.abs(c[1] - this.feet()[1]) }); }
     for (const key of Object.keys(BOSS_SUMMON)) {
       if (w.flags[key] || !this.houseValid()) continue;
       const B = BOSS_SUMMON[key], needs = this.rawNeeds(B.item, 1);
       const total = Object.values(needs).reduce((a, b) => a + b, 0) || 1, have = this.has(B.item) ? total : Object.entries(needs).reduce((a, [k, v]) => a + Math.min(v, this.count(k)), 0);
       if (this.has(B.item) && !this.bossReady(key)) continue;   // readiness gate: holding the summon isn't enough
+      // a night boss with nothing to do by day (summon in hand, or lenses that only drop at night) is not an option until dusk
+      if (B.night && !G.isNight() && this.ticksToNight() > 2500 && (this.has(B.item) || (key === 'eye_of_cthulhu' && this.count('lens') < 6))) continue;
       add('boss:' + key, 'boss', () => this.taskBoss(key), { ready: have / total, boss: key, value: BOSS_TYPES[key].life / 4000 });
     }
     if (w.flags.eye_of_cthulhu && !this.hasBetterPick(65)) add('brainrot', 'brainrot', () => this.taskBrainrot(), { ready: Math.min(1, this.count('rotten_chunk') / 6) });
@@ -831,7 +852,7 @@ const Bot = {
     const after = afterArg === 'placeonly' ? 'place' : afterArg;
     const r = RECIPES.find(r => r.out === id);
     this.goal = 'crafting ' + ITEMS[id].name;
-    let phase = 'go', clicks = 0, waited = 0;
+    let phase = r && !r.station && !after && times ? 'open' : 'go', clicks = 0, waited = 0;   // hand recipes: craft right here
     return {
       step() {
         const p = self.p();
@@ -1183,17 +1204,16 @@ const Bot = {
             if (self.ticksToNight() > 2500) { this.done = true; return; }   // a whole day ahead: go do something useful first
             self.goal = 'waiting for night to summon ' + name; self.moveTo(home[0] - 6, home[1], 3); return;
           }
-          const perched = key === 'tung_sahur' && self.perch && Math.abs(fx - self.perch[0]) <= self.LEDGE + 1 && fy >= self.perch[1] - 2 && fy <= self.perch[2] + 1;
-          // the Eye and King come to wherever we are: summon on the surface right here (Tung needs the perch by the house)
-          if (key !== 'tung_sahur' && fy > topSolid(w, fx) + 3) { self.goal = 'climbing to the surface to summon ' + name; if (self.moveTo(fx, topSolid(w, fx) - 1, 3) === 'fail') self.moveTo(home[0] - 6, home[1], 3); return; }
-          if (key === 'tung_sahur' && !perched && (Math.abs(fx - home[0]) > 25 || Math.abs(fy - home[1]) > 12)) { self.goal = 'heading home to summon ' + name; self.moveTo(home[0] - 6, home[1], 3); return; }
+          // every boss comes to wherever we are: get to the surface right here (Tung's perch gets built next to us)
+          if (fy > topSolid(w, fx) + 3 && !(key === 'tung_sahur' && self.perch && Math.abs(fx - self.perch[0]) <= self.LEDGE + 1)) { self.goal = 'climbing to the surface to summon ' + name; if (self.moveTo(fx, topSolid(w, fx) - 1, 3) === 'fail') self.moveTo(home[0] - 6, home[1], 3); return; }
           if (p.life < p.lifeMax * 0.85) { self.goal = 'healing up before ' + name; return; }
           if (!self.bossReady(key)) { self.log('not ready for ' + name + ' yet'); this.done = true; return; }
           // Tung only reaches ~12 tiles up (leap), its shockwaves run along the ground and its logs arc ~8 tiles high:
           // fight it from a 25-tile pillar next to the house, like a human would
           if (key === 'tung_sahur') {
             if (!self.perch && self.count('wood_platform') < self.LEDGE && self.count('wood') >= 5) { sub = self.taskCraftAtBase(['wood_platform', Math.ceil((self.LEDGE - self.count('wood_platform')) / 2)]); return; }
-            const perch = self.perch || (self.count('wood_platform') >= self.LEDGE && self.spareBlocks() - self.count('wood') >= self.PERCH_H + 2 ? self.tungPerch(home) : null);
+            if (self.perch && Math.abs(fx - self.perch[0]) > 80 && !self.onPerch()) self.perch = null;   // an old perch far away: build a new one here
+            const perch = self.perch || (self.count('wood_platform') >= self.LEDGE && self.spareBlocks() - self.count('wood') >= self.PERCH_H + 2 ? self.tungPerch([fx, fy]) : null);
             const climbed = perch ? self.climbPerch() : true;   // true once on the spot with the fence up
             if (perch && climbed !== true) { self.goal = 'building a perch for ' + name; if (climbed === 'fail') { self.log('no perch for ' + name + ', fighting on the ground'); self.perch = null; self.perchFailed = G.tick; } return; }
           }
@@ -1204,7 +1224,7 @@ const Bot = {
           return;
         }
         // natural spawns: the Eye and Tung come by themselves at night once life >= 200 — wait for them at home
-        if (B.natural && p.lifeMax >= 200 && G.isNight() && fy <= w.worldSurface) { self.goal = 'waiting at home for ' + name; self.moveTo(home[0] - 6, home[1], 3); return; }
+        // (natural spawns need 200 life AND 10 defense and come 1 night in 3: farming the summon is the reliable way)
         const step = self.resolve(B.item, 1), pickPow = SDK.obs().inv.pick.power;
         if (step && self.stepFeasible(step, pickPow)) { self.commit(B.item, 1); sub = self.taskForStep(step); if (sub) return; }
         // the missing ingredient is a monster drop: go where that monster lives
@@ -1212,6 +1232,9 @@ const Bot = {
         const drop = need ? need[0] : null, farm = BOSS_FARM[drop];
         if (!farm) { sub = self.taskExplore(); return; }
         self.goal = 'farming ' + drop.replace(/_/g, ' ') + ' for ' + name + ' (' + self.count(drop) + '/' + need[1] + ')';
+        // no drop in 8000 ticks: this spot/plan isn't working, let the planner do something else for a while
+        if (this.dropN !== self.count(drop)) { this.dropN = self.count(drop); this.dropAt = G.tick; }
+        else if (G.tick - this.dropAt > 8000) { self.log('no ' + drop + ' in 8000 ticks, trying something else'); (self.cooldowns = self.cooldowns || {})['boss:' + key] = G.tick + 6000; this.done = true; return; }
         if (farm === 'night' && !G.isNight()) {
           if (self.ticksToNight() > 2500) { this.done = true; return; }
           self.goal = 'waiting for night (' + drop + ' drops at night)'; self.moveTo(home[0] - 6, home[1], 3); return;
@@ -1232,7 +1255,9 @@ const Bot = {
           // a bone carrier on screen (skeletons, miners spawn in side caves and rarely find us): go get it, digging if needed
           const P = self.p(), prey = drop === 'bone' && G.npcs.filter(n => (n.type === 'skeleton' || n.type === 'undead_miner') && !n.dead && Math.abs(n.cx - P.cx) < 1000 && Math.abs(n.cy - P.cy) < 640 && !(self.ignore && self.ignore[n.uid] > G.tick))
             .sort((a, b) => dist(a.cx, a.cy, P.cx, P.cy) - dist(b.cx, b.cy, P.cx, P.cy))[0];
+          if (prey && this.preyId === prey.uid && G.tick - this.preySince > 900) { (self.ignore = self.ignore || {})[prey.uid] = G.tick + 3600; this.preyId = null; return; }   // can't get to it
           if (prey) {
+            if (this.preyId !== prey.uid) { this.preyId = prey.uid; this.preySince = G.tick; }
             self.goal = 'hunting ' + prey.name + ' for bones (' + self.count('bone') + '/' + need[1] + ')';
             const r = self.moveTo(Math.floor(prey.cx / TS), Math.floor((prey.y + prey.h - 1) / TS), 2);
             if (r === 'fail') (self.ignore = self.ignore || {})[prey.uid] = G.tick + 1800;
@@ -1251,7 +1276,7 @@ const Bot = {
         // the spawn cap counts every hostile within 100x62 tiles (cave monsters far below included) and they only despawn
         // 150+ tiles away: a clogged area never spawns another Side-Eye, so move the farm 160 tiles over
         const crowd = G.npcs.filter(n => !n.friendly && !n.boss && !n.town && !n.dead && Math.abs(n.cx - p.cx) < 1600 && Math.abs(n.cy - p.cy) < 1000).length;
-        this.clog = crowd >= (G.isNight() ? 8 : 5) ? (this.clog || 0) + 1 : 0;
+        this.clog = crowd >= (G.isNight() ? 6 : 4) ? (this.clog || 0) + 1 : 0;
         if (this.clog > 900) { this.clog = 0; this.farmX = clamp(this.farmX + this.farmSide * 160, 60, w.w - 60); if (this.farmX <= 60 || this.farmX >= w.w - 60) this.farmSide = -this.farmSide; self.log('farm area clogged (' + crowd + ' monsters), moving to x=' + this.farmX); }
         const fxT = this.farmX + (Math.floor(G.tick / 600) % 2 ? 12 : -12);
         const r = self.moveTo(fxT, topSolid(w, fxT) - 1, 3);

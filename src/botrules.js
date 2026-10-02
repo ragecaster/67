@@ -147,6 +147,8 @@ Object.assign(Bot, {
       if (r.item && !byId('craft:' + r.item) && ![...ids].some(byId)) continue;
       if ([...ids].some(byId)) return { label: r.label + (r.item ? ' (' + r.item.replace(/_/g, ' ') + ')' : ''), boss: key, test: c => ids.has(c.id) };
     }
+    // waiting for night (the boss's own option is hidden by day): extra life makes every fight shorter
+    if (byId('crystal') && this.p().lifeMax < 400) return { label: 'more max life (waiting for night)', boss: key, test: c => c.id === 'crystal' };
     // nothing actionable: explore, or mine an ore the plan actually needs (not whatever copper is closest)
     const wanted = new Set(['gold_ore', 'silver_ore', 'iron_ore', 'copper_ore'].filter(ore => [this.committed && this.committed.item, 'the_67', S && S.item].some(id => id && !this.owns(id) && (this.rawNeeds(id, 1)[ore] || 0) > this.count(ore))));
     return { label: 'explore for ' + BOSS_TYPES[key].name + ' materials', boss: key, test: c => c.id === 'explore' || (c.kind === 'ore' && wanted.has(c.id.slice(4))) };
