@@ -29,6 +29,10 @@ const Nav = {
     const w = G.world;
     if (this.lava(x, y)) return Infinity;
     const az = Bot.avoidZone; if (az && az.until > G.tick && Math.abs(x - az.x) < az.r && Math.abs(y - az.y) < az.r) return Infinity; // see Bot.registerDeath
+    // the Backrooms room is a real room underground: walking or digging into it is the same as noclipping in (Smilers,
+    // Partygoers, a long way out). Never route through it from outside (from inside, the way out is allowed).
+    const b = w.backrooms;
+    if (b && this.avoidBackrooms && x >= b.x0 - 1 && x <= b.x0 + b.w && y >= b.y0 - 1 && y <= b.y0 + b.h) return Infinity;
     const t = w.tile(x, y);
     if (!t) return 0;
     const td = TILES[t];
@@ -79,6 +83,7 @@ const Nav = {
     this.stamp = (this.stamp || 0) + 1;
     this.power = this.pickPower();
     this.blocks = Bot.spareBlocks(); // only blocks we may spend (not the ones reserved for the current goal)
+    this.avoidBackrooms = !G.inBackrooms(G.player);
     const w = G.world, WW = w.w, N = WW * w.h;
     if (!this.gA || this.gA.length !== N) { this.gA = new Float64Array(N); this.gS = new Uint32Array(N); this.fromA = new Int32Array(N); this.mvA = new Uint8Array(N); this.fallA = new Uint8Array(N); this.vertA = new Uint8Array(N); }
     const gA = this.gA, gS = this.gS, fromA = this.fromA, mvA = this.mvA, fallA = this.fallA, vertA = this.vertA, stamp = this.stamp;

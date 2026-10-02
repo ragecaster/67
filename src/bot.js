@@ -171,7 +171,7 @@ const Bot = {
   // a door we walked through stays open (zombies walk in at night): close it behind us like a player would
   closeDoorBehind() {
     const d = this.doorOpened, p = this.p(), w = G.world;
-    if (!d || this.uiBusy || UI.invOpen || Input.rClick || Input.mClick) return;
+    if (!d || this.uiBusy || UI.invOpen || Input.rClick || Input.mClick || Input.mDown) return;   // (never move the aim of a held swing/dig onto the door)
     if (!TILES[w.tile(d[0], d[1])]?.door) { this.doorOpened = null; return; }
     const dx = Math.abs(p.cx - (d[0] * TS + 8)) / TS;
     if (dx > 6) { this.doorOpened = null; return; }
@@ -656,6 +656,7 @@ const Bot = {
     let best = null, bd = 1e9;
     for (const c of this.crystals.list) {
       if (w.tile(c[0], c[1]) !== T.LIFE_CRYSTAL || this.crystalBad(c)) continue;
+      const b = w.backrooms; if (b && c[0] >= b.x0 - 3 && c[0] <= b.x0 + b.w + 3 && c[1] >= b.y0 - 3 && c[1] <= b.y0 + b.h + 3) continue;   // in (or in the walls of) the Backrooms room
       const d = Math.abs(c[0] - fx) + Math.abs(c[1] - fy) * 1.5;
       if (d < bd) { bd = d; best = c; }
     }
