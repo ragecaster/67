@@ -1,5 +1,6 @@
 // Collect TerraJev decision rollouts (state, options, choice, outcome over the next 240 ticks) for training.
-// usage: node jevcollect.js <ticks> <seed> <epsilon> <out.jsonl> [sample:0|1] [stage]
+// usage: [MODE=teacher] node jevcollect.js <ticks> <seed> <epsilon> <out.jsonl> [sample:0|1] [stage]
+//   MODE=teacher: the scripted rules play (TerraJev still logs every decision with the teacher's choice), for imitation data
 //   epsilon: chance of a random allowed option (exploration); sample=1 samples from the model instead of argmax
 //   stage: optional tests/stage.js preset name to start mid-game (e.g. eyefight)
 const run = require('./harness');
@@ -7,7 +8,7 @@ const fs = require('fs');
 const [TICKS, SEED, EPS, OUT, SAMPLE, STAGE] = [parseInt(process.argv[2] || '200000'), process.argv[3] || 'jev1', parseFloat(process.argv[4] || '0.2'), process.argv[5] || '/tmp/jev.jsonl', process.argv[6] === '1', process.argv[7]];
 run(async (page, errors) => {
   await page.newGame(SEED);
-  await page.evaluate(([eps, sample]) => { Bot.start(1); TerraJev.logging = true; TerraJev.epsilon = eps; TerraJev.sample = sample; }, [EPS, SAMPLE]);
+  await page.evaluate(([eps, sample, mode]) => { TerraJev.mode = mode; Bot.start(1); TerraJev.logging = true; TerraJev.epsilon = eps; TerraJev.sample = sample; }, [EPS, SAMPLE, process.env.MODE || 'jev']);
   const out = fs.createWriteStream(OUT, { flags: 'a' });
   let n = 0;
   const CH = 20000;

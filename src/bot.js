@@ -160,6 +160,12 @@ const Bot = {
     let k = 1; while (k < 12 && !w.solid(x, y + k) && w.liq(x, y + k) < 100) k++;
     return k >= 12;
   },
+  // can we keep running this way without dropping more than 4 tiles in the next few columns?
+  dropAhead(dir, cols = 3) {
+    const w = G.world, [fx, fy] = this.feet();
+    for (let i = 1; i <= cols; i++) { let ok = false; for (let j = -3; j <= 4; j++) if (w.solid(fx + dir * i, fy + 1 + j) && !w.solid(fx + dir * i, fy + j)) { ok = true; break; } if (!ok) return true; }
+    return false;
+  },
   nearLava(x, y) { const w = G.world; for (let j = -2; j <= 1; j++) for (let i = -1; i <= 1; i++) if (w.liq(x + i, y + j) > 20 && w.ltype[w.idx(x + i, y + j)] === 1) return true; return false; },
 
   // ================= main tick =================
@@ -232,7 +238,7 @@ const Bot = {
     const idle = /^(hiding|resting|waiting)/.test(this.goal || '');
     if (idle) { this.progAt = G.tick; }
     if (!an || idle || Math.abs(p.x - an.x) > 48 || Math.abs(p.y - an.y) > 48) this.anchor = { x: p.x, y: p.y, t: G.tick };
-    else if (G.tick - an.t > 3000 && !/^(hiding|resting|waiting)/.test(this.goal || '') && !(this.unstick && this.unstick.until > G.tick)) {
+    else if (G.tick - an.t > 3000 && !/^(hiding|resting|waiting)/.test(this.goal || '') && !(this.onPerch() && G.npcs.some(n => n.boss)) && !(this.unstick && this.unstick.until > G.tick)) {
       const [sx, sy] = this.feet();
       this.log('stalled 3000 ticks at ' + sx + ',' + sy + ' (' + this.goal + '): brute-force unstick, clearing bans/cooldowns');
       this.unstick = { until: G.tick + 500, dir: Math.random() < 0.5 ? -1 : 1 };
@@ -447,7 +453,8 @@ const Bot = {
     const it = ITEMS[p.inv[ws].id], melee = (it.use === 'swing' || it.use === 'thrust') && !it.shoot;
     const dx = n.cx - p.cx, dy = n.cy - p.cy, d = Math.hypot(dx, dy), toward = dx > 0 ? 'd' : 'a', away = dx > 0 ? 'a' : 'd';
     const tile = () => this.moveTo(Math.floor(n.cx / TS), Math.floor((n.y + n.h - 1) / TS), 1);
-    if (melee) {
+    if (n.type === 'tung_sahur' && !melee) this.tungDance(n, dx, d, toward, away);
+    else if (melee) {
       if (n.boss && Math.abs(dx) < 40 && Math.abs(dy) < 60) this.holdSafe(G.tick % 160 < 80 ? away : toward);   // don't stand inside a boss
       else if (Math.abs(dx) > 26 || Math.abs(dy) > 50) { if (Math.abs(dy) > 90 || this.stuck > 20 || d > 260) tile(); else this.holdSafe(toward); }
       if (dy < -30 && Math.abs(dx) < 140) this.jump();
@@ -464,6 +471,30 @@ const Bot = {
     this.aimWorld(ax, ay);
     if (melee ? d < 90 : d < 520) { if (it.autoReuse) this.clickHold(); else if (p.itemAnim === 0) this.clickOnce(); }
     this.goal = (kite ? 'kiting ' : 'fighting ') + n.name;
+  },
+  // Tung Tung Tung Sahur only hurts up close (bat swing, 45) or with ground shockwaves after a leap and lobbed logs:
+  // keep 220-340 px away shooting The 67's homing 6s and 7s, hop every shockwave, keep moving while logs are in the air,
+  // and when cornered slip under it while it is in the air
+  tungDance(n, dx, d, toward, away) {
+    const p = this.p(), adx = Math.abs(dx), dirAway = away === 'd' ? 1 : -1;
+    if (this.onPerch()) { this.why = 'tung-perch'; return; }   // out of reach: stand still and shoot
+    // knocked along the ledge / back onto the pillar top: walk back out to the spot
+    if (this.perch && p.onGround) {
+      const pr = this.perch, [fx, fy] = this.feet(), [sx] = this.perchSpot();
+      if (Math.abs(fy - pr[1]) <= 1 && (fx - pr[0]) * pr[3] >= 0 && (sx - fx) * pr[3] > 0) { this.hold(pr[3] > 0 ? 'd' : 'a'); this.why = 'tung-ledge'; return; }
+    }
+    const wave = G.projectiles.find(q => q.type === 'tung_wave' && !q.dead && Math.abs(q.cx - p.cx) < 110 && Math.sign(q.vx) === Math.sign(p.cx - q.cx));
+    const log = G.projectiles.some(q => q.type === 'tung_log' && !q.dead && Math.abs(q.cx - p.cx) < 120);
+    const cornered = this.dropAhead(dirAway) || (p.collidedX && p.onGround && this.lastDanceKey === away);
+    let key;
+    if (cornered && !n.onGround && n.state === 'leap') key = toward;          // run under it while it flies over
+    else if (cornered) key = adx > 160 ? null : toward;                         // back to the wall: hold, then slip past
+    else if (adx < 220 || n.state === 'leap' || n.state === 'swing') key = away;
+    else if (adx > 340) key = toward;
+    else if (log) key = G.tick % 80 < 40 ? away : toward;
+    if (key && !(key === toward && this.dropAhead(-dirAway))) { this.hold(key); this.lastDanceKey = key; }
+    if (wave || (adx < 120 && n.state === 'swing')) this.jump();
+    this.why = 'tung-dance';
   },
   skillHeal() { const self = this; return { step() { self.press('h'); self.goal = 'drinking a potion'; this.done = true; } }; },
   skillFlee() {
@@ -1148,10 +1179,23 @@ const Bot = {
         const nightOk = !B.night || G.isNight();
         if (self.has(B.item)) {
           // summon at home on the surface, healthy: not wherever we happen to be standing
-          if (!nightOk) { self.goal = 'waiting for night to summon ' + name; self.moveTo(home[0] - 6, home[1], 3); return; }
-          if (Math.abs(fx - home[0]) > 25 || Math.abs(fy - home[1]) > 12) { self.goal = 'heading home to summon ' + name; self.moveTo(home[0] - 6, home[1], 3); return; }
+          if (!nightOk) {
+            if (self.ticksToNight() > 2500) { this.done = true; return; }   // a whole day ahead: go do something useful first
+            self.goal = 'waiting for night to summon ' + name; self.moveTo(home[0] - 6, home[1], 3); return;
+          }
+          const perched = key === 'tung_sahur' && self.perch && Math.abs(fx - self.perch[0]) <= self.LEDGE + 1 && fy >= self.perch[1] - 2 && fy <= self.perch[2] + 1;
+          // the Eye and King come to wherever we are: summon on the surface right here (Tung needs the perch by the house)
+          if (key !== 'tung_sahur' && fy > topSolid(w, fx) + 3) { self.goal = 'climbing to the surface to summon ' + name; if (self.moveTo(fx, topSolid(w, fx) - 1, 3) === 'fail') self.moveTo(home[0] - 6, home[1], 3); return; }
+          if (key === 'tung_sahur' && !perched && (Math.abs(fx - home[0]) > 25 || Math.abs(fy - home[1]) > 12)) { self.goal = 'heading home to summon ' + name; self.moveTo(home[0] - 6, home[1], 3); return; }
           if (p.life < p.lifeMax * 0.85) { self.goal = 'healing up before ' + name; return; }
           if (!self.bossReady(key)) { self.log('not ready for ' + name + ' yet'); this.done = true; return; }
+          // Tung only reaches ~12 tiles up (leap), its shockwaves run along the ground and its logs arc ~8 tiles high:
+          // fight it from a 25-tile pillar next to the house, like a human would
+          if (key === 'tung_sahur') {
+            if (!self.perch && self.count('wood_platform') < self.LEDGE && self.count('wood') >= 5) { sub = self.taskCraftAtBase(['wood_platform', Math.ceil((self.LEDGE - self.count('wood_platform')) / 2)]); return; }
+            const perch = self.perch || (self.count('wood_platform') >= self.LEDGE && self.spareBlocks() - self.count('wood') >= self.PERCH_H + 2 ? self.tungPerch(home) : null);
+            if (perch && !self.onPerch()) { self.goal = 'building a perch for ' + name; if (self.climbPerch() === 'fail') { self.log('no perch for ' + name + ', fighting on the ground'); self.perch = null; self.perchFailed = G.tick; } return; }
+          }
           const s = SDK.slotOf(B.item);
           if (s > 9) { self.ensureHotbar(s); return; }
           if (this.summonedAt && G.tick - this.summonedAt < 300) return;   // the item takes a moment to be used and the boss to appear
@@ -1167,15 +1211,129 @@ const Bot = {
         const drop = need ? need[0] : null, farm = BOSS_FARM[drop];
         if (!farm) { sub = self.taskExplore(); return; }
         self.goal = 'farming ' + drop.replace(/_/g, ' ') + ' for ' + name + ' (' + self.count(drop) + '/' + need[1] + ')';
-        if (farm === 'night' && !G.isNight()) { self.goal = 'waiting for night (' + drop + ' drops at night)'; self.moveTo(home[0] - 6, home[1], 3); return; }
-        const deep = farm === 'caverns', ty = deep ? w.rockLayer + 20 : topSolid(w, home[0]) - 1;
-        if (deep && fy < w.rockLayer + 5) { self.moveTo(home[0], ty, 6); return; }
-        if (!deep && fy > w.worldSurface) { self.moveTo(home[0], ty, 3); return; }
-        if (++wander > 900) wander = 0;
-        self.hold(wander < 450 ? 'a' : 'd');
+        if (farm === 'night' && !G.isNight()) {
+          if (self.ticksToNight() > 2500) { this.done = true; return; }
+          self.goal = 'waiting for night (' + drop + ' drops at night)'; self.moveTo(home[0] - 6, home[1], 3); return;
+        }
+        const deep = farm === 'caverns';
+        if (deep) {
+          // roam the caverns (A* digs its own tunnels), meeting skeletons; move on when the area stops spawning
+          const crowdD = G.npcs.filter(n => !n.friendly && !n.boss && !n.town && !n.dead && Math.abs(n.cx - self.p().cx) < 1600 && Math.abs(n.cy - self.p().cy) < 1000).length;
+          this.clogD = crowdD >= 8 ? (this.clogD || 0) + 1 : 0;
+          if (!this.deepT || this.clogD > 900 || (this.deepFails || 0) > 2) {
+            const clogged = this.clogD > 900;
+            this.clogD = 0; this.deepFails = 0; this.deepSide = -(this.deepSide || 1);
+            const x0 = this.lastDeepX || home[0];
+            if (clogged) self.log('cavern farm clogged (' + crowdD + ' monsters), moving 150 tiles over');
+            // clogged: far enough that the stuck monsters despawn (150+ tiles); otherwise roam nearby
+            this.deepT = [clamp(x0 + this.deepSide * (clogged ? 150 : randInt(25, 45)), 60, w.w - 60), clamp(w.rockLayer + randInt(15, 45), w.rockLayer + 5, w.hellLayer - 30)];
+          }
+          // a bone carrier on screen (skeletons, miners spawn in side caves and rarely find us): go get it, digging if needed
+          const P = self.p(), prey = drop === 'bone' && G.npcs.filter(n => (n.type === 'skeleton' || n.type === 'undead_miner') && !n.dead && Math.abs(n.cx - P.cx) < 1000 && Math.abs(n.cy - P.cy) < 640 && !(self.ignore && self.ignore[n.uid] > G.tick))
+            .sort((a, b) => dist(a.cx, a.cy, P.cx, P.cy) - dist(b.cx, b.cy, P.cx, P.cy))[0];
+          if (prey) {
+            self.goal = 'hunting ' + prey.name + ' for bones (' + self.count('bone') + '/' + need[1] + ')';
+            const r = self.moveTo(Math.floor(prey.cx / TS), Math.floor((prey.y + prey.h - 1) / TS), 2);
+            if (r === 'fail') (self.ignore = self.ignore || {})[prey.uid] = G.tick + 1800;
+            return;
+          }
+          const r = self.moveTo(this.deepT[0], this.deepT[1], 4);
+          if (r === 'fail') this.deepFails = (this.deepFails || 0) + 1;
+          if (r === true) { this.lastDeepX = this.deepT[0]; this.deepT = null; }
+          return;
+        }
+        // surface drops (gel by day, lenses at night): town NPCs cut spawns 3x within 60 tiles, so farm ~90 tiles out
+        if (!this.farmX || this.farmFails > 2) {
+          this.farmFails = 0; this.farmSide = -(this.farmSide || 1);
+          this.farmX = clamp(home[0] + this.farmSide * 90, 60, w.w - 60);
+        }
+        // the spawn cap counts every hostile within 100x62 tiles (cave monsters far below included) and they only despawn
+        // 150+ tiles away: a clogged area never spawns another Side-Eye, so move the farm 160 tiles over
+        const crowd = G.npcs.filter(n => !n.friendly && !n.boss && !n.town && !n.dead && Math.abs(n.cx - p.cx) < 1600 && Math.abs(n.cy - p.cy) < 1000).length;
+        this.clog = crowd >= (G.isNight() ? 8 : 5) ? (this.clog || 0) + 1 : 0;
+        if (this.clog > 900) { this.clog = 0; this.farmX = clamp(this.farmX + this.farmSide * 160, 60, w.w - 60); if (this.farmX <= 60 || this.farmX >= w.w - 60) this.farmSide = -this.farmSide; self.log('farm area clogged (' + crowd + ' monsters), moving to x=' + this.farmX); }
+        const fxT = this.farmX + (Math.floor(G.tick / 600) % 2 ? 12 : -12);
+        const r = self.moveTo(fxT, topSolid(w, fxT) - 1, 3);
+        if (r === 'fail') this.farmFails = (this.farmFails || 0) + 1;
       },
     };
   },
+  // Perch for Tung: a 32-tile dirt pillar next to the house with an 8-tile wood-platform ledge out to one side. Tung's leap (even
+  // launched off a hop against the pillar) tops out ~24 tiles up; standing near the end of the ledge there is only air (and a
+  // platform, which projectiles pass through) between us and Tung, so The 67's shots go straight down into it.
+  PERCH_H: 32, LEDGE: 8,
+  tungPerch(home) {
+    if (this.perchFailed && G.tick - this.perchFailed < 20000) return null;
+    if (this.perch) return this.perch;
+    const w = G.world;
+    for (const dx of [-12, 12, -18, 18, -24, 24, -8, 8]) {
+      const x = home[0] + dx, gy = topSolid(w, x) - 1;
+      if (Math.abs(gy - home[1]) > 12) continue;
+      for (const dir of [dx < 0 ? -1 : 1, dx < 0 ? 1 : -1]) if (this.perchOpen(x, gy, dir)) return (this.perch = [x, gy - this.PERCH_H, gy, dir]);   // [pillar column, standing row on top, ground row, ledge direction]
+    }
+    return null;
+  },
+  // open sky over the pillar column (nothing at all in it) and the ledge (plants are fine low down)
+  perchOpen(x, gy, dir) {
+    const w = G.world;
+    for (let i = -1; i <= this.LEDGE + 1; i++) for (let y = gy - this.PERCH_H - 4; y <= (i <= 1 ? gy : gy - 6); y++) {
+      const t = w.tile(x + dir * i, y);
+      if (t && !(TILES[t].cut && i !== 0)) return false;
+    }
+    return true;
+  },
+  perchSpot() { const pr = this.perch; return [pr[0] + pr[3] * (this.LEDGE - 1), pr[1]]; },
+  // walk to the pillar column and pillar straight up (jump, drop a block under our feet as they clear the next cell),
+  // then lay the platform ledge (each one attaches to the last) and walk out to the spot one short of its end
+  perchFail(why) { this.log('perch: ' + why); return 'fail'; },
+  climbPerch() {
+    const pr = this.perch, p = this.p(), w = G.world, [fx, fy] = this.feet(), dir = pr[3];
+    if (this.onPerch()) { if (Math.abs(p.vx) > 0.4) this.hold(p.vx > 0 ? 'a' : 'd'); return true; }
+    const onTop = fy <= pr[1] + 1 && p.onGround && fy >= pr[1] - 1 && Math.abs(fx - pr[0]) <= this.LEDGE;
+    if (onTop) {
+      if (fx === pr[0] && fy !== pr[1] && w.tile(pr[0] + dir, pr[1] + 1) !== T.PLATFORM) { pr[1] = fy; return false; }   // the pillar top is where we stand
+      const row = pr[1] + 1;
+      // ledge: the first missing platform cell, placed from where we stand
+      let k = 1; while (k <= this.LEDGE && w.tile(pr[0] + dir * k, row) === T.PLATFORM) k++;
+      if (k <= this.LEDGE) {
+        if (!this.has('wood_platform')) return this.perchFail('out of platforms');
+        const s = this.slotOf(it => it.id === 'wood_platform');
+        if (s > 9) { this.ensureHotbar(s); return false; }
+        this.selectSlot(s);
+        const out = (pr[0] + dir * k - fx) * dir;   // build reach is ~5 tiles: walk out along the platforms already down
+        if (out > 3) { this.hold(dir > 0 ? 'd' : 'a'); return false; }
+        if (Math.abs(p.vx) > 0.4) this.hold(p.vx > 0 ? 'a' : 'd');
+        this.aimTile(pr[0] + dir * k, row); if (p.itemAnim === 0) this.clickOnce();
+        if (!this.perchPlace || this.perchPlace.k !== k) this.perchPlace = { k, at: G.tick };
+        else if (G.tick - this.perchPlace.at > 300) return this.perchFail('platform ' + k + ' would not place');
+        return false;
+      }
+      const [sx] = this.perchSpot();
+      if (fx !== sx) this.hold(sx > fx ? 'd' : 'a');
+      return false;
+    }
+    if (fx !== pr[0]) {
+      if (fy < pr[2] - 8 && p.onGround) return this.perchFail('up on the wrong column ' + fx + ',' + fy);   // up in the air on the wrong column
+      // standing right next to the spot on the same ground: the pillar can just as well go here
+      if (Math.abs(fx - pr[0]) <= 3 && Math.abs(fy - pr[2]) <= 2 && p.onGround && this.perchOpen(fx, fy, pr[3])) { pr[0] = fx; pr[2] = fy; pr[1] = fy - this.PERCH_H; }
+      else { const r = this.moveTo(pr[0], pr[2], 1); return r === 'fail' ? this.perchFail('cannot walk to the pillar spot') : false; }
+    }
+    const bs = this.spareBlockSlot(false);
+    if (bs < 0) return this.perchFail('out of blocks (' + this.spareBlocks() + ' spare)');
+    if (bs > 9) { this.ensureHotbar(bs); return false; }
+    this.selectSlot(bs);
+    // the cell on top of the stack under us; place it once our feet have cleared it
+    const col = Math.floor(p.cx / TS);
+    let top = Math.floor((p.y + p.h - 1) / TS) + 1; while (top < pr[2] + 2 && !w.solid(col, top)) top++;
+    const cell = top - 1;
+    const occ = w.tile(col, cell);
+    if (occ && !TILES[occ].solid) { if (this.dig(col, cell) === 'fail') return this.perchFail('cannot clear ' + TILES[occ].name); return false; }   // grass, a sapling...
+    if (p.onGround) this.jump();
+    else if (p.y + p.h <= cell * TS - 1 && !w.solid(col, cell)) { this.aimTile(col, cell); this.clickOnce(); }
+    return false;
+  },
+  onPerch() { if (!this.perch) return false; const [sx, sy] = this.perchSpot(), [fx, fy] = this.feet(); return Math.abs(fx - sx) <= 1 && fy >= sy - 4 && fy <= sy + 1; },
+  ticksToNight() { const w = G.world; return w.dayTime ? DAY_LEN - w.time : 0; },
   taskEye() { return this.taskBoss('eye_of_cthulhu'); },
   taskBrainrot() {
     const self = this, w = G.world;
@@ -1368,13 +1526,29 @@ const Bot = {
   // would a human attempt the Wall of Brainrot now? (it kills the Guide and chases you across the whole underworld)
   wallReadiness() { const p = this.p(); return 'life ' + p.lifeMax + ' def ' + p.calc.defense + ' the_67 ' + this.owns('the_67') + ' arrows ' + this.count('wooden_arrow'); },
   readyForWall() { const p = this.p(); return p.lifeMax >= 200 && p.calc.defense >= 10 && this.owns('the_67') && this.has('guide_voodoo_doll') ; },
+  // the deepest ore the plan still needs that the local scan doesn't know about (gold before silver before iron)
+  oreWanted() {
+    const known = SDK.obs().near.ores || {}, items = [this.committed && this.committed.item, 'the_67', 'slime_crown'].filter(id => id && !this.owns(id));
+    for (const ore of ['gold_ore', 'silver_ore', 'iron_ore', 'copper_ore']) {
+      if (known[ore]) continue;
+      if (items.some(id => (this.rawNeeds(id, 1)[ore] || 0) > this.count(ore))) return ore;
+    }
+    return null;
+  },
   taskExplore() {
     const self = this;
     this.goal = 'exploring';
     let target = null;
     return {
       step() {
-        if (!target) { const [fx, fy] = self.feet(); target = [clamp(fx + randInt(-80, 80), 50, G.world.w - 50), clamp(fy + randInt(-10, 30), 50, G.world.h - 20)]; }
+        if (!target) {
+          const [fx, fy] = self.feet(), w = G.world, ore = self.oreWanted();
+          // an ore the plan needs and the scan can't see: head into the layer it generates in (worldgen.js), not a random nearby spot
+          const band = { gold_ore: [w.rockLayer + 15, w.rockLayer + 70], silver_ore: [w.rockLayer, w.rockLayer + 50], iron_ore: [w.worldSurface + 10, w.rockLayer + 30], copper_ore: [w.worldSurface, w.rockLayer] }[ore];
+          const ty = band ? (fy < band[0] || fy > band[1] ? randInt(band[0], band[1]) : fy + randInt(-8, 8)) : fy + randInt(-10, 30);
+          target = [clamp(fx + randInt(-80, 80), 50, w.w - 50), clamp(ty, 50, w.h - 20)];
+          if (ore) self.goal = 'exploring for ' + ore.replace('_ore', '');
+        }
         const r = self.moveTo(target[0], target[1], 3);
         if (r) { this.done = true; }
       },
