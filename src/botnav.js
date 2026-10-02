@@ -50,6 +50,17 @@ const Nav = {
     const s = (i) => { const t = w.tile(i, y + 1); return TILES[t]?.solid || t === T.PLATFORM; };
     return s(x) || s(x + 1);
   },
+  // an airborne arrival (drop / leap / jump) on a node that only one column supports, next to a deep shaft, overshoots into
+  // the shaft once in a while (a 44-tile fall at spawn killed evalF four times in a row): such landings are not offered
+  safeLanding(x, y) {
+    const w = G.world;
+    for (const c of [x, x + 1]) {
+      const t = w.tile(c, y + 1); if ((TILES[t] && TILES[t].solid) || t === T.PLATFORM) continue;
+      let k = 1; while (k < 20 && !w.solid(c, y + k) && w.liq(c, y + k) < 100) k++;
+      if (k >= 20) return false;
+    }
+    return true;
+  },
   wet(x, y) { const w = G.world; return w.liq(x, y) > 100 || w.liq(x + 1, y) > 100 || w.liq(x, y - 1) > 100; },
   // cost to have the body at (x,y) with the given extra rows; returns [cost, digList]
   space(x, y, rowsUp = 2, rowsDown = 0) {
@@ -123,7 +134,8 @@ const Nav = {
           for (let k2 = 1; k2 <= 18; k2++) {
             const [cc] = this.space(x + dx, y + k2, 0, 0);
             if (cc !== 0) break;
-            if (this.standable(x + dx, y + k2) || this.wet(x + dx, y + k2)) { push(x + dx, y + k2, cost + 1 + k2 * 0.3, k, { t: 'drop', digs: [] }); break; }
+            if (this.wet(x + dx, y + k2) || (this.standable(x + dx, y + k2) && this.safeLanding(x + dx, y + k2))) { push(x + dx, y + k2, cost + 1 + k2 * 0.3, k, { t: 'drop', digs: [] }); break; }
+            if (this.standable(x + dx, y + k2)) break;
           }
         }
         // jump up 2..4 onto a ledge (column above us must be clear)
@@ -131,7 +143,7 @@ const Nav = {
           const [col] = this.space(x, y - 3, j - 1, 0); // rows y-2-j .. y-3: the air we rise through
           if (col !== 0) break;
           const [tc] = this.space(x + dx, y - j);
-          if (tc === 0 && this.standable(x + dx, y - j)) { push(x + dx, y - j, cost + 1 + j * 1.2, k, { t: 'jump', digs: [] }); break; }
+          if (tc === 0 && this.standable(x + dx, y - j)) { if (this.safeLanding(x + dx, y - j)) push(x + dx, y - j, cost + 1 + j * 1.2, k, { t: 'jump', digs: [] }); break; }
         }
       }
       // leap across a 1-3 tile gap at the same height (run + jump): the intermediate cells must be free air
@@ -142,7 +154,7 @@ const Nav = {
           if (cl !== 0) break;
           // the arc needs headroom above the gap
           if (this.space(x + dx * Math.max(1, L - 1), y - 3, 1, 0)[0] !== 0) break;
-          if (this.standable(x + dx * L, y)) { push(x + dx * L, y, cost + 2 + L * 0.8, k, { t: 'leap', digs: null }); break; }
+          if (this.standable(x + dx * L, y)) { if (this.safeLanding(x + dx * L, y)) push(x + dx * L, y, cost + 2 + L * 0.8, k, { t: 'leap', digs: null }); break; }
         }
       }
       // bridge: lay a block under the front foot to cross a gap or lava (chains: the block we just laid is the floor now)
@@ -332,6 +344,8 @@ Object.assign(Bot, {
       }
     }
     if (Math.abs(dxp) > 2) this.hold(dxp > 0 ? 'd' : 'a');
+    // dropping onto a node: momentum carries ~3 px/tick, so brake once above it instead of sailing past the ledge
+    else if ((m.t === 'drop' || m.t === 'fall') && Math.abs(p.vx) > 0.8) Input.keys[p.vx > 0 ? 'a' : 'd'] = true;
     if (n.y < ny || m.t === 'jump' || m.t === 'swim' || m.t === 'leap') {
       if (p.onGround || p.wet || p.vy < 0) this.jump();
     }

@@ -64,7 +64,11 @@ Object.assign(Bot, {
     }
     if (step.craft) {
       const placeable = ITEMS[step.craft].place && TILES[ITEMS[step.craft].place] && TILES[ITEMS[step.craft].place].station;
-      return this.taskCraftAtBase([step.craft, step.times, placeable ? 'place' : undefined]);
+      // at the furnace anyway: smelt all the ore of that kind we carry (one trip home instead of one per item)
+      let times = step.times;
+      const r = RECIPES.find(q => q.out === step.craft);
+      if (r && r.station === 'furnace' && r.ing.length === 1 && ORE_TILE[r.ing[0][0]]) times = Math.max(times, Math.floor(this.count(r.ing[0][0]) / r.ing[0][1]));
+      return this.taskCraftAtBase([step.craft, times, placeable ? 'place' : undefined]);
     }
     const id = step.gather, have = this.count(id);
     if (id === 'wood') return this.taskChop(have + Math.max(20, step.qty));

@@ -142,7 +142,11 @@ const Bot = {
   // standing on something with nothing but air under it (a bridge/island over the Ohio void)
   floating() { const w = G.world, [fx, fy] = this.feet(); for (let j = 2; j <= 10; j++) if (w.solid(fx, fy + j) || w.solid(fx + 1, fy + j)) return false; return true; },
   // tiles of floor left in direction dir from where we stand (stops at the first gap), capped at 12
-  edgeDist(dir) { const w = G.world, [fx, fy] = this.feet(); let n = 0; while (n < 12 && (w.solid(fx + dir * (n + 1), fy + 1) || w.solid(fx + dir * (n + 1) + 1, fy + 1))) n++; return n; },
+  // (a step down of 1-2 tiles is still floor: counting it as an edge froze the bot on every bumpy surface fight)
+  edgeDist(dir) {
+    const w = G.world, [fx, fy] = this.feet(), floor = x => w.solid(x, fy + 1) || w.solid(x, fy + 2) || w.solid(x, fy + 3);
+    let n = 0; while (n < 12 && (floor(fx + dir * (n + 1)) || floor(fx + dir * (n + 1) + 1))) n++; return n;
+  },
   nearLava(x, y) { const w = G.world; for (let j = -2; j <= 1; j++) for (let i = -1; i <= 1; i++) if (w.liq(x + i, y + j) > 20 && w.ltype[w.idx(x + i, y + j)] === 1) return true; return false; },
 
   // ================= main tick =================
@@ -208,7 +212,11 @@ const Bot = {
     this.lastPos = pos;
     // stall detector: hardly moved for 3000 ticks (and not deliberately waiting) = something the planner doesn't understand; brute-force out of it
     const an = this.anchor;
-    if (!an || Math.abs(p.x - an.x) > 48 || Math.abs(p.y - an.y) > 48) this.anchor = { x: p.x, y: p.y, t: G.tick };
+    // standing still on purpose (hiding at night, resting) must not count toward the stall detector or the task watchdog:
+    // both used to fire at dawn after a night in the house and brute-forced the bot out of a perfectly good task
+    const idle = /^(hiding|resting|waiting)/.test(this.goal || '');
+    if (idle) { this.progAt = G.tick; }
+    if (!an || idle || Math.abs(p.x - an.x) > 48 || Math.abs(p.y - an.y) > 48) this.anchor = { x: p.x, y: p.y, t: G.tick };
     else if (G.tick - an.t > 3000 && !/^(hiding|resting|waiting)/.test(this.goal || '') && !(this.unstick && this.unstick.until > G.tick)) {
       const [sx, sy] = this.feet();
       this.log('stalled 3000 ticks at ' + sx + ',' + sy + ' (' + this.goal + '): brute-force unstick, clearing bans/cooldowns');
@@ -321,6 +329,8 @@ const Bot = {
         cd['place:' + item] = G.tick + 1500;
         this.setAct({ id: 'place:' + item, kind: 'reflex' }, this.taskCraftAtBase([item, 0, 'placeonly']), foes); return;
       }
+      const kit = this.earlyWeaponTask();
+      if (kit) { this.setAct({ id: 'kit:iron_broadsword', kind: 'reflex' }, kit, foes); return; }
       if (p.inv.slice(10).filter(s => !s).length < 4 && !(this.cooldowns && this.cooldowns.trash > G.tick)) { (this.cooldowns = this.cooldowns || {}).trash = G.tick + 1800; this.setAct({ id: 'trash', kind: 'reflex' }, this.taskTrash(), foes); return; }
     }
     const forced = this.survivalReflex(foes);
@@ -345,6 +355,20 @@ const Bot = {
     (this.taskHist = this.taskHist || {})[pick.id] = G.tick;
     this.lastTaskId = pick.id;
     this.setAct(pick, task || this.taskExplore(), foes, ans.probabilities);
+  },
+  // The starting shortsword lands 1-2 damage on armored early mobs (zombies, Skibidi Toilets: 0.25 kills per fight in
+  // tests/mobfight.js, with ~95 damage taken). Once the anvil stands, 24 iron ore buy an iron broadsword (all fights won,
+  // half the time): a reflex, done before the plan's next item, as long as nothing better is in the bag.
+  earlyWeaponTask() {
+    const cd = this.cooldowns = this.cooldowns || {}, p = this.p();
+    if (cd.kit > G.tick || !this.houseFinished || !this.base || p.life < p.lifeMax * 0.6 || !this.stationPlaced('anvil')) return null;
+    const best = Math.max(0, ...p.inv.map(s => { const it = s && ITEMS[s.id]; return it && it.damage && !it.ammoType && !it.consumable && !it.pick && !it.axe && !it.hammer ? (it.sixSeven ? 67 : it.damage) : 0; }));
+    if (best >= 10 || this.owns('iron_broadsword')) return null;
+    const step = this.resolve('iron_broadsword', 1);
+    if (!step || !this.stepFeasible(step, SDK.obs().inv.pick.power)) return null;
+    cd.kit = G.tick + 300;
+    this.commit('iron_broadsword', 1);
+    return this.taskForStep(step);
   },
   setAct(c, task, foes, probs) {
     this.act = { id: c.id, kind: c.kind, at: G.tick, life: this.p().life, probs: probs || null, seen: new Set(foes.map(n => n.uid)) };
@@ -521,7 +545,7 @@ const Bot = {
     const add = (id, kind, make, extra = {}) => out.push(Object.assign({ id, kind, make }, extra));
     const tree = this.nearestTile((t, x, y) => t === T.TREE && w.treeType(x, y) === TREE_BASE, 140, 40);
     if (tree) add('chop', 'chop', () => this.taskChop(this.count('wood') + 40), { value: Math.min(this.count('wood'), 200) / 100, dist: Math.abs(tree[0] - this.feet()[0]) });
-    if (!this.houseValid() || !this.houseFinished) add('build', 'build', () => this.taskBuildHouse(), { ready: Math.min(1, this.count('wood') / 90) });
+    if (!this.houseValid() || !this.houseFinished) { this.pickHouseSite(); add('build', 'build', () => this.taskBuildHouse(), { ready: (n => n ? Math.min(1, this.count('wood') / n) : 1)(this.houseWoodNeed()) }); }
     add('stone', 'stone', () => { const want = this.count('stone_block') + 30; return this.taskMine('stone', () => this.count('stone_block') >= want); }, { value: Math.min(this.count('stone_block'), 200) / 100 });
     const pickPow = Math.max(0, ...p.inv.map(s => s ? ITEMS[s.id].pick || 0 : 0));
     for (const [ore, tileName] of Object.entries(ORE_TILE)) {
@@ -866,12 +890,23 @@ const Bot = {
   taskMine(what, doneFn, tiles) {
     const self = this;
     this.goal = 'mining ' + what;
-    let target = null, since = 0, bestD = Infinity;
-    const bad = (x, y) => self.badTiles && self.badTiles.has(x + ',' + y);
-    const markBad = (t) => { self.badTiles = self.badTiles || new Set(); for (let j = -2; j <= 2; j++) for (let i = -2; i <= 2; i++) self.badTiles.add((t[0] + i) + ',' + (t[1] + j)); };
+    let target = null, since = 0, bestD = Infinity, lastStep = 0;
+    // a target we gave up on is skipped as a mining target for a while (it used to go into badTiles, which also made those
+    // 25 cells impassable for the planner, forever)
+    const bad = (x, y) => (self.badTiles && self.badTiles.has(x + ',' + y)) || (self.badMine && self.badMine.get(x + ',' + y) > G.tick);
+    const markBad = (t) => { const m = self.badMine = self.badMine || new Map(); for (let j = -2; j <= 2; j++) for (let i = -2; i <= 2; i++) m.set((t[0] + i) + ',' + (t[1] + j), G.tick + 20000); };
     return {
       step() {
-        if (doneFn()) { this.done = true; return; }
+        if (doneFn()) {
+          // finish the vein we are standing at (a few more swings now beat a whole trip back for the next item)
+          const p0 = self.p();
+          const more = tiles && (this.extra = (this.extra || 0) + 1) < 900 && self.nearestTile((t, x, y) => tiles.includes(t) && p0.inReach(x, y) && !self.isProtected(x, y) && !(self.badTiles && self.badTiles.has(x + ',' + y)), 7, 6);
+          if (more && self.dig(more[0], more[1]) !== 'fail') { self.goal = 'mining ' + TILES[tiles[0]].name; return; }
+          this.done = true; return;
+        }
+        // parked for a fight / a night / a rest: the give-up clock only counts time spent actually trying
+        if (G.tick - lastStep > 30) { since = G.tick; bestD = Infinity; }
+        lastStep = G.tick;
         const w = G.world, p = self.p();
         const [fx, fy] = self.feet();
         const pick = self.bestSlot('pick'), power = pick >= 0 ? ITEMS[p.inv[pick].id].pick : 0;
@@ -902,42 +937,12 @@ const Bot = {
     const self = this;
     this.goal = 'building a house';
     const w = G.world;
-    if (!this.houseSpot) {
-      // find flat-ish ground near spawn, ideally right around it: we respawn at the spawn point, so with the house built over it
-      // every respawn lands inside (a spawn point in the door column respawned us on the roof or held the door open at night)
-      const nc = w.noclipAt;
-      for (let d = 0; d < 80 && !this.houseSpot; d++) for (const s of [1, -1]) {
-        const x0 = w.spawnX - 5 + d * s;
-        const ys = []; for (let i = 0; i < 11; i++) ys.push(topSolid(w, x0 + i));
-        if (ys.some(y => y < 0)) continue;
-        // the Backrooms glitch block floats at jump height: never build (or jump around) under it
-        if (nc && nc[0] >= x0 - 5 && nc[0] <= x0 + 14 && nc[1] >= Math.min(...ys) - 14) continue;
-        if (Math.max(...ys) - Math.min(...ys) <= 3 && !ys.some((y, i) => w.liq(x0 + i, y - 1))) { this.houseSpot = [x0, Math.max(...ys)]; break; }
-      }
-      if (!this.houseSpot) this.houseSpot = [w.spawnX + 3, topSolid(w, w.spawnX + 3)];
-      this.base = [this.houseSpot[0] + 5, this.houseSpot[1] - 1];
-      this.log('house site at ' + this.houseSpot);
-    }
-    const [hx, fy] = this.houseSpot;
-    // plan: [op, x, y, item]
-    const plan = [];
-    for (let y = fy - 7; y <= fy - 1; y++) for (let x = hx; x <= hx + 10; x++) plan.push(['clear', x, y]);
-    // a doorstep: clear two columns outside the door so the house can actually be left
-    for (let y = fy - 4; y <= fy - 1; y++) for (let x = hx - 3; x <= hx - 1; x++) plan.push(['clear', x, y]);
-    for (let x = hx; x <= hx + 10; x++) plan.push(['block', x, fy]);
-    for (let y = fy - 1; y >= fy - 6; y--) { plan.push(['block', hx, y]); plan.push(['block', hx + 10, y]); }
-    for (let x = hx; x <= hx + 10; x++) plan.push(['block', x, fy - 6]);
-    // the door opening is cut out of the finished wall (a block needs a neighbour to attach to)
-    for (let y = fy - 3; y <= fy - 1; y++) plan.push(['dig', hx, y]);
-    for (let y = fy - 5; y <= fy - 1; y++) for (let x = hx + 1; x <= hx + 9; x++) plan.push(['wall', x, y]);
-    for (let y = fy - 3; y <= fy - 1; y++) plan.push(['wall', hx, y]);
-    plan.push(['furn', hx, fy - 1, 'wooden_door'], ['furn', hx + 3, fy - 1, 'work_bench'], ['furn', hx + 7, fy - 1, 'wooden_chair'], ['furn', hx + 5, fy - 4, 'torch']);
-    // the doorstep must be walkable: floor in front of the door and nothing solid at body height (the terrain bump the first clear pass missed)
-    for (let x = hx - 1; x >= hx - 3; x--) plan.push(['block', x, fy]);
-    for (let x = hx - 1; x >= hx - 3; x--) for (let y = fy - 1; y >= fy - 4; y--) plan.push(['dig', x, y]);
+    this.pickHouseSite();
+    const [hx, fy] = this.houseSpot, plan = this.housePlan();
     const needs = { wood_wall: 50, wooden_door: 1, work_bench: 1, wooden_chair: 1 };
     let i = 0;
     return {
+      unreach: 0,
       step() {
         const p = self.p();
         while (i < plan.length && self.planStepDone(plan[i])) i++;
@@ -969,14 +974,16 @@ const Bot = {
         // furniture: any free floor spot inside the room will do (the planned one first)
         if (op === 'furn' && item !== 'wooden_door' && item !== 'torch') { const s = self.houseFurnSpot(item, x); if (s) [x, y] = s; }
         self.goal = 'building a house (' + i + '/' + plan.length + ': ' + op + ' ' + (item || '') + ' @' + x + ',' + y + ' ' + (TILES[w.tile(x, y)]?.name || 'air') + ')';
-        // stand inside the house footprint near the target
-        const standX = clamp(x, hx + 2, hx + 8);
+        // stand inside the house footprint near the target (outside it for the doorstep: from inside, its far end is out of reach
+        // and the bot stood there forever until the watchdog fired)
+        const standX = x >= hx && x <= hx + 10 ? clamp(x, hx + 2, hx + 8) : x < hx ? Math.min(x + 2, hx - 1) : Math.max(x - 2, hx + 11);
         let standY = fy - 1; while (standY > fy - 4 && (w.solid(standX, standY) || w.solid(standX + 1, standY) || w.solid(standX, standY - 1))) standY--;
         if (!p.inReach(x, y) || Math.abs(self.feet()[0] - standX) > 4) {
           const r = self.moveTo(standX, standY, 1);
-          if (r === 'fail') { this.fails = (this.fails || 0) + 1; if (this.fails > 5) { this.fails = 0; self.log('house: skipping ' + op + ' ' + x + ',' + y + ' (unreachable)'); i++; } }
+          if (r === 'fail' || (r === true && !p.inReach(x, y) && ++this.unreach > 60)) { this.unreach = 0; this.fails = (this.fails || 0) + 1; if (this.fails > 5 || r === true) { this.fails = 0; self.log('house: skipping ' + op + ' ' + x + ',' + y + ' (unreachable)'); i++; } }
           return;
         }
+        this.unreach = 0;
         this.fails = 0;
         if (op === 'clear' || op === 'dig') { self.dig(x, y); return; }
         const id = op === 'block' ? 'wood' : op === 'wall' ? 'wood_wall' : item;
@@ -993,6 +1000,53 @@ const Bot = {
         if (++this.tries > 120) { this.tries = 0; self.log('house: giving up on ' + op + ' ' + x + ',' + y); i++; }
       },
     };
+  },
+  pickHouseSite() {
+    const w = G.world;
+    if (this.houseSpot) return;
+    // find flat-ish ground near spawn, ideally right around it: we respawn at the spawn point, so with the house built over it
+    // every respawn lands inside (a spawn point in the door column respawned us on the roof or held the door open at night)
+    const nc = w.noclipAt;
+    for (let d = 0; d < 80 && !this.houseSpot; d++) for (const s of [1, -1]) {
+      const x0 = w.spawnX - 5 + d * s;
+      const ys = []; for (let i = 0; i < 11; i++) ys.push(topSolid(w, x0 + i));
+      if (ys.some(y => y < 0)) continue;
+      // the Backrooms glitch block floats at jump height: never build (or jump around) under it
+      if (nc && nc[0] >= x0 - 5 && nc[0] <= x0 + 14 && nc[1] >= Math.min(...ys) - 14) continue;
+      if (Math.max(...ys) - Math.min(...ys) <= 3 && !ys.some((y, i) => w.liq(x0 + i, y - 1))) { this.houseSpot = [x0, Math.max(...ys)]; break; }
+    }
+    if (!this.houseSpot) this.houseSpot = [w.spawnX + 3, topSolid(w, w.spawnX + 3)];
+    this.base = [this.houseSpot[0] + 5, this.houseSpot[1] - 1];
+    this.log('house site at ' + this.houseSpot);
+  },
+  // the build order: [op, x, y, item]
+  housePlan() {
+    const [hx, fy] = this.houseSpot;
+    // plan: [op, x, y, item]
+    const plan = [];
+    for (let y = fy - 7; y <= fy - 1; y++) for (let x = hx; x <= hx + 10; x++) plan.push(['clear', x, y]);
+    // a doorstep: clear two columns outside the door so the house can actually be left
+    for (let y = fy - 4; y <= fy - 1; y++) for (let x = hx - 3; x <= hx - 1; x++) plan.push(['clear', x, y]);
+    for (let x = hx; x <= hx + 10; x++) plan.push(['block', x, fy]);
+    for (let y = fy - 1; y >= fy - 6; y--) { plan.push(['block', hx, y]); plan.push(['block', hx + 10, y]); }
+    for (let x = hx; x <= hx + 10; x++) plan.push(['block', x, fy - 6]);
+    // the door opening is cut out of the finished wall (a block needs a neighbour to attach to)
+    for (let y = fy - 3; y <= fy - 1; y++) plan.push(['dig', hx, y]);
+    for (let y = fy - 5; y <= fy - 1; y++) for (let x = hx + 1; x <= hx + 9; x++) plan.push(['wall', x, y]);
+    for (let y = fy - 3; y <= fy - 1; y++) plan.push(['wall', hx, y]);
+    plan.push(['furn', hx, fy - 1, 'wooden_door'], ['furn', hx + 3, fy - 1, 'work_bench'], ['furn', hx + 7, fy - 1, 'wooden_chair'], ['furn', hx + 5, fy - 4, 'torch']);
+    // the doorstep must be walkable: floor in front of the door and nothing solid at body height (the terrain bump the first clear pass missed)
+    for (let x = hx - 1; x >= hx - 3; x--) plan.push(['block', x, fy]);
+    for (let x = hx - 1; x >= hx - 3; x--) for (let y = fy - 1; y >= fy - 4; y--) plan.push(['dig', x, y]);
+    return plan;
+  },
+  // wood the rest of the house still needs (blocks, bench, door, chair, walls): the build action is 'ready' once we carry it
+  houseWoodNeed() {
+    if (!this.houseSpot) return 90;
+    const plan = this.housePlan(); let n = 0;
+    for (const st of plan) if (!this.planStepDone(st)) n += st[0] === 'block' ? 1 : st[0] === 'wall' ? 0.25 : st[0] === 'furn' ? ({ work_bench: 10, wooden_door: 6, wooden_chair: 4 }[st[3]] || 0) : 0;
+    for (const id of ['work_bench', 'wooden_door', 'wooden_chair']) if (this.has(id)) n -= { work_bench: 10, wooden_door: 6, wooden_chair: 4 }[id];
+    return Math.max(0, Math.ceil(n - this.count('wood_wall') / 4));
   },
   planStepDone([op, x, y, item]) {
     const w = G.world, t = w.tile(x, y), td = TILES[t];
