@@ -122,7 +122,9 @@ const Bot = {
       let solid = 0; const n = Math.max(Math.abs(c.x - fx), Math.abs(c.y - fy));
       for (let i = 1; i < n; i++) { const x = Math.round(fx + (c.x - fx) * i / n), y = Math.round(fy + (c.y - fy) * i / n); if (w.solid(x, y)) solid++; }
       let vein = 0; for (let j = -2; j <= 2; j++) for (let i = -2; i <= 2; i++) if ((i || j) && want(w.tile(c.x + i, c.y + j))) vein++;
-      const score = c.d + solid * 2.5 - vein * 2;
+      // ore with lava right above or beside it (hellstone mostly) spills it on us the moment it breaks: last resort only
+      let lava = 0; for (let j = -2; j <= 1; j++) for (let i = -1; i <= 1; i++) if (w.liq(c.x + i, c.y + j) > 20 && w.ltype[w.idx(c.x + i, c.y + j)] === 1) lava++;
+      const score = c.d + solid * 2.5 - vein * 2 + (lava ? 80 + lava * 10 : 0);
       if (score < bs) { bs = score; best = [c.x, c.y]; }
     }
     return best;

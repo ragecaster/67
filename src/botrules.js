@@ -16,11 +16,12 @@ const BOSS_READY = {
   wall_of_flesh: { lifeMax: 300, def: 16, dps: 80, potions: 10, pick: 65, arrows: 300 },
 };
 // upgrade paths the plan walks (cheapest first)
-const PLAN_WEAPONS = ['the_67', 'lights_bane', 'fiery_greatsword', 'nights_edge', 'gold_broadsword', 'silver_broadsword', 'iron_broadsword', 'copper_broadsword', 'gold_bow', 'iron_bow', 'demon_bow', 'molten_fury'];  // best first: the plan takes the first one it can make progress on
-const PLAN_PICKS = ['iron_pickaxe', 'silver_pickaxe', 'gold_pickaxe', 'nightmare_pickaxe', 'molten_pickaxe'];
+// No Ohio (hellstone) gear: the Wall is the last boss, The 67 + Brainrot armor clear its gate, and hellstone sits in lava under
+// Ohio's flyers (the owner watched the bot burn and stall there mining it for a sword it didn't need)
+const PLAN_WEAPONS = ['the_67', 'lights_bane', 'gold_broadsword', 'silver_broadsword', 'iron_broadsword', 'copper_broadsword', 'gold_bow', 'iron_bow', 'demon_bow'];  // best first: the plan takes the first one it can make progress on
+const PLAN_PICKS = ['iron_pickaxe', 'silver_pickaxe', 'gold_pickaxe', 'nightmare_pickaxe'];
 const PLAN_ARMOR = ['wood_helmet', 'wood_greaves', 'copper_helmet', 'copper_chainmail', 'copper_greaves', 'iron_helmet', 'iron_chainmail', 'iron_greaves',
-  'silver_helmet', 'silver_chainmail', 'silver_greaves', 'gold_helmet', 'gold_chainmail', 'gold_greaves', 'shadow_helmet', 'shadow_scalemail', 'shadow_greaves',
-  'molten_helmet', 'molten_breastplate', 'molten_greaves'];
+  'silver_helmet', 'silver_chainmail', 'silver_greaves', 'gold_helmet', 'gold_chainmail', 'gold_greaves', 'shadow_helmet', 'shadow_scalemail', 'shadow_greaves'];
 
 Object.assign(Bot, {
   // ================= survival =================
