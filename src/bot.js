@@ -1031,7 +1031,9 @@ const Bot = {
             const x0 = this.lastDeepX || home[0];
             if (clogged) self.log('cavern farm clogged (' + crowdD + ' monsters), moving 150 tiles over');
             // clogged: far enough that the stuck monsters despawn (150+ tiles); otherwise roam nearby
-            this.deepT = [clamp(x0 + this.deepSide * (clogged ? 150 : randInt(25, 45)), 60, w.w - 60), clamp(w.rockLayer + randInt(15, 45), w.rockLayer + 5, w.hellLayer - 30)];
+            // skeletons only reach us through connected open caves: farm in the biggest open cavern we can find (bench: 3-6 bones per 20k ticks there, none in tunnels)
+            const spot = self.openCave(x0, clogged ? 80 : 0);
+            this.deepT = spot || [clamp(x0 + this.deepSide * (clogged ? 150 : randInt(25, 45)), 60, w.w - 60), clamp(w.rockLayer + randInt(15, 45), w.rockLayer + 5, w.hellLayer - 30)];
           }
           // a bone carrier on screen (skeletons, miners spawn in side caves and rarely find us): go get it, digging if needed
           const P = self.p(), prey = drop === 'bone' && G.npcs.filter(n => (n.type === 'skeleton' || n.type === 'undead_miner') && !n.dead && Math.abs(n.cx - P.cx) < 1000 && Math.abs(n.cy - P.cy) < 640 && !(self.ignore && self.ignore[n.uid] > G.tick))
@@ -1065,6 +1067,19 @@ const Bot = {
         if (r === 'fail') this.farmFails = (this.farmFails || 0) + 1;
       },
     };
+  },
+  // the standable cavern-layer spot with the most open space around it, nearest to x0 among the best, at least minDx tiles from x0
+  openCave(x0, minDx) {
+    const w = G.world, cands = [];
+    for (let y = w.rockLayer + 10; y < w.hellLayer - 25; y += 3) for (let x = 40; x < w.w - 40; x += 3) {
+      if (Math.abs(x - x0) < minDx || !w.solid(x, y + 1) || w.solid(x, y) || w.solid(x, y - 1) || w.solid(x, y - 2)) continue;
+      let open = 0; for (let j = -12; j <= 6; j += 2) for (let i = -30; i <= 30; i += 3) if (!w.solid(x + i, y + j)) open++;
+      cands.push({ x, y, open, d: Math.abs(x - x0) });
+    }
+    if (!cands.length) return null;
+    cands.sort((a, b) => b.open - a.open);
+    const b = cands.slice(0, 40).sort((p, q) => p.d - q.d)[0];
+    return [b.x, b.y];
   },
   // Perch for Tung: a 32-tile dirt pillar next to the house with an 8-tile wood-platform ledge out to one side. Tung's leap (even
   // launched off a hop against the pillar) tops out ~24 tiles up; standing near the end of the ledge there is only air (and a
