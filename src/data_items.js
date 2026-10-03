@@ -63,6 +63,7 @@ wallItem('wallpaper_wall', 'Wallpaper Wall', 'gen/item_wallpaper_wall', W.WALLPA
 
 // ===== furniture =====
 furniture('wood_platform', 'Wood Platform', 'items/Wood_Platform', T.PLATFORM, { stack: 9999 });
+furniture('rope', 'Rope', 'items/Rope', T.ROPE, { stack: 9999, useTime: 6, value: 10, tooltip: 'Hangs from a block. W to grab and climb, S to slide, jump to let go.\nClick a rope to add to its bottom end. Grabbing it stops a fall cold.' });
 furniture('torch', 'Torch', 'items/Torch', T.TORCH, { stack: 9999, holdLight: [1, 0.85, 0.55], tooltip: 'Lights up the vibes.' });
 furniture('work_bench', 'Work Bench', 'items/Work_Bench', T.WORKBENCH, { tooltip: 'Used for basic crafting. Grindset starts here.' });
 furniture('furnace', 'Furnace', 'items/Furnace', T.FURNACE, { tooltip: 'Used for smelting ore.' });

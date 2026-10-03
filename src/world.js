@@ -236,6 +236,15 @@ class World {
       if (!(g === T.GRASS || g === T.CORRUPT_GRASS || g === T.SNOW)) return false;
       return this.growTree(x, y + 1, Math.random, 5, 10);
     }
+    // rope: clicking a rope adds to its bottom end; a new one hangs from a block or rope right above it
+    if (id === T.ROPE) {
+      if (this.tile(x, y) === T.ROPE) { while (this.tile(x, y) === T.ROPE && y < this.h - 1) y++; }
+      const c = this.tile(x, y), above = this.tile(x, y - 1);
+      if ((c && !TILES[c].cut) || !(above === T.ROPE || TILES[above]?.solid || above === T.PLATFORM)) return false;
+      if (c) this.setTile(x, y, 0);
+      this.setTile(x, y, T.ROPE);
+      return true;
+    }
     const cur = this.tile(x, y);
     if (cur && !TILES[cur].cut) return false;
     // need an adjacent tile or wall to attach to

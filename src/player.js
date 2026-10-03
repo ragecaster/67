@@ -109,6 +109,8 @@ class Player {
     // ---- grappling hook ----
     if (!typing && Input.hit('e')) this.throwHook();
     if (this.hook) this.updateHook(world, J);
+    // ---- rope ----
+    this.updateRope(world, !typing && (Input.down('w') || Input.down('ArrowUp')), D, J, L, Rt);
 
     // ---- horizontal (Terraria: maxRunSpeed 3, runAcceleration .08, runSlowdown .2) ----
     let maxSpd = 3 * this.calc.moveSpeed, acc = 0.08 * this.calc.moveSpeed, slow = 0.2 * this.calc.moveSpeed;
@@ -119,7 +121,8 @@ class Player {
     if (this.inWeb) { maxSpd *= 0.2; maxFall = 1; this.vy *= 0.5; }
     if (fx.slowFall && this.vy > 0 && !D) maxFall = 2;
     const busy = this.itemAnim > 0 && this.useItem && (this.useItem.use === 'swing' || this.useItem.use === 'thrust');
-    if (L && !Rt) {
+    if (this.onRope) { /* climbing: updateRope set the speed */ }
+    else if (L && !Rt) {
       if (this.vx > -maxSpd) { if (this.vx > slow) this.vx -= slow; this.vx -= acc; if (this.vx < -maxSpd) this.vx = -maxSpd; }
       else if (fx.sprint && this.onGround && this.vx > -fx.sprint * this.calc.moveSpeed) { this.vx -= acc * 0.2; spawnDust(this.cx, this.y + this.h, '#ffffff', 1, 0.3, { life: 12 }); }
       if (!busy) this.dir = -1;
@@ -134,7 +137,7 @@ class Player {
     if (Math.abs(this.vx) > maxSpd && !(fx.sprint && (L || Rt))) this.vx *= 0.97;
 
     // ---- jumping (jumpHeight 15 ticks at -5.01) ----
-    if (this.hook && this.hook.state === 'latched') { /* handled by hook */ }
+    if ((this.hook && this.hook.state === 'latched') || this.onRope) { /* handled by hook / rope */ if (this.onRope) this.jumpHeld = J; }
     else {
       if (J) {
         if (this.jump > 0) {
@@ -168,7 +171,7 @@ class Player {
 
     // ---- fall damage ----
     if (!this.onGround && this.vy > 0 && this.fallStart == null) this.fallStart = this.y;
-    if (this.vy < 0 || this.wet || (this.hook && this.hook.state === 'latched')) this.fallStart = null;
+    if (this.vy < 0 || this.wet || this.onRope || (this.hook && this.hook.state === 'latched')) this.fallStart = null;
     if (this.onGround && this.fallStart != null) {
       const tiles = (this.y - this.fallStart) / TS;
       if (tiles > 25 && !fx.noFallDmg) this.hurt(Math.floor((tiles - 25) * 10), 0, null, 'fall', true);
@@ -673,6 +676,26 @@ class Player {
 
   // ---------- grappling hook ----------
   hasHook() { return this.inv.some(s => s && ITEMS[s.id].hook); }
+  // the rope column our body is on (-1: none)
+  ropeAt(world) {
+    const rx = Math.floor(this.cx / TS);
+    for (let y = Math.floor(this.y / TS); y <= Math.floor((this.y + this.h - 1) / TS); y++) if (world.tile(rx, y) === T.ROPE) return rx;
+    return -1;
+  }
+  // Terraria's rope: up (or down while in the air) on a rope grabs it; up climbs while there's rope at head height, down
+  // slides to its end, jump lets go (sideways with a direction held). On it: no gravity, and a fall is forgotten (no damage).
+  updateRope(world, U, D, J, L, R) {
+    const rx = this.ropeAt(world);
+    if (this.onRope && (rx < 0 || this.dead)) this.onRope = false;
+    if (!this.onRope && rx >= 0 && !this.hook && (U || (D && !this.onGround))) { this.onRope = true; this.jump = 0; this.fallStart = null; }
+    if (!this.onRope) return;
+    if (J && !this.jumpHeld) { this.onRope = false; this.vy = -5.01; this.jump = 10; this.vx = L ? -3 : R ? 3 : 0; this.jumpHeld = true; return; }
+    this.x += clamp(rx * TS + 8 - this.cx, -2, 2);
+    this.vx = 0;
+    const ropeAbove = world.tile(rx, Math.floor((this.y - 2) / TS)) === T.ROPE;
+    this.vy = U && ropeAbove ? -3 : D ? 4 : 0;
+    this.fallStart = null;
+  }
   throwHook() {
     if (!this.hasHook()) return;
     if (this.hook && this.hook.state !== 'retract') return;

@@ -214,6 +214,12 @@ const Render = {
       ctx.drawImage(img, 2, 0, 12, 16, sx + 2, sy, 12, 16);
       return;
     }
+    if (t === T.ROPE) {
+      ctx.fillStyle = '#7a5a30'; ctx.fillRect(sx + 6, sy, 4, 16);
+      ctx.fillStyle = '#c49a5c'; ctx.fillRect(sx + 7, sy, 2, 16);
+      ctx.fillStyle = '#5c4020'; for (let k = 2; k < 16; k += 5) ctx.fillRect(sx + 6, sy + k, 4, 1);
+      return;
+    }
     if (t === T.PLATFORM) {
       ctx.fillStyle = '#6e4a2c'; ctx.fillRect(sx, sy, 16, 6);
       ctx.fillStyle = '#b3804f'; ctx.fillRect(sx, sy, 16, 4);

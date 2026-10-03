@@ -11,7 +11,7 @@ const T = {
   LIFE_CRYSTAL: 45, SHADOW_ORB: 46, TREE: 47, CACTUS: 48, SUNFLOWER: 49, MUSHROOM: 50, PLANT: 51,
   COBWEB: 52, CANDLE: 53, SAWMILL: 54, LOOM: 55, BOTTLE: 56, PIGGY_BANK: 57, DAYBLOOM: 58, BLINKROOT: 59,
   TOMBSTONE: 61, ALCHEMY: 62,
-  WALLPAPER: 63, CARPET: 64, FLUORESCENT: 65, NOCLIP: 66, EXIT_SIGN: 67,
+  WALLPAPER: 63, CARPET: 64, FLUORESCENT: 65, NOCLIP: 66, EXIT_SIGN: 67, ROPE: 68,
 };
 
 const TILES = [];
@@ -54,6 +54,8 @@ defTile(T.NOCLIP, { name: '??? (missing texture)', hp: 99999, drop: null, mapCol
 defTile(T.EXIT_SIGN, { name: 'EXIT', hp: 99999, drop: null, mapColor: '#3aff6a', unbreakable: true, exit: true, light: [0.2, 0.9, 0.3] });
 
 // furniture / non-block tiles. multi: footprint in tiles, anchor: 'floor' | 'wall' | 'ceiling'
+// rope: hangs from a block (or more rope) above; W/up grabs it, W/S climb, jump lets go, no fall damage on it (player.js)
+defTile(T.ROPE, { name: 'Rope', rope: true, hp: 10, drop: 'rope', mapColor: '#b08a50', sound: 'dig' });
 defTile(T.PLATFORM, { name: 'Wood Platform', platform: true, hp: 30, drop: 'wood_platform', mapColor: '#a97b4f', sound: 'dig', anyTool: false });
 defTile(T.TORCH, { name: 'Torch', hp: 1, drop: 'torch', mapColor: '#fdb630', light: [1.0, 0.85, 0.55], anyTool: true, torch: true, housingLight: true });
 defTile(T.WORKBENCH, { name: 'Work Bench', multi: [2, 1], sprite: 'items/Work_Bench', hp: 1, drop: 'work_bench', station: 'work_bench', mapColor: '#a97b4f', table: true, anyTool: true });

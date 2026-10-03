@@ -108,12 +108,12 @@ function findHouses(world, p) {
 
 // ---------- shops ----------
 const SHOPS = {
-  merchant: () => ['torch', 'lesser_healing_potion', 'lesser_mana_potion', 'wooden_arrow', 'shuriken', 'throwing_knife', 'empty_bucket', 'piggy_bank', 'copper_pickaxe', 'copper_axe', 'glowstick', 'dubai_chocolate', 'bottle', 'wooden_bow'].concat(G.world.flags.eye_of_cthulhu ? ['rocket_boots'] : []),
+  merchant: () => ['rope', 'torch', 'lesser_healing_potion', 'lesser_mana_potion', 'wooden_arrow', 'shuriken', 'throwing_knife', 'empty_bucket', 'piggy_bank', 'copper_pickaxe', 'copper_axe', 'glowstick', 'dubai_chocolate', 'bottle', 'wooden_bow'].concat(G.world.flags.eye_of_cthulhu ? ['rocket_boots'] : []),
   arms_dealer: () => ['musket_ball', 'flintlock_pistol', 'minishark'],
   demolitionist: () => ['bomb', 'grenade', 'dynamite'],
   dryad: () => ['acorn', 'daybloom', 'sunflower', 'vile_powder', 'labubu', 'mushroom'],
 };
-const SHOP_PRICE_OVERRIDE = { torch: 50, wooden_arrow: 5, musket_ball: 7, daybloom: 200, acorn: 10, mushroom: 250, labubu: 67000, piggy_bank: 10000, bottle: 20, glowstick: 10, lesser_healing_potion: 300, lesser_mana_potion: 250, dubai_chocolate: 2500, bomb: 300, grenade: 75, dynamite: 2000, rocket_boots: 50000 };
+const SHOP_PRICE_OVERRIDE = { rope: 10, torch: 50, wooden_arrow: 5, musket_ball: 7, daybloom: 200, acorn: 10, mushroom: 250, labubu: 67000, piggy_bank: 10000, bottle: 20, glowstick: 10, lesser_healing_potion: 300, lesser_mana_potion: 250, dubai_chocolate: 2500, bomb: 300, grenade: 75, dynamite: 2000, rocket_boots: 50000 };
 function buyPrice(id) { const base = SHOP_PRICE_OVERRIDE[id] != null ? SHOP_PRICE_OVERRIDE[id] : Math.max(1, ITEMS[id].value); return Math.ceil(base * FANUM_TAX); }
 function sellPrice(id) { return Math.floor((ITEMS[id].value || 0) / 5); }
 
