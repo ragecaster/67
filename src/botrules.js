@@ -191,6 +191,9 @@ Object.assign(Bot, {
     // way, instead of only once the plan reaches "more max life" (that used to be after The 67, walking past crystals all along)
     const cr = has('crystal');
     if (cr && cr.dist <= 40 && life >= 0.6) return 'crystal';
+    // the owner's plan: wood, the house and the furnace by day on the surface; then one mining expedition underground (day or
+    // night: the caves don't get worse at night, the surface does) for everything the anvil and The 67 need; then craft at home
+    if (has('expedition') && life >= 0.5 && (this.count('wood') >= 60 || G.isNight())) return 'expedition';
     const plan = this.plan || this.planFrontier(cands);
     const nightBoss = plan.boss && BOSS_SUMMON[plan.boss] && BOSS_SUMMON[plan.boss].night && plan.label.startsWith('fight');
     // concrete on-plan actions beat wandering: explore only when nothing on the plan is actionable

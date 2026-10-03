@@ -780,6 +780,8 @@ const Bot = {
       if (!near) continue;
       add('ore:' + ore, 'ore', () => { const want = this.count(ore) + 15; return this.taskMine('ore', () => this.count(ore) >= want, [tile]); }, { value: Math.log1p(ITEMS[ore].value || 1) / 8, dist: Math.abs(near[0] - this.feet()[0]) + Math.abs(near[1] - this.feet()[1]), needs: Math.min(this.count(ore), 200) / 100 });
     }
+    // the mining expedition: all the ore the anvil and The 67 still need, in one trip underground (see taskExpedition)
+    if (this.houseFinished && this.stationPlaced('furnace') && Object.keys(this.expeditionNeeds()).length) add('expedition', 'ore', () => this.taskExpedition(), { ready: 0.5 });
     // craftable goals: gear, stations, ammo, consumables, summons (the skill resolves missing ingredients itself)
     for (const [id, qty] of JEV_GOALS) {
       if (!ITEMS[id] || !RECIPES.some(r => r.out === id)) continue;
@@ -1940,6 +1942,36 @@ const Bot = {
   wallReadiness() { const p = this.p(); return 'life ' + p.lifeMax + ' def ' + p.calc.defense + ' the_67 ' + this.owns('the_67') + ' arrows ' + this.count('wooden_arrow'); },
   readyForWall() { const p = this.p(); return p.lifeMax >= 200 && p.calc.defense >= 10 && this.owns('the_67') && this.has('guide_voodoo_doll') ; },
   // the deepest ore the plan still needs that the local scan doesn't know about (gold before silver before iron)
+  // ore still missing for the iron anvil (if not placed) and The 67 (the boss gate): {ore id: count}
+  expeditionNeeds() {
+    const items = [];
+    if (!this.stationPlaced('anvil') && !this.has('iron_anvil')) items.push('iron_anvil');
+    if (!this.owns('the_67')) items.push('the_67');
+    const acc = {}, out = {};
+    for (const id of items) this.rawNeeds(id, 1, acc);
+    for (const o of ['iron_ore', 'silver_ore', 'gold_ore']) { const n = (acc[o] || 0) - this.count(o); if (n > 0) out[o] = n; }
+    return out;
+  },
+  // One trip underground for all of it, like a player: mine whichever needed ore is nearest (the veins on the way), head into
+  // the layer a missing ore generates in when none is in sight, and only then go home to smelt and craft everything in one go
+  // (it used to walk home after every 15 ore: ~10k ticks per round trip). The caves are as dangerous at night as by day.
+  taskExpedition() {
+    const self = this, tileOf = { iron_ore: T.IRON, silver_ore: T.SILVER, gold_ore: T.GOLD };
+    let sub = null, startedAt = G.tick;
+    const label = () => { const n = self.expeditionNeeds(); return 'mining expedition (' + Object.entries(n).map(([o, k]) => o.replace('_ore', '') + ' ' + k).join(', ') + ' to go)'; };
+    this.goal = label(); this.log('starting a mining expedition: ' + label());
+    return {
+      step() {
+        const need = self.expeditionNeeds(), ores = Object.keys(need);
+        if (!ores.length) { self.log('expedition done in ' + (G.tick - startedAt) + ' ticks, heading home to craft'); this.done = true; return; }
+        if (sub && !sub.done) { sub.step(); if (!/^mining|exploring/.test(self.goal || '')) self.goal = label(); return; }
+        const pow = SDK.obs().inv.pick.power, tiles = ores.map(o => tileOf[o]).filter(t => TILES[t].minPick <= pow);
+        const seen = tiles.length && self.nearestTile(t => tiles.includes(t), 90, 70);
+        sub = seen ? self.taskMine('ore', () => !Object.keys(self.expeditionNeeds()).some(o => tiles.includes(tileOf[o])) || !self.nearestTile(t => tiles.includes(t), 90, 70), tiles) : self.taskExplore();
+        self.goal = label();
+      },
+    };
+  },
   oreWanted() {
     const known = SDK.obs().near.ores || {}, items = [this.committed && this.committed.item, 'the_67', 'slime_crown'].filter(id => id && !this.owns(id));
     for (const ore of ['gold_ore', 'silver_ore', 'iron_ore', 'copper_ore']) {
