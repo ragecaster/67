@@ -30,7 +30,7 @@ run(async (page) => {
     if (KNOBS.ARMOR === 'iron') { p.armor[0] = { id: 'iron_helmet', count: 1 }; p.armor[1] = { id: 'iron_chainmail', count: 1 }; p.armor[2] = { id: 'iron_greaves', count: 1 }; }
     if (KNOBS.SWIFT) p.addBuff('swiftness', 99999);
     if (HOOK) invAdd(p.inv, 'grappling_hook', 1);   // HOOK=1: carries a grappling hook
-    if (POTS) invAdd(p.inv, 'healing_potion', POTS);   // POTS=n: healing potions (Tung drops 5-15)
+    if (POTS) invAdd(p.inv, KNOBS.POTID || 'healing_potion', POTS);   // POTS=n: healing potions (Tung drops 5-15)
     o.push('def ' + p.calc.defense + ' armor ' + p.armor.map(a => a && a.id));
     G.spawnNPC('guide', p.cx, p.cy - 40);
     for (const k of ['king_slime', 'eye_of_cthulhu', 'tung_sahur']) w.flags[k] = true;
