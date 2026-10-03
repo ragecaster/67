@@ -17,9 +17,16 @@ module.exports = async function run(fn, opts = {}) {
   await page.addInitScript(() => { window.__rng = 0x9e3779b9; Math.random = () => { let a = window.__rng | 0; window.__rng = a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; });
   await page.goto('file://' + require('path').resolve(__dirname, '..', 'index.html'));
   await page.waitForFunction(() => typeof G !== 'undefined' && G.state === 'menu', null, { timeout: 30000 });
+  // the tests step the game themselves: stop the page's real-time loop, or it plays extra ticks between evaluate calls
+  // (a different number every run: no two runs of a seed were alike)
+  if (!process.env.REALTIME) await page.evaluate(() => { window.requestAnimationFrame = () => 0; });
   await page.evaluate(() => { SETTINGS.tts = false; SETTINGS.sfx = 0; SETTINGS.music = 0; window.speechSynthesis && (window.speechSynthesis.speak = () => {}); });
   page.newGame = async (seed = '12345') => {
+    // reproducible runs: every image decoded (dropped items take their size from it) and the RNG reset, so a seed always
+    // plays out the same way however long the page took to load
+    await page.waitForFunction(() => Object.values(IMG).every(i => !(i instanceof HTMLImageElement) || i.complete), null, { timeout: 30000 }).catch(() => {});
     await page.evaluate((seed) => {
+      window.__rng = 0x9e3779b9;
       const it = generateWorld('Test World', seed, 'small');
       let r; while (!(r = it.next()).done) {}
       const p = new Player('Tester', null, 0); G.start(p, r.value);

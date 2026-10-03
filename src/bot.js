@@ -38,8 +38,11 @@ const Bot = {
   press(k) { if (!Input.keys[k]) { Input.pressed[k] = true; Input.lastKeyTime[k] = G.tick * 1000 / 60; } },
   aimWorld(x, y) { Input.mx = x - G.camX; Input.my = y - G.camY; },
   aimTile(tx, ty) { this.aimWorld(tx * TS + 8, ty * TS + 8); },
-  clickHold() { Input.mDown = true; if (!this.wasDown) Input.mClick = true; },
-  clickOnce() { Input.mDown = true; Input.mClick = true; },
+  // world clicks do nothing with the inventory open: a UI sub-task cut off midway (its goal met while it clicked) left it open
+  // and the next job swung at the same block for 300 ticks per block (the hell elevator never got past the grass)
+  uiLeftOpen() { if (!UI.invOpen) return false; this.press('Escape'); this.uiBusy = false; return true; },
+  clickHold() { if (this.uiLeftOpen()) return; Input.mDown = true; if (!this.wasDown) Input.mClick = true; },
+  clickOnce() { if (this.uiLeftOpen()) return; Input.mDown = true; Input.mClick = true; },
   uiClick(x, y, right) { Input.mx = x; Input.my = y; if (right) Input.rClick = true; else { Input.mClick = true; Input.mDown = true; } this.wantsDraw = true; },
   rightClickWorld(tx, ty) { this.aimTile(tx, ty); Input.rClick = true; },
   selectSlot(i) { if (i >= 0 && i < 10) { (this.slotUsed = this.slotUsed || [])[i] = G.tick; if (G.player.sel !== i) this.press(String((i + 1) % 10)); } },
@@ -258,6 +261,17 @@ const Bot = {
     }
     if (this.unstick && this.unstick.until > G.tick && !UI.invOpen) { this.bruteForce(); return; }
     // survival reflexes
+    // long fall in progress: the grappling hook into the wall beside us stops it (a latch resets the fall), then let go and
+    // fall on: down a shaft whose rungs are gone that's a hook-by-hook descent (the block catch below comes too late at
+    // 10 px/tick: evalB fell 116 rows down its hell elevator 25 times running)
+    if (this.hookBrake && p.hook && p.hook.state === 'latched' && Math.abs(p.vy) < 0.6) { if (!p.jumpHeld) Input.keys[' '] = true; this.hookBrake = 0; }
+    else if (this.hookBrake && (!p.hook || G.tick - this.hookBrake > 60)) this.hookBrake = 0;
+    if (!p.onGround && !p.onRope && p.vy > 5 && p.fallStart != null && (p.y - p.fallStart) / TS > 17 && !p.hook && p.hasHook() && !UI.invOpen) {
+      const w = G.world, cx = Math.floor(p.cx / TS), cy = Math.floor(p.cy / TS);
+      let t = null;
+      for (const dy of [3, 2, 4, 1, 5]) { for (const dx of [-1, 1, -2, 2, -3, 3]) { const x = cx + dx, y = cy + dy; if ((w.solid(x, y) || w.isPlatform(x, y)) && !w.solid(x - Math.sign(dx), y)) { t = [x, y]; break; } } if (t) break; }
+      if (t) { this.aimWorld(t[0] * TS + 8, t[1] * TS + 8); this.press('e'); this.hookBrake = G.tick; this.why = 'hook-brake'; return; }
+    }
     // long fall in progress (the game hurts above 25 tiles): drop a block right under our feet; it lands us and resets the fall
     if (!p.onGround && p.vy > 4 && p.fallStart != null && (p.y - p.fallStart) / TS > 14 && !UI.invOpen) {
       const w = G.world, fy2 = Math.floor((p.y + p.h) / TS);
@@ -299,6 +313,7 @@ const Bot = {
     if (sig !== this.progSig) { this.progSig = sig; this.progAt = G.tick; }
     if (this.task && G.tick - this.progAt > 2400 && !/^(hiding|resting|waiting|going down to Ohio)/.test(this.goal || '') && !(this.act && this.act.kind === 'hell' && G.tick - this.progAt < 9000)) {   // the Ohio trip has its own failure handling   // standing still is the point of these
       this.log('watchdog: abandoning "' + this.goal + '" (no progress)');
+      if (/^crafting/.test(this.goal || '') && this.craftAltar) { (this.badAltars = this.badAltars || []).push(this.craftAltar); this.craftAltar = null; }
       this.cooldowns = this.cooldowns || {}; this.cooldowns[this.lastTaskId || this.goal] = G.tick + 3600;
       this.task = null; this.nav = null; this.progAt = G.tick; this.watchdogs = (this.watchdogs || 0) + 1;
       this.setAct({ id: 'explore', kind: 'explore' }, this.taskExplore(), []);
@@ -850,7 +865,7 @@ const Bot = {
       const total = Object.values(needs).reduce((a, b) => a + b, 0) || 1, have = this.has(B.item) ? total : Object.entries(needs).reduce((a, [k, v]) => a + Math.min(v, this.count(k)), 0);
       if (this.has(B.item) && !this.bossReady(key)) continue;   // readiness gate: holding the summon isn't enough
       // a night boss with nothing to do by day (summon in hand, or lenses that only drop at night) is not an option until dusk
-      if (B.night && !G.isNight() && this.ticksToNight() > 2500 && (this.has(B.item) || (key === 'eye_of_cthulhu' && this.count('lens') < 6))) continue;
+      if (B.night && !G.isNight() && this.ticksToNight() > (this.has(B.item) ? this.nightLead() : 2500) && (this.has(B.item) || (key === 'eye_of_cthulhu' && this.count('lens') < 6))) continue;
       add('boss:' + key, 'boss', () => this.taskBoss(key), { ready: have / total, boss: key, value: BOSS_TYPES[key].life / 4000 });
     }
     const bn = w.flags.eye_of_cthulhu && this.brainrotWants().length ? this.brainrotNeeds() : null;   // (materials in hand: the crafts take over)
@@ -1058,7 +1073,7 @@ const Bot = {
   },
   // buy n of an item from whichever town NPC sells it, through the real UI: walk over, right-click them, press 'Shop', click
   // the item once per unit (they stack on the cursor), then drop the stack into an empty inventory slot
-  taskBuy(id, n) {
+  taskBuy(id, n, limit = 6000) {
     const self = this, t0 = G.tick, price = buyPrice(id);
     let step = 'go', clicks = 0;
     this.goal = 'buying ' + n + ' ' + ITEMS[id].name;
@@ -1066,7 +1081,7 @@ const Bot = {
     return { step() {
       const p = self.p(), keeper = G.npcs.find(m => m.town && !m.dead && SHOPS[m.type] && SHOPS[m.type]().includes(id));
       if (!keeper) return end(this, 'nobody sells it');
-      if (G.tick - t0 > 6000 && step !== 'stow') return end(this, 'took too long');
+      if (G.tick - t0 > limit && step !== 'stow') return end(this, 'took too long');
       if (step === 'go') {
         if (dist(keeper.cx, keeper.cy, p.cx, p.cy) < 110 && p.onGround) { step = 'talk'; return; }
         const r = self.moveTo(Math.floor(keeper.cx / TS), Math.floor((keeper.y + keeper.h - 1) / TS), 3);
@@ -1131,14 +1146,26 @@ const Bot = {
     const after = afterArg === 'placeonly' ? 'place' : afterArg;
     const r = RECIPES.find(r => r.out === id);
     this.goal = 'crafting ' + ITEMS[id].name;
-    let phase = r && !r.station && !after && times ? 'open' : 'go', clicks = 0, waited = 0;   // hand recipes: craft right here
+    let phase = r && !r.station && !after && times ? 'open' : 'go', clicks = 0, waited = 0, sub = null;   // hand recipes: craft right here
     return {
       step() {
         const p = self.p();
         if (phase === 'go') {
           let target = self.base;
-          if (r.station === 'altar') { const a = self.nearestTile(t => t === T.ALTAR, 300, 250); if (!a) { this.done = true; self.log('no altar found'); return; } target = [a[0] + 1, a[1] + 1]; }
-          else if (r.station) { const st = self.nearestTile(t => TILES[t] && (TILES[t].station === r.station || (r.station === 'furnace' && t === T.HELLFORGE)), 14, 8, self.base); if (st) target = [st[0], st[1] + (TILES[G.world.tile(st[0], st[1])].multi[1] - 1 - (G.world.frame(st[0], st[1]) >> 4))]; }
+          if (r.station === 'altar') {
+            // an altar the watchdog gave up on (walled in, across lava, ...) is skipped next time
+            const bad = self.badAltars || [], a = self.nearestTile((t, x, y) => t === T.ALTAR && !bad.some(q => Math.abs(q[0] - x) < 4 && Math.abs(q[1] - y) < 3), 300, 250);
+            if (!a) { this.done = true; self.log('no altar found'); return; }
+            self.craftAltar = a; target = [a[0] + 1, a[1] + 1];
+          }
+          else if (r.station) {
+            const st = self.nearestTile(t => TILES[t] && (TILES[t].station === r.station || (r.station === 'furnace' && t === T.HELLFORGE)), 14, 8, self.base);
+            if (st) target = [st[0], st[1] + (TILES[G.world.tile(st[0], st[1])].multi[1] - 1 - (G.world.frame(st[0], st[1]) >> 4))];
+            // the station is in the bag, not standing at the base (hasStation counts both): set it down first, or the recipe
+            // never shows up (a whole run once went by on "recipe not available: wooden_chair" with the work bench in the bag)
+            const item = { work_bench: 'work_bench', furnace: 'furnace', anvil: 'iron_anvil' }[r.station];
+            if (!st && item && item !== id && self.has(item)) { sub = sub || self.taskCraftAtBase([item, 0, 'place']); sub.step(); if (sub.done) sub = null; return; }
+          }
           const res = self.moveTo(target[0], target[1], 2);
           if (res === 'fail') { this.done = true; self.log('could not reach crafting station for ' + id); self.fail(id); return; }
           if (res) phase = times ? 'open' : 'place'; // times 0: the item is already in the inventory, just place it
@@ -1507,7 +1534,9 @@ const Bot = {
         if (self.has(B.item)) {
           // summon at home on the surface, healthy: not wherever we happen to be standing
           if (!nightOk) {
-            if (self.ticksToNight() > 2500) { this.done = true; return; }   // a whole day ahead: go do something useful first
+            if (self.ticksToNight() > self.nightLead()) { this.done = true; return; }   // a whole day ahead: go do something useful first
+            // (deep down at dusk: climb out right here, the boss comes to wherever we stand)
+            if (fy > topSolid(w, fx) + 3) { self.goal = 'climbing out before night to summon ' + name; if (self.moveTo(fx, topSolid(w, fx) - 1, 3) === 'fail') self.moveTo(home[0] - 6, home[1], 3); return; }
             self.goal = 'waiting for night to summon ' + name; self.moveTo(home[0] - 6, home[1], 3); return;
           }
           // every boss comes to wherever we are: get to the surface right here (Tung's perch gets built next to us)
@@ -1815,6 +1844,9 @@ const Bot = {
     return false;
   },
   onPerch() { if (!this.perch) return false; const [sx, sy] = this.perchSpot(), [fx, fy] = this.feet(); return Math.abs(fx - sx) <= 1 && fy >= sy - 4 && fy <= sy + 1; },
+  // how long before dusk to set out for a night job on the surface: from deep caves the climb takes most of an evening
+  // (the Eye was crafted at 150k and summoned at 234k: the bot was 300 rows down when night fell and climbed till dawn)
+  nightLead() { const [fx, fy] = this.feet(); return 2500 + Math.min(9000, Math.max(0, fy - topSolid(G.world, fx)) * 14); },
   ticksToNight() { const w = G.world; return w.dayTime ? DAY_LEN - w.time : 0; },
   taskEye() { return this.taskBoss('eye_of_cthulhu'); },
   // what the Brainrot still owes us: the nightmare pickaxe (Ohio's hellstone), then the Brainrot armor set while we're below the
@@ -1869,6 +1901,9 @@ const Bot = {
   // walls (so a rock tunnel is a death trap: nothing there can be shot). A human lands on one of the floating ash islands, lays a long
   // block bridge along its row, then drops the doll off the island's edge into the lava and retreats along the bridge, shooting.
   TUNNEL_LEN: 300,
+  // the whole hell elevator's platforms: the tunnel floor, plus the shaft's rungs (2 every 15 rows: ~60 for a 450-row shaft,
+  // which ran the tunnel dry 27 columns from its end and cost a 36k-tick trip up for more)
+  tunnelPlatforms(H) { const top = H.top || topSolid(G.world, H.sx); return this.TUNNEL_LEN + 2 * Math.ceil(Math.max(0, (H.F || G.world.hellLayer) - top) / 15) + 40; },
   blockCount() { return ['stone_block', 'ash_block', 'dirt_block', 'mud_block', 'clay_block', 'sand_block'].reduce((n, id) => n + this.count(id), 0); },
   // a floating platform >= 6 wide in the cavern with lava under the side the doll is dropped to and open runway on the other side
   findIsland(fx) {
@@ -2023,7 +2058,12 @@ const Bot = {
       Input.keys.s = true; this.why = 'chute-drop'; return false;
     }
     // on the rope: slide to its end, open the cells under it, extend it
-    if (fy < rb - 1) { Input.keys.s = true; this.why = 'chute-slide'; return false; }
+    if (fy < rb - 1) {
+      // a block beside the rope under our 20-px body (ash fell in, the chute's side is lumpy) holds us up: dig it
+      if (p.onGround || this.chuteY === p.y) { this.chuteStuck = (this.chuteStuck || 0) + 1; if (this.chuteStuck > 10) { const m = mineRows(fy + 1, fy + 1); if (m) return m === 'bad' ? 'bad' : false; } }
+      else this.chuteStuck = 0;
+      this.chuteY = p.y; Input.keys.s = true; this.why = 'chute-slide'; return false;
+    }
     const m = mineRows(rb, rb + 2); if (m) return m === 'bad' ? 'bad' : false;
     return extend();
   },
@@ -2034,6 +2074,12 @@ const Bot = {
     const w = G.world, p = this.p(), F = H.F, sx = H.sx, rc = sx + 1, [fx, fy] = this.feet(), nx = Nav.nodeOf(p)[0];
     const lo = Math.min(sx - 3, H.xEnd), hi = Math.max(sx + 5, H.xEnd);
     if (fy >= F - 2 && fy <= F - 1 && fx >= lo && fx <= hi) return true;
+    // in the trench under the platform floor (knocked or dropped through it): a jump goes back up through the platforms. The
+    // way out used to be back along the tunnel to the rope, which in the Wall fight meant walking into the Wall
+    if (fy > F - 1 && fy <= F + 4 && fx >= lo && fx <= hi && !(Math.abs(fx - rc) <= 1)) {
+      if (p.onGround && !p.jumpHeld) Input.keys[' '] = true; else if (p.vy < 0) Input.keys[' '] = true;
+      this.goal = 'going to the Wall tunnel'; this.why = 'tunnel-trench-out'; return 'trench';
+    }
     this.goal = 'going to the Wall tunnel';
     if (p.onRope) {
       if (w.tile(rc, Math.floor((p.y - 2) / TS)) === T.ROPE) Input.keys.w = true;
@@ -2047,14 +2093,20 @@ const Bot = {
     }
     // above it: down the shaft (rungs every 15 rows catch the fall; S drops through each)
     if (Math.abs(nx - sx) <= 1 && fy >= (H.top || 0) - 2) {
-      if (!p.onGround) { if (Math.abs(p.cx - (sx * TS + 16)) > 3) Input.keys[p.cx < sx * TS + 16 ? 'd' : 'a'] = true; return false; }
+      // (S stays down until we're past the rung we dropped from: let go the tick after leaving it and it caught us again, so
+      // the bot bobbed on the rung until it dug it out. Then off, so the next rung down breaks the fall)
+      if (!p.onGround) { if (this.dropFrom != null && G.tick - this.dropAt < 40 && fy <= this.dropFrom + 1) Input.keys.s = true; if (Math.abs(p.cx - (sx * TS + 16)) > 3) Input.keys[p.cx < sx * TS + 16 ? 'd' : 'a'] = true; return false; }
+      this.dropFrom = fy; this.dropAt = G.tick;
       // anything solid in the shaft's columns (a pillar block from a climb out, a catch-fall block): dig it; a platform: S
       // through it, and dig it too if S doesn't get us down (standing half on something beside it)
       for (let y = fy - 2; y <= fy + 1; y++) for (const x of [sx, sx + 1]) if (w.solid(x, y) && !w.isPlatform(x, y) && y >= (H.top || 0)) { this.dig(x, y); this.why = 'tunnel-shaft-clear'; return false; }
       if (nx !== sx) { Input.keys[nx < sx ? 'd' : 'a'] = true; return false; }
       this.shaftHold = this.shaftHoldY === fy ? (this.shaftHold || 0) + 1 : 0; this.shaftHoldY = fy;
-      if (this.shaftHold > 40) { const x = w.isPlatform(sx, fy + 1) ? sx : sx + 1; if (w.isPlatform(x, fy + 1)) { this.dig(x, fy + 1); return false; } }
-      Input.keys.s = true; return false;
+      // (the rungs are what make the shaft safe to drop down: digging one out whenever S stalled left 30-row free falls that
+      // killed the next trip down. Centre up and press S afresh first; dig only if that keeps failing)
+      if (this.shaftHold > 30 && Math.abs(p.cx - (sx * TS + 16)) > 2) { Input.keys[p.cx < sx * TS + 16 ? 'd' : 'a'] = true; return false; }
+      if (this.shaftHold > 400) { const x = w.isPlatform(sx, fy + 1) ? sx : sx + 1; if (w.isPlatform(x, fy + 1)) { this.dig(x, fy + 1); return false; } }
+      if (this.shaftHold % 20 !== 19) Input.keys.s = true; return false;
     }
     if (Math.abs(nx - sx) <= 5 && Math.abs(fy - (H.top - 1)) <= 3) { Input.keys[nx < sx ? 'd' : 'a'] = true; return false; }
     const r = this.moveTo(sx - 3, H.top - 1, 2); return r === 'fail' ? 'fail' : false;
@@ -2072,6 +2124,17 @@ const Bot = {
   ropeThrow(H) {
     const p = this.p(), dir = H.dir;
     if (!p.onRope || !this.has('guide_voodoo_doll')) return false;
+    // from a height where it really lands in lava: the throw simulated over the actual tiles (thrown from the rope's end it
+    // landed on the island; from mid-rope it sometimes clipped the lumpy rock beside the chute)
+    const fy = this.feet()[1];
+    if (H.throwRow == null || G.tick - (H.throwRowAt || 0) > 600) {
+      H.throwRowAt = G.tick; H.throwRow = null;
+      const rows = []; for (let r = H.F + 3; r <= (H.ropeEnd || H.y - 2); r++) rows.push(r);
+      rows.sort((a, b) => Math.abs(a - fy) - Math.abs(b - fy));
+      for (const r of rows) if (this.dollReachesLava(p.cx - dir * 16, p.cy + (r - fy) * TS - 10, -dir)) { H.throwRow = r; break; }
+      if (H.throwRow == null) { H.ropeFail = (H.ropeFail || 0) + 1; this.log('no throw from the rope reaches the lava'); return false; }
+    }
+    if (fy !== H.throwRow) { Input.keys[fy > H.throwRow ? 'w' : 's'] = true; this.why = 'throw-row'; return false; }
     if (this.drinkSpeed()) return false;
     if (p.dir !== -dir) {   // face the lava: a swing aimed that way turns us (on a rope nothing else does)
       const ws = this.slotOf(it => it.id === 'the_67'); if (ws < 0 || ws > 9) return false;
@@ -2083,6 +2146,20 @@ const Bot = {
     if (p.sel !== s) { this.selectSlot(s); return false; }
     this.press('t'); this.milestone('threw the voodoo doll'); this.log('threw the voodoo doll from the rope at ' + this.feet());
     H.thrownAt = G.tick; return true;
+  },
+  // where a thrown item goes (G.throwItem: 4 px/tick sideways, 1 up), stepped with the item's own physics: true if it
+  // touches lava before it comes to rest
+  dollReachesLava(x, y, dir) {
+    const e = new ItemDrop(x, y, 'guide_voodoo_doll', 1);
+    e.vx = dir * 4; e.vy = -1;
+    for (let i = 0; i < 600; i++) {
+      e.vy = Math.min(e.vy + 0.1, 7); e.vx *= e.onGround ? 0.85 : 0.98;
+      moveEntity(e, G.world, { stepUp: false });
+      if (e.wet) { e.vy *= 0.9; e.vx *= 0.9; }
+      if (e.lavaWet) return true;
+      if (e.onGround && Math.abs(e.vx) < 0.05) return false;
+    }
+    return false;
   },
   // drink something that makes us faster (the Wall gets faster than we run below ~35% of its life): true while busy
   drinkSpeed() {
@@ -2285,7 +2362,7 @@ const Bot = {
     this.goal = 'going to Ohio';
     let huntT = 0, throwTries = 0, sub = null, bridgeFails = 0;
     const H = this.hell = this.hell || {};
-    const fail = (t, why) => { self.log('Ohio plan failed: ' + why); H.fails = (H.fails || 0) + 1; t.done = true; self.cooldowns = self.cooldowns || {}; self.cooldowns['going to'] = G.tick + 9000; if (H.fails >= 3) { delete H.x0; H.fails = 0; } };
+    const fail = (t, why) => { self.log('Ohio plan failed: ' + why); H.fails = (H.fails || 0) + 1; t.done = true; self.cooldowns = self.cooldowns || {}; self.cooldowns['going to'] = G.tick + 9000; if (H.fails >= 3 && H.bot == null) { delete H.x0; H.fails = 0; } };   // (never throw away a dug shaft or tunnel: ~60k ticks of work)
     return {
       step() {
         const p = self.p(), [fx, fy] = self.feet();
@@ -2310,9 +2387,9 @@ const Bot = {
         const dir = H.dir;
         // 0) the tunnel's floor is ~330 wood platforms: chop and craft them up top first
         if (H.ph === 'platforms') {
-          const need = self.TUNNEL_LEN + 40, have = self.count('wood_platform');
+          const need = self.tunnelPlatforms(H), have = self.count('wood_platform');
+          if (sub && !sub.done) { sub.step(); return; }   // (a craft finishes its clicks and closes the inventory first)
           if (have >= need) H.ph = 'shop';
-          else if (sub && !sub.done) { sub.step(); return; }
           else if (self.count('wood') * 2 + have < need + 20) { sub = self.taskChop(Math.ceil((need + 20 - have) / 2)); self.goal = 'chopping wood for the Wall tunnel floor'; return; }
           else { sub = self.taskCraftAtBase(['wood_platform', Math.ceil((need - have) / 2)]); return; }
         }
@@ -2343,6 +2420,16 @@ const Bot = {
         }
         // 1) the Wall tunnel: a few columns the other way first (the chute's columns get dug as part of the main run), then the
         // main run, then the chute and its rope down to the island
+        // out of rope halfway down the chute: up to the Merchant for the rest, then back to the chute (no Merchant or no money:
+        // the Wall waits, with the shaft and the tunnel kept)
+        if (H.ph === 'ropeShop') {
+          if (sub && !sub.done) { sub.step(); return; }
+          const need = Math.max(0, H.y - H.F + 4 - self.count('rope'));
+          if (need === 0 || (sub && H.ropeBuys > 2)) { sub = null; H.ph = 'chute'; return; }
+          const keeper = G.npcs.some(m => m.type === 'merchant' && !m.dead);
+          if (!keeper || invMoney(p.inv) < need * buyPrice('rope') || H.ropeBuys > 2) { self.log('no rope for the chute (' + (keeper ? 'no money' : 'no Merchant') + '): the Wall waits'); H.ropeBuys = 0; sub = null; (self.cooldowns = self.cooldowns || {}).hell = G.tick + 12000; this.done = true; return; }
+          H.ropeBuys = (H.ropeBuys || 0) + 1; sub = self.taskBuy('rope', need, 40000); return;   // (the walk up the elevator is long)
+        }
         if (H.ph === 'nook' || H.ph === 'tunnel' || H.ph === 'chute') {
           if (H.ph !== 'chute' || (!p.onRope && fy <= H.F - 1)) { const t = self.toTunnel(H); if (t !== true) { if (t === 'fail' && ++bridgeFails > 40) return fail(this, 'cannot get to the tunnel'); return; } }
           let r;
@@ -2354,7 +2441,7 @@ const Bot = {
           } else {
             r = self.digChute(H);
             if (r === true) { H.R = H.F; H.rc = H.sx + 1; H.ph = 'ride'; H.tunnelDone = true; self.log('chute and rope done: rope ' + (H.F + 1) + '..' + H.ropeEnd); }
-            if (r === 'norope') { H.ph = 'shop'; this.bought = 0; return fail(this, 'out of rope for the chute'); }
+            if (r === 'norope') { H.ph = 'ropeShop'; self.log('out of rope for the chute: going to the Merchant'); return; }
           }
           if (r === 'noplatforms') { H.ph = 'platforms'; return; }
           if (r === 'off' || r === 'bad' || r === 'fail') { if (++bridgeFails > 60) return fail(this, H.ph + ' ' + r + ' at ' + self.feet()); }
@@ -2455,6 +2542,13 @@ const Bot = {
           if (lying) {
             self.goal = 'picking up the voodoo doll';
             if (p.onRope) { if (fy < H.y - 1) { Input.keys.s = true; return; } Input.keys[' '] = true; return; }
+            // from the tunnel: down the rope, not the pathfinder's drop down the chute (it missed the rope by a column and fell
+            // 40 rows): over the rope, S through the floor, S again in the air grabs it
+            const rc = H.sx + 1;
+            if (fy <= H.F - 1 || (!p.onGround && fy < H.F + 8)) {
+              if (!p.onGround) { Input.keys.s = true; if (Math.abs(p.cx - (rc * TS + 8)) > 3) Input.keys[p.cx < rc * TS + 8 ? 'd' : 'a'] = true; return; }
+              const a = self.alignAt(rc, H.F - 1); if (a === true) Input.keys.s = true; return;
+            }
             self.moveTo(Math.floor(lying.x / TS), Math.floor(lying.y / TS), 1); return;
           }
           if (doll && p.onRope && !H.ropeFail && self.readyForWall() && G.npcs.some(n => n.type === 'guide' && !n.dead)) {
@@ -2505,7 +2599,7 @@ const Bot = {
     this.goal = 'fighting the Wall of Brainrot (gap ' + Math.round(gap) + ', ' + Math.round(n.life) + '/' + n.lifeMax + ')';
     // the tunnel plan: from the island up the rope into the tunnel first (it spawns ~50 tiles off: ~600 ticks to get here)
     const H = this.hell;
-    if (H && H.tunnelDone && !(gap < -60)) { const t = this.toTunnel(H); if (t !== true) { this.why = 'wall-to-tunnel ' + this.why; return; } }
+    if (H && H.tunnelDone && !(gap < -60)) { const t = this.toTunnel(H); if (t !== true && t !== 'trench') { this.why = 'wall-to-tunnel ' + this.why; return; } }
     if (s >= 0 && s <= 9) this.selectSlot(s); else if (s > 9) { this.ensureHotbar(s); return; }
     // in a low tunnel over Ohio (rock 1-3 rows over our head): its body reaches up to us but its centre is lower, and The 67's
     // homing pulls the shots down into the floor after ~110 px, so fight close (50-100 px), aiming level
@@ -2523,7 +2617,8 @@ const Bot = {
       // (a lead for its fast last third costs more damage than it saves: with a Zoomies buff we keep up; tests/tunnelwall.js)
       const lo = 50, hi = 100;
       if (gap < lo) { this.hold(dir > 0 ? 'd' : 'a'); this.why = 'wall-tunnel-back'; }
-      else if (gap > hi) { this.hold(dir > 0 ? 'a' : 'd'); this.why = 'wall-tunnel-close'; }
+      // (closing in stops at the chute: past it is the nook, a dead end the bot once walked into to meet the Wall, and died there)
+      else if (gap > hi && !(H && H.tunnelDone && -H.dir * (fx - (H.sx + 1)) >= 0)) { this.hold(dir > 0 ? 'a' : 'd'); this.why = 'wall-tunnel-close'; }
       else this.why = 'wall-tunnel';
       return;
     }

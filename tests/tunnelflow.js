@@ -9,7 +9,7 @@ const TICKS = +process.argv[2] || 60000, EVERY = +process.argv[3] || 2000;
 run(async (page) => {
   await page.newGame(process.env.SEED || 'bot67');
   await applyStage(page, 'hell');
-  const env = { PH: process.env.PH || 'chute', DOLL: !!process.env.DOLL, SWIFT: !!process.env.SWIFT, KILLAT: +process.env.KILLAT || 0, GOD: !!process.env.GOD };
+  const env = { PH: process.env.PH || 'chute', DOLL: !!process.env.DOLL, SWIFT: !!process.env.SWIFT, KILLAT: +process.env.KILLAT || 0, GOD: !!process.env.GOD, TRACE: +process.env.TRACE || 0 };
   console.log(await page.evaluate((env) => {
     const w = G.world, p = G.player;
     for (const k of ['king_slime', 'eye_of_cthulhu', 'tung_sahur']) w.flags[k] = true;
@@ -32,7 +32,11 @@ run(async (page) => {
     if (env.DOLL) invAdd(p.inv, 'guide_voodoo_doll', 1);
     if (env.SWIFT) invAdd(p.inv, 'cappuccino', 2);
     if (env.GOD) G.godMode = true;
+    window.__tr = env.TRACE;
     p.x = (sx + 1) * TS - p.w / 2; p.y = F * TS - p.h; p.vx = p.vy = 0; G.snapCamera && G.snapCamera();
+    Bot.houseFinished = true;
+    // only the Wall plan (and the fight/heal reflexes): the planner would wander off to build a house or chop
+    Bot.needDecision = () => false; Bot.decideAct = () => { if (!G.world.flags.wall_of_flesh) { Bot.task = Bot.taskHell(); Bot.act = { id: 'hell', kind: 'hell' }; } };
     Bot.task = null; window.__site = JSON.stringify(H);
     return 'site ' + window.__site;
   }, env));
@@ -44,11 +48,12 @@ run(async (page) => {
         if (!G.player.dead && (!Bot.task || Bot.task.done) && !Bot.uiBusy && !G.world.flags.wall_of_flesh) { Bot.task = Bot.taskHell(); Bot.taskAge = 1; }
         if (KILLAT && G.tick >= KILLAT && !window.__killed) { window.__killed = 1; G.player.kill('enemy', null); o.push('KILLED at ' + G.tick); }
         Bot.wantsDraw = false; G.update(); if (Bot.wantsDraw || G.tick % 1200 === 0) G.draw(); Input.endFrame();
+        if (window.__tr && G.tick % window.__tr === 0) { const p = G.player, h = p.hook, nv = Bot.nav, st = nv && nv.path && nv.path[nv.i]; o.push(G.tick + ' ' + Bot.feet() + ' v=' + p.vx.toFixed(1) + ',' + p.vy.toFixed(1) + ' gnd=' + p.onGround + ' rope=' + !!p.onRope + ' fall=' + (p.fallStart != null ? Math.round((p.y - p.fallStart) / TS) : '-') + ' hook=' + (h ? h.state : '-') + ' life=' + Math.round(p.life) + ' ' + Bot.why + ' step=' + (st ? st.move.t + '->' + st.x + ',' + st.y : '-') + ' S=' + !!Input.keys.s + ' wall=' + (G.npcs.find(n => n.type === 'wall_of_flesh') ? Math.round(G.npcs.find(n => n.type === 'wall_of_flesh').x / TS) + '/' + Math.round(G.npcs.find(n => n.type === 'wall_of_flesh').life) : '-') + ' ' + (Bot.dbg || '').slice(0, 50)); }
         if (G.world.flags.wall_of_flesh) break;
       }
       const p = G.player, nl = Bot.logLines.slice(window.__seen || 0); window.__seen = Bot.logLines.length;
       const wall = G.npcs.find(n => n.type === 'wall_of_flesh');
-      return { t: G.tick, goal: Bot.goal, feet: Bot.feet(), ph: Bot.hell && Bot.hell.ph, why: Bot.why, dbg: Bot.dbg, life: Math.round(p.life), wall: wall ? Math.round(wall.life) + ' x=' + Math.round(wall.x / TS) : '', won: G.world.flags.wall_of_flesh, logs: nl.slice(-8).concat(o), doll: Bot.count('guide_voodoo_doll'), deaths: Bot.deaths, swift: !!p.buffs.swiftness };
+      return { t: G.tick, goal: Bot.goal, feet: Bot.feet(), ph: Bot.hell && Bot.hell.ph, why: Bot.why, dbg: Bot.dbg, life: Math.round(p.life), wall: wall ? Math.round(wall.life) + ' x=' + Math.round(wall.x / TS) : '', won: G.world.flags.wall_of_flesh, logs: nl.slice(-8).concat(o.slice(-(window.__tr ? 1e6 : 8))), doll: Bot.count('guide_voodoo_doll'), deaths: Bot.deaths, swift: !!p.buffs.swiftness };
     }, [EVERY, env.KILLAT]);
     console.log(`t=${s.t} [${s.ph}] ${s.goal} | feet ${s.feet} life ${s.life} why ${s.why} dbg ${(s.dbg || '').slice(0, 60)} wall[${s.wall}] doll ${s.doll} swift ${s.swift} deaths ${s.deaths}`);
     for (const l of s.logs) console.log('   > ' + l);

@@ -106,7 +106,7 @@ Object.assign(Bot, {
     const c = this.committed;
     if (c && c.needs[id]) n += c.needs[id];
     if (this.hell && this.hell.x0 && ['stone_block', 'dirt_block', 'ash_block'].includes(id)) n += 0; // the runway itself is what blocks are for
-    if (id === 'wood_platform' && this.hell && this.hell.tunnel && !this.hell.tunnelDone) n += this.TUNNEL_LEN + 20;   // the Wall tunnel's floor
+    if (id === 'wood_platform' && this.hell && this.hell.tunnel && !this.hell.tunnelDone) n += this.tunnelPlatforms(this.hell) - 20;   // the Wall tunnel's floor
     return n;
   },
   // a hotbar/inventory slot holding a building block we can afford to spend (cheap blocks first, wood last)
