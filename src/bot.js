@@ -306,7 +306,9 @@ const Bot = {
       }
     }
     if (p.life < p.lifeMax * 0.4 && !p.buffs.potion_sickness && p.inv.some(s => s && ITEMS[s.id].heal && ITEMS[s.id].potion)) this.press('h');
-    if (p.lavaWet || p.buffs.on_fire) { this.jump(); }
+    // (lava only: burning from an Ohio Imp's fireball isn't helped by a jump, and in the Wall tunnel every hop took us out of
+    // its rows and into "going back to the tunnel" mode while the Wall closed in)
+    if (p.lavaWet) { this.jump(); }
     if (p.breath < 80) this.jump();
     // finish an in-progress hotbar move before doing anything else (it's a multi-click UI action)
     if (this.hb) { this.why = 'hotbar'; this.ensureHotbar(this.hb.from, this.hb.to); return; }
@@ -1926,6 +1928,10 @@ const Bot = {
           const prey = G.npcs.filter(m => m.type === 'eater_of_souls' && !m.dead && Math.abs(m.cx - P.cx) < 1600 && Math.abs(m.cy - P.cy) < 1000 && !(ign[m.uid] > G.tick))
             .sort((a, b) => dist(a.cx, a.cy, P.cx, P.cy) - dist(b.cx, b.cy, P.cx, P.cy))[0];
           self.goal = 'hunting Doomscrollers for chunks (' + self.count('rotten_chunk') + '/' + n.chunks + ')';
+          // no chunk for 8000 ticks (no Doomscrollers coming): leave it for a while (the waiting-for-night filler sent the bot back
+          // here all day long on evalA/B and the bosses waited)
+          if (this.chunkN !== self.count('rotten_chunk')) { this.chunkN = self.count('rotten_chunk'); this.chunkAt = G.tick; }
+          else if (G.tick - this.chunkAt > 8000) { self.log('no rotten chunks in 8000 ticks, trying something else'); (self.cooldowns = self.cooldowns || {}).brainrot = G.tick + 20000; this.done = true; return; }
           if (prey) {
             if (this.preyId !== prey.uid) { this.preyId = prey.uid; this.preySince = G.tick; }
             if (G.tick - this.preySince > 900) { ign[prey.uid] = G.tick + 3600; this.preyId = null; return; }
@@ -2132,6 +2138,7 @@ const Bot = {
     const w = G.world, p = this.p(), F = H.F, sx = H.sx, rc = sx + 1, [fx, fy] = this.feet(), nx = Nav.nodeOf(p)[0];
     const lo = Math.min(sx - 3, H.xEnd), hi = Math.max(sx + 5, H.xEnd);
     if (fy >= F - 2 && fy <= F - 1 && fx >= lo && fx <= hi) return true;
+    if (!p.onGround && !p.onRope && fy >= F - 6 && fy < F - 2 && fx >= lo && fx <= hi && !(Math.abs(nx - sx) <= 1)) return true;   // a hop inside it
     // in the trench under the platform floor (knocked or dropped through it): a jump goes back up through the platforms. The
     // way out used to be back along the tunnel to the rope, which in the Wall fight meant walking into the Wall
     if (fy > F - 1 && fy <= F + 4 && fx >= lo && fx <= hi && !(Math.abs(fx - rc) <= 1)) {
@@ -2642,6 +2649,13 @@ const Bot = {
             if (p.life < p.lifeMax * 0.7 && self.potionCount() > 0 && !p.buffs.potion_sickness) self.press('h');
             if (p.life >= p.lifeMax * 0.5) { self.goal = 'throwing the voodoo doll into lava'; self.ropeThrow(H); return; }
           }
+          // hurt on the rope: up into the tunnel (out of Ohio's spawn zone) to heal first. Hanging on at a quarter life, a Voodoo
+          // Demon dying over the lava summoned the Wall by itself and the fight began nearly dead (evalF)
+          if (p.life < p.lifeMax * 0.5) H.healUp = true; else if (p.life >= p.lifeMax * 0.85) H.healUp = false;
+          if (H.healUp) {
+            if (p.life < p.lifeMax * 0.6 && self.potionCount() > 0 && !p.buffs.potion_sickness) self.press('h');
+            const t = self.toTunnel(H); self.goal = 'healing in the Wall tunnel (' + Math.round(p.life) + '/' + p.lifeMax + ')'; if (t === true && Math.abs(fx - H.sx) < 20) self.hold(H.dir > 0 ? 'd' : 'a'); return;   // (a few steps in, away from the chute)
+          }
           if (!(doll && H.ropeFail && p.life >= p.lifeMax * 0.5 && self.readyForWall())) {
             self.goal = doll ? 'healing on the rope before the Wall (' + Math.round(p.life) + '/' + p.lifeMax + ')' : 'hunting Voodoo Ohio Demons from the rope';
             if (doll && p.life < p.lifeMax * 0.6 && self.potionCount() > 0 && !p.buffs.potion_sickness) self.press('h');
@@ -2705,7 +2719,9 @@ const Bot = {
         const t = this.hookTarget(dir); if (t) { this.aimWorld(t[0] * TS + 8, t[1] * TS + 15); this.press('e'); this.why = 'wall-hook'; return; }
       }
       // (a lead for its fast last third costs more damage than it saves: with a Zoomies buff we keep up; tests/tunnelwall.js)
-      const lo = 50, hi = 100;
+      // close (50-100 px) while healthy, the shots land best; hurt, back off to 90-150 (the Hungry's reach). tests/tunnelwall.js
+      // from 340 life: always close 4/6 within ~320 columns; always far 6/6 but 400-760 columns, longer than the tunnel
+      const hurt = p.life < p.lifeMax * (window.WALL_HURT || 0.6), lo = window.WALL_LO || (hurt ? 90 : 50), hi = window.WALL_HI || (hurt ? 150 : 100);
       if (gap < lo) { this.hold(dir > 0 ? 'd' : 'a'); this.why = 'wall-tunnel-back'; }
       // (closing in stops at the chute: past it is the nook, a dead end the bot once walked into to meet the Wall, and died there)
       else if (gap > hi && !(H && H.tunnelDone && -H.dir * (fx - (H.sx + 1)) >= 0)) { this.hold(dir > 0 ? 'a' : 'd'); this.why = 'wall-tunnel-close'; }
@@ -2732,7 +2748,7 @@ const Bot = {
     if (SDK.obs().inv.pick.power < 65) return false;
     return !(H && (H.tunnelDone || ['chute', 'ride', 'wait', 'ropeShop'].includes(H.ph)));
   },
-  readyForWall() { const p = this.p(); return p.lifeMax >= 200 && this.owns('the_67') && this.has('guide_voodoo_doll'); },
+  readyForWall() { const p = this.p(); return p.lifeMax >= BOSS_READY.wall_of_flesh.lifeMax && this.owns('the_67') && this.has('guide_voodoo_doll'); },
   // the deepest ore the plan still needs that the local scan doesn't know about (gold before silver before iron)
   // ore still missing for the iron anvil (if not placed) and The 67 (the boss gate): {ore id: count}
   expeditionNeeds() {

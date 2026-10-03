@@ -19,7 +19,7 @@ const BOSS_READY = {
   // 50-130k ticks in full runs, more than a lost fight and a second doll cost, so no defense gate; the Brainrot set
   // 8/8; the winners backed off 256-380 columns, so the tunnel is 400 long)
   // (pick 65: the Wall tunnel's rows are Ohiostone, minPick 65 — without the nightmare pickaxe there is no tunnel site at all)
-  wall_of_flesh: { lifeMax: 200, def: 0, dps: 80, potions: 0, pick: 65, arrows: 300 },
+  wall_of_flesh: { lifeMax: 300, def: 0, dps: 80, potions: 0, pick: 65, arrows: 300 },
 };
 // upgrade paths the plan walks (cheapest first)
 // No Ohio (hellstone) gear: the Wall is the last boss, The 67 + Brainrot armor clear its gate, and hellstone sits in lava under
@@ -172,7 +172,10 @@ Object.assign(Bot, {
       if (r.item && !byId('craft:' + r.item) && ![...ids].some(byId)) continue;
       if ([...ids].some(byId)) return { label: r.label + (r.item ? ' (' + r.item.replace(/_/g, ' ') + ')' : ''), boss: key, test: c => ids.has(c.id) };
     }
-    // waiting for night (the boss's own option is hidden by day): extra life makes every fight shorter
+    // waiting for night (the boss's own option is hidden by day): get ahead on the Wall in those hours (the nightmare pickaxe,
+    // then its elevator and tunnel: ~100k ticks that otherwise all come after the third boss), else extra life
+    if (key !== 'wall_of_flesh' && this.owns('the_67') && SDK.obs().inv.pick.power < 65 && byId('brainrot')) return { label: 'Wall prep: nightmare pickaxe (waiting for night)', boss: key, test: c => c.id === 'brainrot' || c.id === 'craft:nightmare_pickaxe' };
+    if (key !== 'wall_of_flesh' && byId('hell')) return { label: 'Wall prep (waiting for night)', boss: key, test: c => c.id === 'hell' };
     if (byId('crystal') && this.p().lifeMax < 400) return { label: 'more max life (waiting for night)', boss: key, test: c => c.id === 'crystal' };
     // nothing actionable: explore, or mine an ore the plan actually needs (not whatever copper is closest)
     const wanted = new Set(['gold_ore', 'silver_ore', 'iron_ore', 'copper_ore'].filter(ore => [this.committed && this.committed.item, 'the_67', S && S.item].some(id => id && !this.owns(id) && (this.rawNeeds(id, 1)[ore] || 0) > this.count(ore))));
