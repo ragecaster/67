@@ -1876,7 +1876,8 @@ const Bot = {
   brainrotWants() {
     const p = this.p(), out = [];
     if (!this.hasBetterPick(65)) out.push('nightmare_pickaxe');
-    if (p.calc.defense < BOSS_READY.wall_of_flesh.def) for (const id of this.SHADOW_SET) {
+    // (the set only with the chunks mostly in hand: 35 of them took longer than the rest of the run; iron is the plan)
+    if (p.calc.defense < BOSS_READY.wall_of_flesh.def && this.count('rotten_chunk') >= 25) for (const id of this.SHADOW_SET) {
       const cur = p.armor[{ head: 0, body: 1, legs: 2 }[ITEMS[id].armor]];
       if (!this.owns(id) && (cur ? ITEMS[cur.id].defense || 0 : 0) < ITEMS[id].defense) out.push(id);
     }

@@ -17,7 +17,8 @@ const BOSS_READY = {
   // life is what the runway fight costs, ~170 in tests/wallrun.js)
   // (tests/tunnelwall.js from the tunnel, 340 life, 10 potions: no armor won 4/6, an iron set (9 defense) 6/6, the Brainrot set
   // 8/8; the winners backed off 256-380 columns, so the tunnel is 400 long)
-  wall_of_flesh: { lifeMax: 200, def: 8, dps: 80, potions: 0, pick: 35, arrows: 300 },
+  // (pick 65: the Wall tunnel's rows are Ohiostone, minPick 65 — without the nightmare pickaxe there is no tunnel site at all)
+  wall_of_flesh: { lifeMax: 200, def: 8, dps: 80, potions: 0, pick: 65, arrows: 300 },
 };
 // upgrade paths the plan walks (cheapest first)
 // No Ohio (hellstone) gear: the Wall is the last boss, The 67 + Brainrot armor clear its gate, and hellstone sits in lava under
@@ -137,7 +138,8 @@ Object.assign(Bot, {
     // a Hook from a skeleton: the grappling hook first (9 iron bars). It climbs out of caves and shafts, crosses gaps and
     // carries us out of a boss's way far faster than any pillar or ladder
     if (this.owns('hook') && !this.owns('grappling_hook')) reqs.push({ label: 'grappling hook', item: 'grappling_hook' });
-    if (pick < R.pick) for (const id of PLAN_PICKS) if ((ITEMS[id] && ITEMS[id].pick || 0) > pick) reqs.push({ label: 'better pickaxe', item: id });
+    // (for the Wall's 65 only the nightmare pickaxe will do: a gold one on the way is ore and time thrown away)
+    if (pick < R.pick) for (const id of PLAN_PICKS) if ((ITEMS[id] && ITEMS[id].pick || 0) > pick && (R.pick < 65 || ITEMS[id].pick >= 65)) reqs.push({ label: 'better pickaxe', item: id });
     // the nightmare pickaxe (and shadow armor) needs rotten chunks + demonite from the Brainrot biome: that skill farms both
     if (pick < 65 && R.pick >= 65) reqs.push({ label: 'farm the Brainrot for a nightmare pickaxe', ids: new Set(['brainrot', 'craft:nightmare_pickaxe']) });
     const losing = dps < R.dps;
