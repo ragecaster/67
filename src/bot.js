@@ -384,7 +384,8 @@ const Bot = {
     if (this.wantPlatforms > G.tick - 60 && A.id !== 'craft:platforms' && this.count('wood') - this.reserved('wood') >= 13) return true;
     // a boss warning just came up: go to the sky arena now
     if (A.id.indexOf('await:') !== 0 && this.fightArena && this.fightArena.built && this.bossWarning() && G.tick % 30 === 0) return true;
-    if (['hell', 'boss', 'brainrot'].includes(A.kind)) return false;   // long trips stay committed (enemies and big hits still interrupt above)
+    // (Wall prep and the pickaxe farm ahead of time stay interruptible: a night boss or the plan's next step comes first)
+    if (['hell', 'boss', 'brainrot'].includes(A.kind) && !(A.kind !== 'boss' && !this.othersDown())) return false;   // long trips stay committed (enemies and big hits still interrupt above)
     // an aura crystal comes within 30 tiles while we're busy with something else: think again (teacherPick grabs it)
     // (once per crystal: a re-decision restarts the current task, so it must not fire again while we can't or won't go)
     if (A.kind !== 'crystal' && G.tick % 60 === 0 && p.lifeMax < 400 && p.life >= p.lifeMax * 0.6 && !(this.cooldowns && this.cooldowns.crystal > G.tick)) {
@@ -889,9 +890,10 @@ const Bot = {
       if (B.night && !G.isNight() && this.ticksToNight() > (this.has(B.item) ? this.nightLead() : 2500) && (this.has(B.item) || (key === 'eye_of_cthulhu' && this.count('lens') < 6))) continue;
       add('boss:' + key, 'boss', () => this.taskBoss(key), { ready: have / total, boss: key, value: BOSS_TYPES[key].life / 4000 });
     }
-    const bn = w.flags.eye_of_cthulhu && this.brainrotWants().length ? this.brainrotNeeds() : null;   // (materials in hand: the crafts take over)
+    // (from The 67 on, not only after the Eye: the nightmare pickaxe opens the Wall tunnel, which is dug ahead of time now)
+    const bn = (w.flags.eye_of_cthulhu || this.owns('the_67')) && this.brainrotWants().length ? this.brainrotNeeds() : null;   // (materials in hand: the crafts take over)
     if (bn && (this.count('rotten_chunk') < bn.chunks || this.count('demonite_ore') < bn.ore)) add('brainrot', 'brainrot', () => this.taskBrainrot(), { ready: Math.min(1, this.count('rotten_chunk') / 6) });
-    if (this.owns('the_67') && p.lifeMax >= 200 && !w.flags.wall_of_flesh) add('hell', 'hell', () => this.taskHell(), { ready: Math.min(1, p.lifeMax / 300) });
+    if (this.owns('the_67') && p.lifeMax >= 200 && !w.flags.wall_of_flesh && (this.othersDown() || this.hellPrepOk())) add('hell', 'hell', () => this.taskHell(), { ready: Math.min(1, p.lifeMax / 300) });
     add('explore', 'explore', () => this.taskExplore());
     // (not from down in Ohio once the hell elevator stands: the walk home pathfinds through the void and into the lava)
     if (this.base && !(this.hell && this.hell.R && this.feet()[1] > this.hell.R - 40)) add('home', 'home', () => this.taskGoHome(), { dist: Math.abs(this.base[0] - this.feet()[0]) + Math.abs(this.base[1] - this.feet()[1]) });
@@ -1453,9 +1455,13 @@ const Bot = {
   pickHouse2Site() {
     if (this.house2Spot) return this.house2Spot;
     const w = G.world, h = this.homeSpot || this.houseSpot;
-    for (const x0 of [h[0] + 14, h[0] - 15, h[0] + 18, h[0] - 19]) {
+    // (nearest first, out to ~60 tiles either side: the four spots beside home were all too lumpy on evalB, no Merchant
+    // ever came, and with no rope for the chute the Wall waited the rest of the run)
+    const xs = []; for (let d = 14; d <= 60; d++) xs.push(h[0] + d, h[0] - d - 1);
+    for (const x0 of xs) {
       const ys = []; for (let i = -3; i < 11; i++) ys.push(topSolid(w, x0 + i));
-      if (ys.some(y => y < 0) || Math.max(...ys) - Math.min(...ys) > 3 || Math.abs(ys[3] - h[1]) > 8) continue;
+      if (ys.some(y => y < 0) || Math.max(...ys) - Math.min(...ys) > 4 || Math.abs(ys[3] - h[1]) > 14) continue;
+      if (this.isProtected && [0, 5, 10].some(i => this.isProtected(x0 + i, ys[3] - 2))) continue;
       if (ys.some((y, i) => w.liq(x0 + i - 3, y - 1))) continue;
       return (this.house2Spot = [x0, Math.max(...ys.slice(3))]);
     }
@@ -2278,6 +2284,7 @@ const Bot = {
   // hung under the ceiling in column sx+2, down to just over the island. Going down is then a free fall with S held, a step to
   // the side under the ceiling, W to grab the rope (a grab forgets the fall), a slide and a short drop: also after a death.
   shaftOk(sx) {
+    if (this.badShafts && this.badShafts.some(b => Math.abs(b - sx) < 4)) return false;
     const w = G.world, pow = SDK.obs().inv.pick.power, b = w.backrooms, top = topSolid(w, sx);
     if (top < 0) return false;
     for (let y = top - 2; y < w.hellLayer + 2; y++) for (const x of [sx, sx + 1, sx + 2]) {
@@ -2471,7 +2478,11 @@ const Bot = {
           const r = self.digShaft(H);
           if (r === 'fail') {
             const [a, b] = self.feet(); let m = ''; for (let y = b - 2; y <= b + 3; y++) { m += ' | ' + y + ':'; for (let x = H.sx - 1; x <= H.sx + 2; x++) { const t = w.tile(x, y); m += t ? TILES[t].name.slice(0, 5) + (TILES[t].solid ? '#' : '') : '.'; m += ','; } }
-            self.log('hell elevator: stuck digging at ' + self.feet() + ' (shaft ' + H.sx + ', ' + self.dbg + ')' + m); H.sx = null; H.ph = 'prep'; return;
+            self.log('hell elevator: stuck digging at ' + self.feet() + ' (shaft ' + H.sx + ', ' + self.dbg + ')' + m);
+            // a new site (this column excluded) for the same tunnel plan: the old fallback was the open-air bridge over Ohio,
+            // where the demons killed the bot over and over (evalD: five deaths, no Wall)
+            if (H.tunnel) { (self.badShafts = self.badShafts || []).push(H.sx); for (const k of Object.keys(H)) delete H[k]; this.done = true; return; }
+            H.sx = null; H.ph = 'prep'; return;
           }
           if (r === true && H.tunnel) { H.ph = 'nook'; self.milestone('hell elevator dug'); self.log('hell elevator down to the tunnel row at ' + H.sx + '; tunnel ' + (dir > 0 ? 'east' : 'west') + ' to ' + H.xEnd); }
           else if (r === true) { H.ph = 'ride'; self.milestone('hell elevator dug'); self.log('hell elevator done: ' + H.sx + ', ceiling ' + H.R + ', rope to ' + H.ropeEnd); }
@@ -2489,6 +2500,7 @@ const Bot = {
           if (!keeper || invMoney(p.inv) < need * buyPrice('rope') || H.ropeBuys > 2) { self.log('no rope for the chute (' + (keeper ? 'no money' : 'no Merchant') + '): the Wall waits'); H.ropeBuys = 0; sub = null; (self.cooldowns = self.cooldowns || {}).hell = G.tick + 12000; this.done = true; return; }
           H.ropeBuys = (H.ropeBuys || 0) + 1; sub = self.taskBuy('rope', need, 40000); return;   // (the walk up the elevator is long)
         }
+        if (H.ph === 'chute' && !self.othersDown()) { self.log('Wall prep done: shaft and tunnel ready, the chute waits for the other bosses'); this.done = true; return; }
         if (H.ph === 'nook' || H.ph === 'tunnel' || H.ph === 'chute') {
           if (H.ph !== 'chute' || (!p.onRope && fy <= H.F - 1)) { const t = self.toTunnel(H); if (t !== true) { if (t === 'fail' && ++bridgeFails > 40) return fail(this, 'cannot get to the tunnel'); return; } }
           let r;
@@ -2696,6 +2708,14 @@ const Bot = {
   },
   // would a human attempt the Wall of Brainrot now? (it kills the Guide and chases you across the whole underworld)
   wallReadiness() { const p = this.p(); return 'life ' + p.lifeMax + ' def ' + p.calc.defense + ' the_67 ' + this.owns('the_67') + ' arrows ' + this.count('wooden_arrow'); },
+  othersDown() { const f = G.world.flags; return f.king_slime && f.eye_of_cthulhu && f.tung_sahur; },
+  // Wall prep ahead of time (the other bosses still alive): the hell elevator and the tunnel, dug in otherwise idle hours.
+  // They took ~100k ticks after the third boss, more than the 90 minutes had left
+  hellPrepOk() {
+    const H = this.hell;
+    if (SDK.obs().inv.pick.power < 65) return false;
+    return !(H && (H.tunnelDone || ['chute', 'ride', 'wait', 'ropeShop'].includes(H.ph)));
+  },
   readyForWall() { const p = this.p(); return p.lifeMax >= 200 && this.owns('the_67') && this.has('guide_voodoo_doll'); },
   // the deepest ore the plan still needs that the local scan doesn't know about (gold before silver before iron)
   // ore still missing for the iron anvil (if not placed) and The 67 (the boss gate): {ore id: count}

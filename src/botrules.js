@@ -15,10 +15,11 @@ const BOSS_READY = {
   // sword + Tung's bat; Brainrot/Ohio bows land far less): the gate is The 67, and demonite goes into armor and the pickaxe
   // (no pickaxe gate: a gold pickaxe digs everything on the way to Ohio but Ohiostone, which the planner routes around;
   // life is what the runway fight costs, ~170 in tests/wallrun.js)
-  // (tests/tunnelwall.js from the tunnel, 340 life, 10 potions: no armor won 4/6, an iron set (9 defense) 6/6, the Brainrot set
+  // (tests/tunnelwall.js from the tunnel, 340 life, 10 potions: no armor won 4/6, an iron set (9 defense) 6/6, but the set took
+  // 50-130k ticks in full runs, more than a lost fight and a second doll cost, so no defense gate; the Brainrot set
   // 8/8; the winners backed off 256-380 columns, so the tunnel is 400 long)
   // (pick 65: the Wall tunnel's rows are Ohiostone, minPick 65 — without the nightmare pickaxe there is no tunnel site at all)
-  wall_of_flesh: { lifeMax: 200, def: 8, dps: 80, potions: 0, pick: 65, arrows: 300 },
+  wall_of_flesh: { lifeMax: 200, def: 0, dps: 80, potions: 0, pick: 65, arrows: 300 },
 };
 // upgrade paths the plan walks (cheapest first)
 // No Ohio (hellstone) gear: the Wall is the last boss, The 67 + Brainrot armor clear its gate, and hellstone sits in lava under
@@ -232,6 +233,9 @@ Object.assign(Bot, {
         const plan0 = this.plan || this.planFrontier(cands);
         const under = cands.filter(c => (c.kind === 'ore' && plan0.test(c)) || (c.id === 'boss:tung_sahur' && !this.has('kentongan') && this.count('bone') < 7));
         if (under.length) return under.sort((a, b) => (a.dist || 0) - (b.dist || 0))[0].id;
+        // nothing else down here tonight: get ahead on the Wall (the nightmare pickaxe, then the elevator and the tunnel)
+        if (!this.othersDown() && has('brainrot') && SDK.obs().inv.pick.power < 65) return 'brainrot';
+        if (!this.othersDown() && has('hell')) return 'hell';
       }
     }
     // the owner's plan: wood, the house and the furnace by day on the surface; then one mining expedition underground (day or
@@ -248,13 +252,15 @@ Object.assign(Bot, {
     // nothing on the plan for the night: healthy, go do something underground (the caves are no worse at night) instead of
     // waiting in the house till morning (the owner watched it sit through the first night)
     if (has('shelter') && !nightBoss && !nightWork) {
-      if (life >= 0.6) { const alt = has('expedition') || cr || cands.filter(c => c.kind === 'ore' && c.dist != null).sort((a, b) => a.dist - b.dist)[0]; if (alt) return alt.id; }
+      if (life >= 0.6) { const alt = has('expedition') || cr || (!this.othersDown() && SDK.obs().inv.pick.power < 65 && has('brainrot')) || (!this.othersDown() && has('hell')) || cands.filter(c => c.kind === 'ore' && c.dist != null).sort((a, b) => a.dist - b.dist)[0]; if (alt) return alt.id; }
       return 'shelter';
     }
     if (nightWork && G.isNight()) on = on.filter(c => !['chop', 'build', 'explore'].includes(c.kind));
     if (on.some(c => c.id !== 'explore')) on = on.filter(c => c.id !== 'explore');
     if (on.length) return on.sort((a, b) => (b.ready == null ? 1 : b.ready) - (a.ready == null ? 1 : a.ready) || (a.dist || 0) - (b.dist || 0))[0].id;
     if (has('chop') && this.count('wood') < 60) return 'chop';
+    // nothing on the plan right now (waiting for night, nothing known to mine): get ahead on the Wall
+    if (!this.othersDown() && life >= 0.6) { if (SDK.obs().inv.pick.power < 65 && has('brainrot')) return 'brainrot'; if (has('hell')) return 'hell'; }
     return (has('explore') || cands[cands.length - 1]).id;
   },
 });
