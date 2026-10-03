@@ -1598,6 +1598,8 @@ const Bot = {
           }
           const s = SDK.slotOf(B.item);
           if (s > 9) { self.ensureHotbar(s); return; }
+          // a night boss summoned with dawn close leaves at daybreak, and takes the summon item with it: keep it for tomorrow
+          if (B.night && self.ticksToDawn() < 7000 && !this.summonedAt) { self.log('too close to dawn to summon ' + name + ', keeping it for tonight'); (self.cooldowns = self.cooldowns || {})['boss:' + key] = G.tick + self.ticksToDawn() + 1000; this.done = true; return; }
           if (this.summonedAt && G.tick - this.summonedAt < 300) return;   // the item takes a moment to be used and the boss to appear
           self.selectSlot(s); self.clickOnce(); this.summonedAt = G.tick; self.log('summoning ' + name); self.milestone('summoned ' + key.replace(/_/g, ' '));
           return;
@@ -1881,7 +1883,13 @@ const Bot = {
   onPerch() { if (!this.perch) return false; const [sx, sy] = this.perchSpot(), [fx, fy] = this.feet(); return Math.abs(fx - sx) <= 1 && fy >= sy - 4 && fy <= sy + 1; },
   // how long before dusk to set out for a night job on the surface: from deep caves the climb takes most of an evening
   // (the Eye was crafted at 150k and summoned at 234k: the bot was 300 rows down when night fell and climbed till dawn)
-  nightLead() { const [fx, fy] = this.feet(); return 2500 + Math.min(9000, Math.max(0, fy - topSolid(G.world, fx)) * 14); },
+  // (plus the walk back to the sky arena / home: caught 800 tiles away at dusk, the bot walked all night, summoned the Eye just
+  // before dawn and it left at daybreak with the summon item spent)
+  nightLead() {
+    const [fx, fy] = this.feet(), A = this.fightArena, hx = A ? A[0] : this.base ? this.base[0] : fx;
+    return 2500 + Math.min(9000, Math.max(0, fy - topSolid(G.world, fx)) * 14) + Math.min(12000, Math.abs(fx - hx) * 6);
+  },
+  ticksToDawn() { const w = G.world; return w.dayTime ? Infinity : NIGHT_LEN - w.time; },
   ticksToNight() { const w = G.world; return w.dayTime ? DAY_LEN - w.time : 0; },
   taskEye() { return this.taskBoss('eye_of_cthulhu'); },
   // what the Brainrot still owes us: the nightmare pickaxe (Ohio's hellstone), then the Brainrot armor set while we're below the
