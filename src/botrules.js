@@ -135,14 +135,14 @@ Object.assign(Bot, {
     const reqs = [];
     if (!this.houseValid() || !this.houseFinished) reqs.push({ label: 'build a house', ids: new Set(['build', 'chop']) });
     for (const st of ['furnace', 'iron_anvil']) if (!this.stationPlaced(st === 'iron_anvil' ? 'anvil' : st)) reqs.push({ label: 'place ' + st, item: st });
-    // a Hook from a skeleton: the grappling hook first (9 iron bars). It climbs out of caves and shafts, crosses gaps and
-    // carries us out of a boss's way far faster than any pillar or ladder
-    if (this.owns('hook') && !this.owns('grappling_hook')) reqs.push({ label: 'grappling hook', item: 'grappling_hook' });
-    // (for the Wall's 65 only the nightmare pickaxe will do: a gold one on the way is ore and time thrown away)
-    if (pick < R.pick) for (const id of PLAN_PICKS) if ((ITEMS[id] && ITEMS[id].pick || 0) > pick && (R.pick < 65 || ITEMS[id].pick >= 65)) reqs.push({ label: 'better pickaxe', item: id });
+    // (for the Wall's 65: gold (55, it mines demonite) then the nightmare pickaxe; the copper..silver ones on the way are thrown away)
+    if (pick < R.pick) for (const id of PLAN_PICKS) if ((ITEMS[id] && ITEMS[id].pick || 0) > pick && (R.pick < 65 || ITEMS[id].pick >= 55)) reqs.push({ label: 'better pickaxe', item: id });
     // the nightmare pickaxe (and shadow armor) needs rotten chunks + demonite from the Brainrot biome: that skill farms both
     if (pick < 65 && R.pick >= 65) reqs.push({ label: 'farm the Brainrot for a nightmare pickaxe', ids: new Set(['brainrot', 'craft:nightmare_pickaxe']) });
     const losing = dps < R.dps;
+    // a Hook from a skeleton: the grappling hook (9 iron bars) once The 67 is made (before it, it held up The 67 for ~30k
+    // ticks). It climbs out of caves and shafts, crosses gaps and carries us out of a boss's way far faster than a pillar
+    if (this.owns('hook') && !this.owns('grappling_hook') && this.owns('the_67')) reqs.push({ label: 'grappling hook', item: 'grappling_hook' });
     // The 67 is the only weapon that meets the boss gate: don't spend its silver/gold on a stopgap sword on the way
     if (losing && !this.owns('the_67')) reqs.push({ label: 'better weapon', item: 'the_67' });
     else if (losing) for (const id of PLAN_WEAPONS) { const it = ITEMS[id]; if (it && expectedHit(it) * 60 / Math.max(6, it.useAnim || it.useTime) > dps * 1.15) reqs.push({ label: 'better weapon', item: id }); }
@@ -204,8 +204,15 @@ Object.assign(Bot, {
     // resume a committed long trip (Ohio, a boss, the Brainrot) after a fight instead of re-planning from scratch
     const parkedTrip = this.parked && Object.keys(this.parked).find(id => /^(hell|boss:|brainrot)/.test(id) && has(id) && !this.parked[id].task.done);
     if (parkedTrip && life >= 0.6) return parkedTrip;
-    if (life < 0.6 && has('rest')) return 'rest';
-    if (life < 0.6 && has('home')) return 'home';              // don't sit around hurt in a cave: heal at the house
+    // and whatever a fight just interrupted (the latest one, still on offer): finish it rather than re-plan from scratch, which
+    // flipped between two goals in the caves (the owner saw it fidget back and forth)
+    const recent = this.parked && Object.entries(this.parked).filter(([id, v]) => has(id) && !v.task.done && G.tick - v.at < 3000).sort((a, b) => b[1].at - a[1].at)[0];
+    if (recent && life >= 0.5 && this.act && ACT_COMBAT.includes(this.act.kind)) return recent[0];
+    // (0.45, was 0.6: at night zombies came to the house and the bot sat in it resting for most of the night)
+    // (night on the surface stays at 0.6: Side-Eyes swarm a hurt bot outside, that's where 0.45 got it killed)
+    const restAt = G.isNight() && fyb < G.world.worldSurface + 5 ? 0.6 : 0.45;
+    if (life < restAt && has('rest')) return 'rest';
+    if (life < restAt && has('home')) return 'home';              // don't sit around hurt in a cave: heal at the house
     // an aura crystal close by is always worth the detour (+20 max life for a few hundred ticks): grab the ones we pass on the
     // way, instead of only once the plan reaches "more max life" (that used to be after The 67, walking past crystals all along)
     const cr = has('crystal');
@@ -214,6 +221,9 @@ Object.assign(Bot, {
     // back down for a crystal, and up again): the expedition, aura crystals, ore the plan wants, Tung's bones. Crafting at
     // home waits for morning, unless a night boss can be summoned right now (summon in hand, ready).
     const W = G.world, deep = fyb > W.worldSurface + 20;
+    // underground already (day or night): an aura crystal within ~90 tiles is worth the detour (+20 max life each; the owner
+    // watched it walk past them with "more max life" as its goal)
+    if (deep && cr && cr.dist <= 90 && p.lifeMax < 400 && life >= 0.5) return 'crystal';
     if (G.isNight() && deep && life >= 0.5) {
       const nightBossNow = cands.some(c => c.kind === 'boss' && BOSS_SUMMON[c.boss] && BOSS_SUMMON[c.boss].night && this.has(BOSS_SUMMON[c.boss].item) && this.bossReady(c.boss));
       if (!nightBossNow) {
@@ -226,7 +236,7 @@ Object.assign(Bot, {
     }
     // the owner's plan: wood, the house and the furnace by day on the surface; then one mining expedition underground (day or
     // night: the caves don't get worse at night, the surface does) for everything the anvil and The 67 need; then craft at home
-    if (has('expedition') && life >= 0.5 && (this.count('wood') >= 60 || G.isNight())) return 'expedition';
+    if (has('expedition') && life >= 0.5 && (this.count('wood') >= 100 || G.isNight())) return 'expedition';
     // then, by day, a house for the Merchant (rope for the hell elevator)
     if (has('house2') && !G.isNight() && life >= 0.6) return 'house2';
     const plan = this.plan || this.planFrontier(cands);
@@ -235,7 +245,12 @@ Object.assign(Bot, {
     let on = cands.filter(c => plan.test(c));
     // night only matters on the surface: mining, crystals and crafting at the base carry on (underground spawns don't change at night)
     const nightWork = on.some(c => ['ore', 'stone', 'crystal', 'craft', 'boss', 'brainrot'].includes(c.kind));
-    if (has('shelter') && !nightBoss && !nightWork) return 'shelter';
+    // nothing on the plan for the night: healthy, go do something underground (the caves are no worse at night) instead of
+    // waiting in the house till morning (the owner watched it sit through the first night)
+    if (has('shelter') && !nightBoss && !nightWork) {
+      if (life >= 0.6) { const alt = has('expedition') || cr || cands.filter(c => c.kind === 'ore' && c.dist != null).sort((a, b) => a.dist - b.dist)[0]; if (alt) return alt.id; }
+      return 'shelter';
+    }
     if (nightWork && G.isNight()) on = on.filter(c => !['chop', 'build', 'explore'].includes(c.kind));
     if (on.some(c => c.id !== 'explore')) on = on.filter(c => c.id !== 'explore');
     if (on.length) return on.sort((a, b) => (b.ready == null ? 1 : b.ready) - (a.ready == null ? 1 : a.ready) || (a.dist || 0) - (b.dist || 0))[0].id;

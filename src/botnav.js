@@ -125,7 +125,7 @@ const Nav = {
   },
 
   // ----- A* -----
-  plan(sx, sy, goalFn, heur, maxNodes = 16000) {
+  plan(sx, sy, goalFn, heur, maxNodes = 16000, Wt) {
     this.stamp = (this.stamp || 0) + 1;
     this.power = this.pickPower();
     this.blocks = Bot.spareBlocks(false) + Math.max(0, Bot.count('wood_platform') - Bot.PLATFORM_KEEP); // only blocks we may spend (not the ones reserved for the current goal); platforms pillar too
@@ -141,7 +141,7 @@ const Nav = {
     const heap = [];
     const hpush = (e) => { heap.push(e); let i = heap.length - 1; while (i > 0) { const pi = (i - 1) >> 1; if (heap[pi][0] <= e[0]) break; heap[i] = heap[pi]; i = pi; } heap[i] = e; };
     const hpop = () => { const top = heap[0], last = heap.pop(); if (heap.length) { let i = 0; const n = heap.length; for (;;) { let c = 2 * i + 1; if (c >= n) break; if (c + 1 < n && heap[c + 1][0] < heap[c][0]) c++; if (heap[c][0] >= last[0]) break; heap[i] = heap[c]; i = c; } heap[i] = last; } return top; };
-    const W = this.W || 2.5; // weighted A*: greedy toward the goal (dig costs make the plain heuristic far too optimistic)
+    const W = Wt || this.W || 2.5; // weighted A*: greedy toward the goal (dig costs make the plain heuristic far too optimistic)
     hpush([heur(sx, sy) * W, 0, sx, sy]);
     const open = heap;
     const hung = G.player.hook && G.player.hook.state === 'latched';   // hanging from the hook already: the next throw starts here
@@ -240,7 +240,7 @@ const Nav = {
         const [c, d] = this.space(x, y - 3, 0, 0);
         if (c < Infinity && inWater) push(x, y - 1, cost + 1.5 + c, k, { t: 'swim', digs: d });
         // a pillar can chain in open air: the block we placed for the previous step is what we stand on now
-        else if (c < Infinity && this.blocks > 3 && (this.standable(x, y) || mvA[k] === PILLAR)) push(x, y - 1, cost + 4 + c, k, { t: 'pillar', digs: d });
+        else if (c < Infinity && this.blocks > 3 && (this.standable(x, y) || mvA[k] === PILLAR)) push(x, y - 1, cost + (Nav.pillarCost || 4) + c, k, { t: 'pillar', digs: d });
       }
     }
     if (best == null) return null;
@@ -318,7 +318,7 @@ Object.assign(Bot, {
         this.lastPk = pk; this.lastPkAt = G.tick;
         if (this.pkRepeat > 3) { this.pkRepeat = 0; this.nav = { tx, ty, tol, at: G.tick, path: [], i: 0, cooldown: G.tick + 90 }; this.replanStorms = (this.replanStorms || 0) + 1; return false; }
         const t0 = performance.now();
-        const res = Nav.plan(nx, ny, gf, heur, budget);
+        const res = Nav.plan(nx, ny, gf, heur, budget, stage === 'ascend' ? (Nav.ascendW || 1.2) : undefined);
         this.lastBudget = { key: gkey, n: budget, partial: !res || !res.reached };
         const dt = performance.now() - t0; this.planMs = (this.planMs || 0) + dt; this.planCount = (this.planCount || 0) + 1;
         const gk = (this.goal || '').split(' ').slice(0, 2).join(' '), pb = this.planBy || (this.planBy = {}); (pb[gk] || (pb[gk] = [0, 0]))[0] += dt; pb[gk][1]++;
@@ -352,7 +352,11 @@ Object.assign(Bot, {
     if (found >= nav.i - 1 && found >= 0 && settled) { if (found + 1 > nav.i) nav.lastProgress = G.tick; nav.i = found + 1; }
     else if (found < 0 && settled && nav.i > 0) {
       const prev = nav.path[nav.i - 1];
-      if (!prev || Math.abs(p.cx - (prev.x * TS + 16)) > 20 || prev.y !== ny) { nav.offPath = (nav.offPath || 0) + 1; if (nav.offPath > 20) { nav.replan = true; nav.cooldown = 0; this.replanWhy = 'offpath'; return false; } }
+      if (!prev || Math.abs(p.cx - (prev.x * TS + 16)) > 20 || prev.y !== ny) { nav.offPath = (nav.offPath || 0) + 1; if (nav.offPath > 20) {
+        // knocked off a chain of hook moves (a throw in mid-air missed, back down where we started): don't plan the same chain
+        // again (evalD hooked up and fell back down for thousands of ticks, replanning the same pair of hooks)
+        const cur = nav.path[nav.i]; if (cur && cur.move.t === 'hook') Nav.ban(cur.x, cur.y, 'hook');
+        nav.replan = true; nav.cooldown = 0; this.replanWhy = 'offpath'; return false; } }
     }
     if (nav.i >= nav.path.length) { nav.replan = true; nav.cooldown = 0; this.replanWhy = 'path-end'; return false; }
     if (G.tick - nav.lastProgress > 300) { const bm = nav.path[nav.i]; if (bm) Nav.ban(bm.x, bm.y, bm.move.t); nav.replan = true; nav.cooldown = 0; this.replanWhy = 'no-progress'; this.stuckReplans = (this.stuckReplans || 0) + 1; if (this.stuckReplans > 5) { this.stuckReplans = 0; return 'fail'; } return false; }

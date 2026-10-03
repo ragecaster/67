@@ -412,9 +412,9 @@ const Bot = {
         this.setAct({ id: 'place:' + item, kind: 'reflex' }, this.taskCraftAtBase([item, 0, 'placeonly']), foes); return;
       }
       // wood runs everything (house, platforms, arenas, perches): by day on the surface, top it up before it runs out
-      if (this.houseFinished && !G.isNight() && this.count('wood') - this.reserved('wood') < 50 && this.feet()[1] < G.world.worldSurface + 5 && !(cd.wood > G.tick)) {
+      if (this.houseFinished && !G.isNight() && this.count('wood') - this.reserved('wood') < 100 && this.feet()[1] < G.world.worldSurface + 5 && !(cd.wood > G.tick)) {
         cd.wood = G.tick + 6000;
-        this.setAct({ id: 'chop:stock', kind: 'reflex' }, this.taskChop(this.count('wood') + 70), foes); return;
+        this.setAct({ id: 'chop:stock', kind: 'reflex' }, this.taskChop(this.count('wood') + 150), foes); return;   // (a big batch by day: it ran out at night and underground)
       }
       // keep ~30 wood platforms on hand (15 wood, crafted by hand on the spot): pillars, arenas, perches
       // (wood is never placed as a block: pillars and bridges use these, so turn spare wood into them as soon as we're low)
@@ -726,7 +726,7 @@ const Bot = {
       const p = self.p(); self.goal = 'resting (' + Math.round(p.life) + '/' + p.lifeMax + ')';
       // rest inside the house when there is one (flyers and hoppers can't get in), not on the doorstep
       if (self.houseValid() && self.base) { const r = self.moveTo(self.base[0], self.base[1], 1); if (r !== true && r !== 'fail') return; }
-      if (p.life >= p.lifeMax * 0.95 || G.tick - t0 > 4000) this.done = true;
+      if (p.life >= p.lifeMax * 0.75 || G.tick - t0 > 2500) this.done = true;   // (enough to work on: 95% kept it in the house half the night)
     } };
   },
   skillShelter() {
@@ -1913,6 +1913,14 @@ const Bot = {
           }
           const bx = w.biomes.rotX; self.moveTo(bx + (Math.floor(self.t / 900) % 2 ? 20 : -20), topSolid(w, bx) - 1, 4); return;
         }
+        // demonite is only in the Brainrot biome (worldgen: rotX +-80, cavern layer) and needs pickaxe power 55: no vein in sight,
+        // go there first (evalD mined around 400 columns away from it for 190k ticks)
+        if (SDK.obs().inv.pick.power < TILES[T.DEMONITE].minPick) { this.done = true; return; }
+        if (!(this.sub && !this.sub.done) && !self.nearestTile(t => t === T.DEMONITE, 90, 70)) {
+          const bx = w.biomes.rotX, [fx, fy] = self.feet();
+          if (!this.oreT || self.moveTo(this.oreT[0], this.oreT[1], 4) !== false) this.oreT = [clamp(bx + randInt(-70, 70), 50, w.w - 50), randInt(w.rockLayer, w.hellLayer - 60)];
+          self.goal = 'heading into the Brainrot for demonite'; return;
+        }
         if (!this.sub || this.sub.done) this.sub = self.taskMine('ore', () => self.count('demonite_ore') >= self.brainrotNeeds().ore, [T.DEMONITE]);
         this.sub.step();
       },
@@ -2697,7 +2705,7 @@ const Bot = {
     if (!this.owns('the_67')) items.push('the_67');
     if (this.owns('hook') && !this.owns('grappling_hook')) items.push('grappling_hook');
     // King's crown is 7 gold bars: dug on the same trip (it used to be a separate ~45k-tick hunt for gold later on)
-    if (!G.world.flags.king_slime && !this.has('slime_crown')) items.push('slime_crown');
+    if (!G.world.flags.king_slime && !this.has('slime_crown') && !this.noCrownExpedition) items.push('slime_crown');
     const acc = {}, out = {};
     for (const id of items) this.rawNeeds(id, 1, acc);
     for (const o of ['iron_ore', 'silver_ore', 'gold_ore']) { const n = (acc[o] || 0) - this.count(o); if (n > 0) out[o] = n; }

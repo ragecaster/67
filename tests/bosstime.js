@@ -14,6 +14,7 @@ run(async (page) => {
     const log0 = Bot.log.bind(Bot);
     Bot.log = (m) => { m = String(m); if (/MILESTONE|died of|defeated|summon|watchdog/.test(m)) W.events.push(G.tick + ' ' + m.slice(0, 110)); return log0(m); };
   }, [MODE, weights]);
+  if (process.env.PRE) await page.evaluate((src) => eval(src), process.env.PRE);   // PRE='Bot.x = 1': settings for an A/B run
   const CH = 12000;
   let r;
   for (let done = 0; done < TICKS; done += CH) {
