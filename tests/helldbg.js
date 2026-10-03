@@ -9,11 +9,15 @@ run(async (page) => {
   const RESTORE = process.env.RESTORE;
   if (RESTORE) { await restore(page, RESTORE); await page.evaluate(() => { window.__g = 1; }); }
   else await applyStage(page, 'hell');
+  if (process.env.PRE) await page.evaluate((src) => eval(src), process.env.PRE);   // PRE='...': hooks for debugging
+  if (process.env.MERCHANT) await page.evaluate(() => { window.__merchant = 1; });
+  // the Wall comes last in a real run: the other three are already dead (OTHERS=0 keeps them alive)
+  if (process.env.OTHERS !== '0') await page.evaluate(() => { for (const k of ['king_slime', 'eye_of_cthulhu', 'tung_sahur']) G.world.flags[k] = true; });   // MERCHANT=1: a Merchant and 30 silver (rope for the hell elevator)
   if (process.env.GIVE) await page.evaluate((ids) => { for (const id of ids) invAdd(G.player.inv, id, 1); }, process.env.GIVE.split(','));
   for (let done = 0; done < TICKS; done += EVERY) {
     const s = await page.evaluate((n) => {
       for (let i = 0; i < n; i++) {
-        if (Bot.milestones.house && !window.__g) { window.__g = 1; G.spawnNPC('guide', Bot.base[0] * TS, (Bot.base[1] - 2) * TS); }
+        if (Bot.milestones.house && !window.__g) { window.__g = 1; G.spawnNPC('guide', Bot.base[0] * TS, (Bot.base[1] - 2) * TS); if (window.__merchant) { const m = G.spawnNPC('merchant', (Bot.base[0] + 3) * TS, (Bot.base[1] - 2) * TS); m.name = 'Unc the Merchant'; m.shortName = 'Unc'; invAdd(G.player.inv, 'silver_coin', 30); } }
         if (Bot.milestones.house && (!Bot.task || Bot.task.done) && !Bot.uiBusy) { Bot.task = Bot.taskHell(); Bot.taskAge = 1; }
         Bot.wantsDraw = false; G.update(); if (Bot.wantsDraw || G.tick % 1200 === 0) G.draw(); Input.endFrame();
       }
@@ -21,7 +25,7 @@ run(async (page) => {
       const wall = G.npcs.find(n => n.type === 'wall_of_flesh');
       return { t: G.tick, goal: Bot.goal, feet: Bot.feet(), H: JSON.stringify(Bot.hell), dbg: Bot.dbg, why: Bot.why, life: Math.round(p.life), wall: wall ? Math.round(wall.life) + ' x=' + Math.round(wall.x / TS) : '', flags: G.world.flags.wall_of_flesh, logs: nl.filter(l => !/house finished/.test(l)).slice(-8), inv: ['guide_voodoo_doll', 'stone_block', 'ash_block'].map(i => i + ':' + Bot.count(i)).join(' '), dead: p.dead, deaths: Bot.deaths };
     }, EVERY);
-    if (process.env.CAPAT && !global.__cap && s.feet[1] >= +process.env.CAPAT && !s.dead) { global.__cap = 1; await capture(page, '/tmp/hell_at.json'); console.log('captured at depth ' + s.feet); }
+    if (process.env.CAPAT && !global.__cap && s.feet[1] >= +process.env.CAPAT && s.feet[1] <= +(process.env.CAPMAX || 99999) && !s.dead) { global.__cap = 1; await capture(page, '/tmp/hell_at.json'); console.log('captured at depth ' + s.feet); }
     if (!process.env.QUIET || (done / EVERY) % +process.env.QUIET === 0) console.log(`t=${s.t} ${s.goal} | feet ${s.feet} life ${s.life} why ${s.why} dbg ${s.dbg} wall[${s.wall}] ${s.inv} deaths ${s.deaths}\n   H=${s.H}`);
     if (!process.env.QUIET) for (const l of s.logs) console.log('   > ' + l);
     const ph = (JSON.parse(s.H || '{}') || {}).ph;

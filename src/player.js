@@ -137,7 +137,9 @@ class Player {
     if (Math.abs(this.vx) > maxSpd && !(fx.sprint && (L || Rt))) this.vx *= 0.97;
 
     // ---- jumping (jumpHeight 15 ticks at -5.01) ----
-    if ((this.hook && this.hook.state === 'latched') || this.onRope) { /* handled by hook / rope */ if (this.onRope) this.jumpHeld = J; }
+    // (keep jumpHeld in step while hooked too: it froze at whatever it was when the hook latched, and a fresh jump press could
+    // never let go of the hook again)
+    if ((this.hook && this.hook.state === 'latched') || this.onRope) { /* handled by hook / rope */ this.jumpHeld = J; }
     else {
       if (J) {
         if (this.jump > 0) {

@@ -62,6 +62,8 @@ Object.assign(Bot, {
     const [fx, fy] = this.feet(), dHome = Math.abs(fx - this.base[0]) + Math.abs(fy - this.base[1]);
     // in Ohio home is ~470 tiles up through lava: potions (the 40% reflex) are the way out, not running
     if (fy > G.world.hellLayer - 20 && this.potionCount() > 0) return null;
+    // with a hell elevator a death costs a respawn and a ride down; climbing ~450 rows home costs far more
+    if (this.hell && this.hell.R && fy > this.hell.R - 40) return null;
     if (p.life < p.lifeMax * 0.35 && dHome > 6) return 'flee';     // badly hurt away from home: go home, enemies or not
     return null;
   },
@@ -176,6 +178,9 @@ Object.assign(Bot, {
     }
     const life = p.life / p.lifeMax;
     if (has('heal') && life < 0.5) return 'heal';
+    // laying the Wall runway over Ohio: the hell task shoots while it builds, so a passing flyer doesn't stop the building
+    const Hb = this.hell, fyb = this.feet()[1];
+    if (Hb && Hb.ph === 'bridge' && fyb === Hb.y && has('hell') && life >= 0.35) return 'hell';
     if (foes.length && (dist(foes[0].cx, foes[0].cy, p.cx, p.cy) < 200 || this.fightOdds(foes[0]).ok)) {
       const n = foes[0], odds = this.fightOdds(n), d = dist(n.cx, n.cy, p.cx, p.cy);
       const fled = (this.fledFrom && this.fledFrom[n.uid]) || 0;

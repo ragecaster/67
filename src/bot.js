@@ -8,7 +8,7 @@ const Bot = {
 
   // ================= control surface (inputs only) =================
   resetInputs() {
-    for (const k of ['a', 'd', ' ', 's', 'Shift']) Input.keys[k] = false;
+    for (const k of ['a', 'd', ' ', 's', 'w', 'Shift']) Input.keys[k] = false;   // (w: the rope grab; held forever, it fought every slide)
     Input.mDown = false;
   },
   // Direct walking must not step off a cliff (the game hurts above 25 tiles of fall): A* moves that intend to drop set allowDrop
@@ -449,7 +449,9 @@ const Bot = {
     if (boss) return out;   // a boss fight is not the time to chop trees
     const [fx, fy] = this.feet(), home = this.base;
     const dHome = home ? Math.abs(fx - home[0]) + Math.abs(fy - home[1]) : 0;
-    if (foes.length && home && dHome > 6) out.push({ id: 'flee', kind: 'flee', dist: dHome, make: () => this.skillFlee() });
+    // (not down in Ohio once the hell elevator stands: dying costs a respawn and a ride, the climb home costs far more)
+    const deepHell = this.hell && this.hell.R && fy > this.hell.R - 40;
+    if (foes.length && home && dHome > 6 && !deepHell) out.push({ id: 'flee', kind: 'flee', dist: dHome, make: () => this.skillFlee() });
     if (!foes.length && p.life < p.lifeMax * 0.9 && (!home || dHome < 15)) out.push({ id: 'rest', kind: 'rest', make: () => this.skillRest() });   // rest at home only
     if (G.isNight() && this.houseValid() && fy < G.world.worldSurface + 5 && home && !(this.hell && this.hell.ph && this.hell.ph !== 'prep')) out.push({ id: 'shelter', kind: 'shelter', dist: dHome, make: () => this.skillShelter() });
     return out.concat(this.taskCandidates());
@@ -479,6 +481,14 @@ const Bot = {
     if (n.life < f.life) { f.life = n.life; f.since = G.tick; }
     if (G.tick - f.since > (n.boss ? 3600 : 480)) { this.ignore[n.uid] = G.tick + 3600; delete this.fights[n.uid]; this.log('ignoring ' + n.name + ' (unreachable)'); return; }
     if (G.tick % 600 === 0) for (const k in this.fights) if (!G.npcs.some(m => m.uid == k)) delete this.fights[k];
+    // on the hell elevator's rope or falling down its shaft: keep going down (shooting on the way); hanging there in a fight
+    // is how the demons that gather under Ohio's ceiling killed us over and over
+    const H = this.hell;
+    if (H && H.sx != null && (p.onRope || (!p.onGround && H.R && this.feet()[1] < H.R + 2 && Math.abs(Nav.nodeOf(p)[0] - H.sx) <= 2))) {
+      const r = this.rideDown(H);
+      if (r === true && H.ph === 'ride') H.ph = 'bridge';
+      this.ridingFight = true;
+    } else this.ridingFight = false;
     // weapon: the skill picks it (best damage that lands; ranged when kiting)
     let ws = kite ? this.rangedSlot() : -1;
     if (ws < 0) ws = this.bestWeaponSlot(n);
@@ -489,7 +499,11 @@ const Bot = {
     const dx = n.cx - p.cx, dy = n.cy - p.cy, d = Math.hypot(dx, dy), toward = dx > 0 ? 'd' : 'a', away = dx > 0 ? 'a' : 'd';
     const tile = () => this.moveTo(Math.floor(n.cx / TS), Math.floor((n.y + n.h - 1) / TS), 1);
     // on our arena strip or Tung's perch, small fry is shot from where we stand: chasing it walks us off the edge
-    const anchored = !melee && n.type !== 'eye_of_cthulhu' && n.type !== 'tung_sahur' && (this.onArena() || this.onPerch());
+    // (and in the hell elevator's shaft: walking off to chase means pathfinding back down to its bottom)
+    const inShaft = this.hell && this.hell.ph === 'shaft' && this.hell.sx != null && Math.abs(Nav.nodeOf(p)[0] - this.hell.sx) <= 1 && this.feet()[1] > (this.hell.top || 0);
+    // (and on the Wall runway / island over Ohio's lava: a chase or a kite step is how we went off the edge)
+    const Hh = this.hell, onRunway = !!(Hh && (Hh.ph === 'bridge' || Hh.ph === 'wait') && this.feet()[1] === Hh.y);
+    const anchored = this.ridingFight || (!melee && n.type !== 'eye_of_cthulhu' && n.type !== 'tung_sahur' && (this.onArena() || this.onPerch() || inShaft || onRunway));
     if (anchored) this.why = 'anchored';
     else if (n.type === 'tung_sahur' && !melee) this.tungDance(n, dx, d, toward, away);
     else if (n.type === 'eye_of_cthulhu' && !melee && !this.noEyeDance) this.eyeDance(n);
@@ -508,7 +522,10 @@ const Bot = {
     let ax = n.cx, ay = n.cy;
     if (!melee && it.use !== 'throw') { const sp = it.shootSpeed || 8, t = Math.min(45, d / sp); ax += (n.vx || 0) * t; ay += (n.vy || 0) * t - d * 0.015; }
     this.aimWorld(ax, ay);
-    if (melee ? d < 90 : d < 520) { if (it.autoReuse) this.clickHold(); else if (p.itemAnim === 0) this.clickOnce(); }
+    // Ohio: a Voodoo Demon killed over the lava drops its doll in and summons the Wall wherever we stand (it chased us through a
+    // dozen respawns): hold fire while one is in range over the lava; over the runway/island its doll just lands on the floor
+    const holdFire = this.voodooOverLava();
+    if (!holdFire && (melee ? d < 90 : d < 520)) { if (it.autoReuse) this.clickHold(); else if (p.itemAnim === 0) this.clickOnce(); }
     this.goal = (kite ? 'kiting ' : 'fighting ') + n.name;
   },
   // Tung Tung Tung Sahur only hurts up close (bat swing, 45) or with ground shockwaves after a leap and lobbed logs:
@@ -1866,7 +1883,12 @@ const Bot = {
             // standing column for the throw (the island edge the doll leaves from) and where the bridge ends
             const col = dir > 0 ? x + 1 : x1, xEnd = col + dir * Math.min(room - 10, 320);
             const cost = Math.abs(col - fx) + (y - w.hellLayer) * 0.5;
-            if (!best || cost < best.cost) best = { x0: x, x1, y, dir, col, xEnd, cost };
+            // the hell elevator comes down over the island's middle: the rope (column sx+2) must end over it
+            const sx = Math.round((x + x1) / 2) - 2;
+            // a runway both ways (~250 tiles each): a Wall summoned by a Voodoo Demon dying over lava comes from that side, so
+            // from the middle there is floor to retreat on whichever way it comes
+            // (one way: with voodooOverLava no stray doll summons the Wall from the wrong side, ours comes from the island's edge)
+            if (!best || cost < best.cost) { if (!this.shaftOk(sx)) continue; best = { x0: x, x1, y, dir, col, xEnd, cost, sx }; }
           }
         }
         x = x1 + 1;
@@ -1882,7 +1904,8 @@ const Bot = {
     for (const c of [fx + dir, fx + 2 * dir]) for (const r of [Y, Y - 1, Y - 2]) {
       if (w.solid(c, r)) { if (this.dig(c, r) === 'fail') return 'bad'; return false; }
     }
-    const need = [fx + dir, fx + 2 * dir, fx + 3 * dir].find(c => !w.solid(c, Y + 1));
+    // floor up to 5 ahead (a knock from an Ohio flyer carries ~4 tiles: the open end must be further than that)
+    const need = [1, 2, 3, 4, 5].map(k => fx + k * dir).find(c => !w.solid(c, Y + 1) && p.inReach(c, Y + 1));
     if (need !== undefined) {
       const bs = this.spareBlockSlot(false);
       if (bs < 0) return 'noblocks';
@@ -1892,7 +1915,7 @@ const Bot = {
       if (occ && !TILES[occ].solid && !TILES[occ].cut) { this.dig(need, Y + 1); return false; }
       this.aimTile(need, Y + 1);
       if (p.itemAnim === 0) this.clickOnce();
-      if (need === fx + dir) { if (Math.abs(p.vx) > 0.6) this.hold(p.vx > 0 ? 'a' : 'd'); return false; }   // no floor right ahead: wait for it
+      if (dir * (need - fx) <= 3) { if (Math.abs(p.vx) > 0.6) this.hold(p.vx > 0 ? 'a' : 'd'); return false; }   // less than 3 floor ahead: wait for it
     }
     this.hold(dir > 0 ? 'd' : 'a');
     return false;
@@ -1906,6 +1929,176 @@ const Bot = {
     this.hold(p.cx < mid ? 'd' : 'a');
     return false;
   },
+  // a Voodoo Demon near enough for The 67's homing shots (they find targets within ~400 px of where they fly), with no
+  // floor under it (only Ohio's void and its lava): killing it there summons the Wall. Not while the Wall is already up.
+  voodooOverLava() {
+    const w = G.world, p = this.p();
+    if (Math.floor(p.cy / TS) < w.hellLayer - 30 || G.npcs.some(n => n.type === 'wall_of_flesh')) return false;
+    return G.npcs.some(v => {
+      if (v.type !== 'voodoo_demon' || v.dead || dist(v.cx, v.cy, p.cx, p.cy) > 1200) return false;   // (a shot flies ~810 px and homes within 400 px of itself)
+      const x = Math.floor(v.cx / TS); for (let y = Math.floor((v.y + v.h) / TS); y < w.h - 1; y++) { if (w.solid(x, y)) return false; if (w.liq(x, y) > 100) return true; }
+      return true;
+    });
+  },
+  // ---- the grappling hook ----
+  // Swing along a ceiling (Ohio's, a cave's) in direction dir: hook the furthest ceiling tile up-ahead within the hook's
+  // ~18-tile reach, ride the pull (11 px/tick: faster than walking or the Wall), and near the hook point let go with a jump
+  // and throw the next one. No floor needed. One tick; returns false when there's no hook or nothing to hook onto.
+  // the furthest ceiling tile up-ahead in reach with a clear straight line to it (and a body's width beside it): the pull
+  // must not run into a bump of a lumpy ceiling on the way (it stalled there, re-hooking the same spot)
+  hookTarget(dir) {
+    const w = G.world, p = this.p(), fx = Math.floor(p.cx / TS), fy = Math.floor(p.cy / TS);
+    for (let k = 16; k >= 2; k--) {
+      const x = fx + dir * k;
+      for (let y = fy - 1; y >= fy - 16; y--) if (w.solid(x, y) || w.isPlatform(x, y)) {
+        const tx = x * TS + 8, ty = y * TS + 18;
+        if (dist(tx, ty, p.cx, p.cy) < 290 && [-8, 0, 8].every(o => lineOfSight(w, p.cx + o, p.cy - 6, tx + o, ty))) return [x, y];
+        break;
+      }
+    }
+    return null;
+  },
+  hookTravel(dir) {
+    const p = this.p(), h = p.hook;
+    if (!p.hasHook()) return false;
+    this.why = 'hook-swing ' + (dir > 0 ? 'E' : 'W');
+    if (h && h.state === 'fly') return true;
+    if (h && h.state === 'latched') {
+      const ahead = dir * (h.x - p.cx), d = dist(h.x, h.y, p.cx, p.cy);
+      // the pull stalls on a bump of the ceiling: let go too
+      this.hookStall = this.hookD != null && this.hookD - d < 0.5 ? (this.hookStall || 0) + 1 : 0; this.hookD = d;
+      if (d < 44 || ahead < 24 || this.hookStall > 6) { if (!p.jumpHeld) Input.keys[' '] = true; this.hookD = null; }   // let go (jump), throw the next one
+      return true;
+    }
+    const t = this.hookTarget(dir);
+    if (!t) return false;
+    this.hookD = null;
+    this.aimWorld(t[0] * TS + 8, t[1] * TS + 15);
+    this.press('e');
+    return true;
+  },
+  // ---- the hell elevator ----
+  // A straight 2-wide shaft (columns sx, sx+1) from the surface to Ohio's ceiling, right over the island, with a wood-platform
+  // rung every 15 rows (catch points: hold S to drop past them, the navigator stops on one before a fall can hurt) and a rope
+  // hung under the ceiling in column sx+2, down to just over the island. Going down is then a free fall with S held, a step to
+  // the side under the ceiling, W to grab the rope (a grab forgets the fall), a slide and a short drop: also after a death.
+  shaftOk(sx) {
+    const w = G.world, pow = SDK.obs().inv.pick.power, b = w.backrooms, top = topSolid(w, sx);
+    if (top < 0) return false;
+    for (let y = top - 2; y < w.hellLayer + 2; y++) for (const x of [sx, sx + 1, sx + 2]) {
+      const t = w.tile(x, y), td = TILES[t];
+      if (td && td.solid && (td.unbreakable || td.multi || td.chest || td.minPick > pow) && x !== sx + 2) return false;
+      if (td && td.noclip) return false;
+      if (b && x >= b.x0 - 3 && x <= b.x0 + b.w + 3 && y >= b.y0 - 3 && y <= b.y0 + b.h + 3) return false;
+      if (this.isProtected(x, y) || this.inYard(x, y)) return false;
+    }
+    return true;
+  },
+  lavaAt(x, y) { const w = G.world; return w.liq(x, y) > 20 && w.ltype[w.idx(x, y)] === 1; },
+  // one tick of digging the shaft: true once the rope is hung (or there's none to hang) and the ceiling is open
+  digShaft(H) {
+    const w = G.world, p = this.p(), sx = H.sx, [fx, fy] = this.feet(), nx = Nav.nodeOf(p)[0];
+    if (!H.top) H.top = topSolid(w, sx);
+    // into the shaft: the bottom dug so far (or its mouth). Inside it, no pathfinding: line up by hand, drop through rungs
+    const inside = Math.abs(nx - sx) <= 1 && fy >= H.top - 2 && fy <= (H.bot || H.top) + 1;
+    if (inside && !p.onGround) { Input.keys.s = true; return false; }   // falling down it (S held: one tick of S left us on the rung)
+    if (inside && nx !== sx) { Input.keys[nx < sx ? 'd' : 'a'] = true; return false; }
+    if (!(nx === sx && fy >= H.top - 2 && p.onGround)) {
+      const by = H.bot || H.top - 1;
+      if (Math.abs(nx - sx) <= 1 && Math.abs(fy - by) <= 1 && p.onGround) { Input.keys[nx < sx ? 'd' : 'a'] = true; return false; }
+      const r = this.moveTo(sx, by, 0); if (r === 'fail') { H.fails = (H.fails || 0) + 1; if (H.fails > 20) return 'fail'; }
+      this.goal = 'heading to the hell elevator'; return false;
+    }
+    if (H.bot !== fy) H.digFails = 0;   // (failures count per row: a few misses over 400 rows used to add up to giving up)
+    H.bot = fy;
+    { const cell = (x, y) => { const t = w.tile(x, y); return t ? TILES[t].name.slice(0, 4) + (TILES[t].solid ? '#' : '') : '.'; };
+      this.dbg = 'shaft node=' + nx + ',' + fy + ' gnd=' + p.onGround + ' below=' + [sx - 1, sx, sx + 1, sx + 2].map(x => cell(x, fy + 1)).join('|') + ' feet=' + [sx, sx + 1].map(x => cell(x, fy)).join('|') + ' rung' + ((fy - 3 - H.top) % 15); }
+    this.goal = 'digging the hell elevator (' + (w.hellLayer - fy) + ' rows to Ohio)';
+    // lava next to the shaft (or in it) within reach: plug it with a block first (a solid block deletes the liquid)
+    for (let y = fy - 2; y <= fy + 3; y++) for (const x of [sx - 1, sx, sx + 1, sx + 2]) {
+      if (!this.lavaAt(x, y) || w.tile(x, y)) continue;
+      const bs = this.spareBlockSlot(false); if (bs < 0) break;
+      if (bs > 9) { this.ensureHotbar(bs); return false; }
+      this.selectSlot(bs); this.aimTile(x, y); if (p.itemAnim === 0) this.clickOnce(); return false;
+    }
+    // a rung every 15 rows, laid just over our head (one in the feet row made the block under it unminable)
+    const ry = fy - 3;
+    if ((ry - H.top) % 15 === 0 && ry > H.top + 3 && (w.tile(sx, ry) !== T.PLATFORM || w.tile(sx + 1, ry) !== T.PLATFORM) && this.count('wood_platform') > 2 && !(H.rungTries > 60)) {
+      const x = w.tile(sx, ry) !== T.PLATFORM ? sx : sx + 1, s0 = this.slotOf(it => it.id === 'wood_platform');
+      if (s0 > 9) { this.ensureHotbar(s0); return false; }
+      this.selectSlot(s0); this.aimTile(x, ry); if (p.itemAnim === 0) this.clickOnce(); H.rungTries = (H.rungTries || 0) + 1; return false;
+    }
+    H.rungTries = 0;
+    const r = fy + 1, open = (x, y) => !w.solid(x, y);
+    // the ceiling: the row under us is the last solid one over Ohio's void
+    // (the void proper: a clear straight drop from under this row all the way down to the island, in the shaft's columns and
+    // on at least one side for the rope; a pocket in the rock above it once passed for the ceiling and ended the rope there)
+    const dropClear = (x) => { for (let y = r + 1; y < H.y; y++) if (!open(x, y)) return false; return true; };
+    if (!H.R && r > w.hellLayer - 30 && dropClear(sx) && dropClear(sx + 1) && (dropClear(sx + 2) || dropClear(sx - 1))) H.R = r;
+    if (H.R && r === H.R) {
+      // the rope goes beside the hole, on whichever side has room under the ceiling: we hang from it 20 px wide, centred on its
+      // column, so the column beyond it must be open too (a rock there held us 3 rows down the rope while demons gathered)
+      if (H.rs == null) {
+        const solidAt = (x) => { let n = 0; for (let y = H.R + 1; y < H.y; y++) if (w.solid(x, y)) n++; return n; };
+        H.rs = solidAt(sx + 2) + solidAt(sx + 3) <= solidAt(sx - 1) + solidAt(sx - 2) ? 1 : -1;
+      }
+      const rc = H.rs > 0 ? sx + 2 : sx - 1, oc = rc + H.rs;
+      H.rc = rc;
+      for (let y = H.R + 1; y <= H.R + 5; y++) for (const x of [rc, oc]) if (w.solid(x, y) && p.inReach(x, y)) { this.dig(x, y); return false; }
+      // the rope's anchor: the ceiling cell in its column stays (or becomes) solid; the rope hangs under it to over the island
+      if (!w.solid(rc, H.R)) { const bs = this.spareBlockSlot(false); if (bs >= 0) { if (bs > 9) { this.ensureHotbar(bs); return false; } this.selectSlot(bs); this.aimTile(rc, H.R); if (p.itemAnim === 0) this.clickOnce(); return false; } }
+      let bot = H.R + 1; while (w.tile(rc, bot) === T.ROPE) bot++;
+      if (this.has('rope') && bot < H.y && !(H.ropeTries > 400)) {
+        const s0 = this.slotOf(it => it.id === 'rope'); if (s0 > 9) { this.ensureHotbar(s0); return false; }
+        this.selectSlot(s0); this.aimTile(rc, H.R + 1); if (p.itemAnim === 0) this.clickOnce();   // clicking the rope adds to its bottom
+        H.ropeTries = (H.ropeTries || 0) + 1; this.goal = 'hanging the rope into Ohio (' + (bot - H.R - 1) + '/' + (H.y - H.R) + ')'; return false;
+      }
+      H.ropeEnd = bot - 1;
+    }
+    // objects in the shaft (a pot, a torch...): break them first (the game won't mine a block an object stands on)
+    for (let y = fy - 2; y <= r; y++) for (const x of [sx, sx + 1]) { const t = w.tile(x, y), td = TILES[t]; if (t && !td.solid && t !== T.PLATFORM && t !== T.ROPE && (!td.cut || td.multi)) { this.dig(x, y); return false; } }   // (pots are 'cut' and 'multi')
+    // standing on a rung (ours, or a ladder rung from climbing back in): drop through it to the bottom
+    if (!w.solid(sx, r) && !w.solid(sx + 1, r) && (w.tile(sx, r) === T.PLATFORM || w.tile(sx + 1, r) === T.PLATFORM)) { Input.keys.s = true; return false; }
+    for (const x of [sx, sx + 1]) if (w.solid(x, r)) { if (this.dig(x, r) === 'fail') { H.digFails = (H.digFails || 0) + 1; if (H.digFails > 200) return 'fail'; } return false; }
+    if (H.R && r > H.R) return true;   // through the ceiling
+    return false;
+  },
+  // one tick of the ride down (from anywhere above the island): true once standing on the island
+  rideDown(H) {
+    const w = G.world, p = this.p(), sx = H.sx, [fx, fy] = this.feet(), nx = Nav.nodeOf(p)[0];
+    if (fy >= H.y - 1 && p.onGround && Math.abs(fx - (sx + 2)) < 30) return true;
+    this.goal = 'riding the hell elevator down';
+    this.dbg = 'ride node=' + nx + ',' + fy + ' sx=' + sx + ' top=' + H.top + ' R=' + H.R + ' gnd=' + p.onGround + ' rope=' + !!p.onRope + (this.nav ? ' nav->' + this.nav.tx + ',' + this.nav.ty + ' ' + this.replanWhy : '');
+    if (p.onRope) {   // slide to the rope's end, then step off onto the island
+      if (fy < (H.ropeEnd || H.y) - 1) {
+        Input.keys.s = true;
+        // sliding stopped short of the rope's end: rock under our 20-px-wide body (the void's ceiling is lumpy): dig it out
+        // (by position: S holds the rope's slide speed at 4 even when we can't move)
+        if (this.ropeY === p.y) { this.ropeStuck = (this.ropeStuck || 0) + 1; if (this.ropeStuck > 15) { const c = Math.floor(p.cx / TS); for (const x of [c, c - 1, c + 1]) if (w.solid(x, fy + 1)) { this.dig(x, fy + 1); break; } } }
+        else this.ropeStuck = 0;
+        this.ropeY = p.y;
+      } else Input.keys[' '] = true;
+      return false;
+    }
+    // (only in the shaft or under the ceiling: a hop on the walk over to the shaft is the navigator's business)
+    const inShaftCol = Math.abs(nx - sx) <= 3 && fy >= H.top - 2;
+    if (!p.onGround && inShaftCol) {
+      if (fy <= (H.R || 0)) { Input.keys.s = true; if (Math.abs(p.cx - (sx * TS + 16)) > 3) Input.keys[p.cx < sx * TS + 16 ? 'd' : 'a'] = true; }   // in the shaft: S through the rungs
+      else if (H.ropeEnd) { const rc = H.rc != null ? H.rc : sx + 2; Input.keys[rc > sx ? 'd' : 'a'] = true; if (Math.floor(p.cx / TS) === rc) Input.keys.w = true; }   // under the ceiling: onto the rope and grab it
+      return false;
+    }
+    // standing somewhere: in the shaft (on a rung, a ledge, the bottom) line up and drop on; else walk to its mouth and step in
+    if (Math.abs(nx - sx) <= 1 && fy >= H.top - 2 && fy < (H.R || w.hellLayer)) {
+      if (nx !== sx) { Input.keys[nx < sx ? 'd' : 'a'] = true; return false; }
+      Input.keys.s = true;
+      if (w.solid(sx, fy + 1) || w.solid(sx + 1, fy + 1)) { const x = w.solid(sx, fy + 1) ? sx : sx + 1; this.dig(x, fy + 1); return 'blocked'; }   // something fell in: dig it
+      return false;
+    }
+    // at the mouth: walk in (straight keys: the cliff guard would stop us at the edge we mean to drop off)
+    if (Math.abs(nx - sx) <= 5 && Math.abs(fy - (H.top - 1)) <= 3) { Input.keys[nx < sx ? 'd' : 'a'] = true; return false; }
+    const r = this.moveTo(sx - 3, H.top - 1, 2); if (r === 'fail') return 'fail';
+    return false;
+  },
   taskHell() {
     const self = this, w = G.world;
     this.goal = 'going to Ohio';
@@ -1916,8 +2109,9 @@ const Bot = {
       step() {
         const p = self.p(), [fx, fy] = self.feet();
         if (w.flags.wall_of_flesh) { this.done = true; return; }
-        // Ohio chews through ~0.1 life/tick and only 0.2/s regenerates while being hit: work in sorties, heal at home in between
-        if (p.life < p.lifeMax * 0.5 && H.ph !== 'prep') H.healing = true;
+        // (with the hell elevator a death costs a respawn and a short ride, so no climbing home to heal: potions and regen)
+        if (H.sx != null) H.healing = false;
+        else if (p.life < p.lifeMax * 0.5 && H.ph !== 'prep') H.healing = true;
         if (H.healing) {
           if (p.life >= p.lifeMax * 0.92) H.healing = false;
           else {
@@ -1929,10 +2123,40 @@ const Bot = {
         if (!H.x0) {
           const isl = self.findIsland(fx);
           if (!isl) return fail(this, 'no island');
-          Object.assign(H, isl, { ph: 'prep' });
+          Object.assign(H, isl, { ph: isl.sx != null ? 'shop' : 'prep' });
           self.log('Ohio plan: island ' + isl.x0 + '-' + isl.x1 + '@' + isl.y + ', stand at ' + isl.col + ', bridge ' + (isl.dir > 0 ? 'east' : 'west') + ' to ' + isl.xEnd);
         }
         const dir = H.dir;
+        // 0) the hell elevator: rope from the Merchant (if he's here and we can pay), the shaft, then the ride down
+        if (H.ph === 'shop') {
+          const need = Math.max(0, H.y - w.hellLayer + 12 - self.count('rope')), money = invMoney(p.inv);
+          const keeper = G.npcs.some(m => m.type === 'merchant' && !m.dead);
+          if (need > 0 && keeper && money >= need * buyPrice('rope') && !(this.bought > 1)) { this.bought = (this.bought || 0) + 1; sub = self.taskBuy('rope', need); H.ph = 'buying'; }
+          else H.ph = 'potions';
+        }
+        if (H.ph === 'buying') { if (sub && !sub.done) { sub.step(); return; } sub = null; H.ph = 'potions'; }
+        // healing potions with what's left (Ohio's flyers chew through ~0.1 life/tick; the heal skill drinks one below 70%)
+        if (H.ph === 'shop' || H.ph === 'potions') {
+          const keeper = G.npcs.some(m => m.type === 'merchant' && !m.dead), want = Math.min(15 - self.potionCount(), Math.floor((invMoney(p.inv) - 200) / buyPrice('lesser_healing_potion')));
+          if (keeper && want >= 3 && !(this.potBought > 1)) { this.potBought = (this.potBought || 0) + 1; sub = self.taskBuy('lesser_healing_potion', want); H.ph = 'buyingPots'; }
+          else H.ph = 'shaft';
+        }
+        if (H.ph === 'buyingPots') { if (sub && !sub.done) { sub.step(); return; } sub = null; H.ph = 'shaft'; }
+        if (H.ph === 'shaft') {
+          const r = self.digShaft(H);
+          if (r === 'fail') {
+            const [a, b] = self.feet(); let m = ''; for (let y = b - 2; y <= b + 3; y++) { m += ' | ' + y + ':'; for (let x = H.sx - 1; x <= H.sx + 2; x++) { const t = w.tile(x, y); m += t ? TILES[t].name.slice(0, 5) + (TILES[t].solid ? '#' : '') : '.'; m += ','; } }
+            self.log('hell elevator: stuck digging at ' + self.feet() + ' (shaft ' + H.sx + ', ' + self.dbg + ')' + m); H.sx = null; H.ph = 'prep'; return;
+          }
+          if (r === true) { H.ph = 'ride'; self.milestone('hell elevator dug'); self.log('hell elevator done: ' + H.sx + ', ceiling ' + H.R + ', rope to ' + H.ropeEnd); }
+          return;
+        }
+        if (H.ph === 'ride') {
+          const r = self.rideDown(H);
+          if (r === true) { H.ph = 'bridge'; self.milestone('reached Ohio'); }
+          else if (r === 'fail') { this.rideFails = (this.rideFails || 0) + 1; if (this.rideFails > 600) { self.log('hell elevator ride failed, walking down'); H.ph = 'descend'; } }
+          return;
+        }
         // 1) enough blocks for the whole runway
         if (H.ph === 'prep') {
           if (self.blockCount() >= Math.abs(H.xEnd - H.col) + 60) H.ph = 'descend';
@@ -1961,18 +2185,50 @@ const Bot = {
             return;
           }
         }
+        // respawned up top during the runway or the doll hunt: ride the elevator back down
+        if ((H.ph === 'bridge' || H.ph === 'wait') && H.R && fy < H.R - 2) { H.ph = 'ride'; return; }
         // 3) the runway: hop along in 24-tile legs, the nav lays a block under the front foot wherever there is none
         if (H.ph === 'bridge') {
           self.goal = 'bridging the Wall runway';
-          if (dir * (fx - H.xEnd) >= -2) { H.ph = 'wait'; self.milestone('Wall runway built'); }
+          // two legs when the plan has both ends: west first, then back east over it and on
+          if (H.xW != null && !H.westDone) { if (fx <= H.xW + 2) { H.westDone = true; self.log('west runway done at ' + fx); } }
+          const legDir = H.xW != null && !H.westDone ? -1 : (H.xW != null ? 1 : dir), legEnd = H.xW != null && !H.westDone ? H.xW : (H.xW != null ? H.xE : H.xEnd);
+          if (H.xW != null ? (H.westDone && fx >= H.xE - 2) : dir * (fx - H.xEnd) >= -2) { H.ph = 'wait'; self.milestone('Wall runway built'); }
           else {
             if (self.blockCount() < 30) { sub = sub || self.taskMine('stone', () => self.blockCount() >= 200); sub.step(); if (sub.done) sub = null; self.goal = 'mining blocks for the Wall bridge'; return; }
+            if (H.R && fy < H.R) { H.ph = 'ride'; return; }   // respawned up top: ride back down
             if (Math.abs(fy - H.y) > 6) { self.goal = 'going back down to the Wall runway'; const r0 = self.moveTo(H.col, H.y, 1); if (r0 === 'fail' && ++bridgeFails > 40) return fail(this, 'cannot get back to the island'); return; }
-            const r = self.lineStep(dir, H.y, H.xEnd);
+            // build and shoot at once (Ohio is never empty: a fight that stops the building is a runway that never ends):
+            // a swing of The 67 at the nearest flyer whenever it's ready and none of them is a Voodoo Demon over the lava
+            const foe = self.foesNear().filter(n => !n.boss && dist(n.cx, n.cy, p.cx, p.cy) < 420)[0], ws = self.slotOf(it => it.id === 'the_67');
+            if (foe && ws >= 0 && ws <= 9 && p.itemAnim === 0 && !self.voodooOverLava() && (this.shotT = (this.shotT || 0) + 1) % 2) {
+              self.selectSlot(ws); self.aimWorld(foe.cx, foe.cy); self.clickOnce(); self.why = 'bridge-shoot'; return;
+            }
+            const r = self.lineStep(legDir, H.y, legEnd);
             if (r === 'noblocks') { sub = sub || self.taskMine('stone', () => self.blockCount() >= 200); sub.step(); if (sub.done) sub = null; self.goal = 'mining blocks for the Wall bridge'; return; }
             if (r === 'off' || r === 'bad') { if (++bridgeFails > 40) return fail(this, 'runway ' + r + ' at ' + fx); }
             return;
           }
+        }
+        // 4) with a runway both ways: wait in the middle (a Voodoo Demon dying over the lava summons the Wall soon enough); if none
+        // comes for a while, carry a doll to the west end and throw it in from there (the Wall then comes from the west)
+        if (H.xW != null) {
+          if (!H.waitSince) H.waitSince = G.tick;
+          if (self.has('guide_voodoo_doll') && G.tick - H.waitSince > 9000) {
+            if (!G.npcs.some(n => n.type === 'guide' && !n.dead)) { H.waitSince = G.tick; return; }
+            self.goal = 'throwing the voodoo doll off the west end';
+            const a = self.alignAt(H.xW + 1, H.y); if (a === 'fail') { H.waitSince = G.tick; return; }
+            if (a !== true) return;
+            const s0 = self.slotOf(it => it.id === 'guide_voodoo_doll'); if (s0 > 9) { self.ensureHotbar(s0); return; }
+            self.selectSlot(s0); self.aimWorld(p.cx - 100, p.cy);
+            if (p.dir !== -1) { Input.keys.a = true; return; }
+            if (++throwTries > 3) { self.press('t'); self.log('threw the voodoo doll off the west end at ' + fx); throwTries = 0; H.waitSince = G.tick; }
+            return;
+          }
+          self.goal = 'waiting mid-runway for the Wall (' + Math.round((G.tick - H.waitSince) / 60) + 's)';
+          const mid = Math.round((H.x0 + H.x1) / 2);
+          const r0 = self.alignAt(mid + (Math.floor(G.tick / 600) % 2 ? 2 : -2), H.y); if (r0 === 'fail') H.waitSince = Math.min(H.waitSince, G.tick);
+          return;
         }
         // 4) back at the island's edge: wait for a Voodoo Ohio Demon's doll, then drop it off the edge into the lava
         if (self.has('guide_voodoo_doll')) {
@@ -2005,8 +2261,17 @@ const Bot = {
     const s = this.slotOf(it => it.id === 'the_67');
     this.goal = 'fighting the Wall of Brainrot (gap ' + Math.round(gap) + ', ' + Math.round(n.life) + '/' + n.lifeMax + ')';
     if (s >= 0 && s <= 9) this.selectSlot(s); else if (s > 9) { this.ensureHotbar(s); return; }
-    this.aimWorld(n.cx, n.cy);
+    // in a low tunnel over Ohio (rock 1-3 rows over our head): its body reaches up to us but its centre is lower, and The 67's
+    // homing pulls the shots down into the floor after ~110 px, so fight close (50-100 px), aiming level
+    const w = G.world, [fx, fy] = this.feet(), tunnel = [2, 3, 4].some(k => w.solid(fx, fy - k)) && n.cy > p.cy + 48;
+    this.aimWorld(n.cx, tunnel ? p.cy : n.cy);
     if (gap > -40 && gap < 780 && p.itemAnim === 0) this.clickOnce();
+    if (tunnel) {
+      if (gap < 50) { this.hold(dir > 0 ? 'd' : 'a'); this.why = 'wall-tunnel-back'; }
+      else if (gap > 100) { this.hold(dir > 0 ? 'a' : 'd'); this.why = 'wall-tunnel-close'; }
+      else this.why = 'wall-tunnel';
+      return;
+    }
     // laser dodge: a laser is a 4px band at our chest height; being airborne when it passes clears it
     let hop = false;
     for (const pr of G.projectiles || []) {
