@@ -2546,6 +2546,9 @@ const Bot = {
     const items = [];
     if (!this.stationPlaced('anvil') && !this.has('iron_anvil')) items.push('iron_anvil');
     if (!this.owns('the_67')) items.push('the_67');
+    if (this.owns('hook') && !this.owns('grappling_hook')) items.push('grappling_hook');
+    // King's crown is 7 gold bars: dug on the same trip (it used to be a separate ~45k-tick hunt for gold later on)
+    if (!G.world.flags.king_slime && !this.has('slime_crown')) items.push('slime_crown');
     const acc = {}, out = {};
     for (const id of items) this.rawNeeds(id, 1, acc);
     for (const o of ['iron_ore', 'silver_ore', 'gold_ore']) { const n = (acc[o] || 0) - this.count(o); if (n > 0) out[o] = n; }
@@ -2562,6 +2565,16 @@ const Bot = {
     return {
       step() {
         const need = self.expeditionNeeds(), ores = Object.keys(need);
+        // the ore's done: Tung's 7 bones come from the skeletons down here too (one more trip saved), for a while
+        const bones = !G.world.flags.tung_sahur && !self.has('kentongan') ? Math.max(0, 7 - self.count('bone')) : 0;
+        if (!ores.length && bones && !this.oreDoneAt) this.oreDoneAt = G.tick;
+        if (!ores.length && bones && G.tick - this.oreDoneAt < 12000) {
+          if (sub && !sub.done && sub.bones) { sub.step(); self.goal = 'mining expedition (bones for Tung ' + self.count('bone') + '/7)'; return; }
+          const P = self.p(), prey = G.npcs.filter(n => (n.type === 'skeleton' || n.type === 'undead_miner') && !n.dead && Math.abs(n.cx - P.cx) < 1000 && Math.abs(n.cy - P.cy) < 640 && !(self.ignore && self.ignore[n.uid] > G.tick))
+            .sort((a, b) => dist(a.cx, a.cy, P.cx, P.cy) - dist(b.cx, b.cy, P.cx, P.cy))[0];
+          if (prey) { self.goal = 'mining expedition (hunting a skeleton for bones)'; if (self.moveTo(Math.floor(prey.cx / TS), Math.floor((prey.y + prey.h - 1) / TS), 2) === 'fail') (self.ignore = self.ignore || {})[prey.uid] = G.tick + 3600; return; }
+          sub = self.taskExplore(); sub.bones = true; return;
+        }
         if (!ores.length) { self.log('expedition done in ' + (G.tick - startedAt) + ' ticks, heading home to craft'); this.done = true; return; }
         if (sub && !sub.done) { sub.step(); if (!/^mining|exploring/.test(self.goal || '')) self.goal = label(); return; }
         const pow = SDK.obs().inv.pick.power, tiles = ores.map(o => tileOf[o]).filter(t => TILES[t].minPick <= pow);

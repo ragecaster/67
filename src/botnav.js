@@ -3,6 +3,8 @@
 // Moves: walk, step up, jump up (<=4), drop (safe heights), dig through, dig down, pillar up, swim, doors.
 const NO_SPACE = [Infinity, null], FREE_SPACE = [0, null];
 const c0free = (nav, x, y) => nav.space(x, y)[0] === 0;
+// grappling hook throws the planner tries: straight up, fanned over the upper half, and almost level both ways (gaps)
+const HOOK_RAYS = [-90, -75, -105, -60, -120, -45, -135, -30, -150, -15, -165, -4, -176];
 const Nav = {
   // execution failures: a move (type@x,y) that the follower couldn't carry out for 300 ticks is banned for a while so the next plan routes differently
   bans: new Map(),
@@ -78,17 +80,62 @@ const Nav = {
     return digs ? [cost, digs] : (cost === 0 ? FREE_SPACE : [cost, null]);
   },
 
+  // ----- grappling hook -----
+  // Where a hook thrown from node (x, y) takes us: the first solid / platform / tree cell along each ray within the hook's
+  // reach (~18 tiles) is the anchor; the pull (11 px/tick) stops ~16 px short of it and we hang there. The 20x42 body needs
+  // open air all along the way (a corner stalls the pull) and at the hang point. [[hangNodeX, hangNodeY, anchorX, anchorY, px]]
+  hookArrivals(x, y) {
+    const w = G.world, key = y * w.w + x;
+    if (!this.hkMemo || this.hkStamp !== this.stamp) { this.hkMemo = new Map(); this.hkStamp = this.stamp; }
+    let out = this.hkMemo.get(key);
+    if (out) return out;
+    out = [];
+    const cx0 = x * TS + 16, cy0 = (y + 1) * TS - 21;
+    const grab = (tx, ty) => { const t = w.tile(tx, ty); return !!t && (TILES[t].solid || t === T.PLATFORM || !!TILES[t].tree); };
+    const hits = (cx, cy) => { const x0 = Math.floor((cx - 10) / TS), x1 = Math.floor((cx + 9.9) / TS), y0 = Math.floor((cy - 21) / TS), y1 = Math.floor((cy + 20.9) / TS); for (let ty = y0; ty <= y1; ty++) for (let tx = x0; tx <= x1; tx++) if (w.solid(tx, ty)) return true; return false; };
+    const seen = new Set();
+    for (const deg of HOOK_RAYS) {
+      const a = deg * Math.PI / 180, ux = Math.cos(a), uy = Math.sin(a);
+      let ax = -1, ay = -1, L = 0;
+      for (let s = 12; s <= 288; s += 4) {
+        const tx = Math.floor((cx0 + ux * s) / TS), ty = Math.floor((cy0 + uy * s) / TS);
+        if (!w.inb(tx, ty)) break;
+        if (grab(tx, ty)) { ax = tx; ay = ty; L = s; break; }
+      }
+      if (ax < 0 || L < 64 || seen.has(ax + ',' + ay)) continue;
+      seen.add(ax + ',' + ay);
+      // the pull, like the game does it: 11 px/tick at the anchor, axis by axis against the tiles, until within 20 px or stuck
+      const px = ax * TS + 8, py = ay * TS + 8;
+      let cx = cx0, cy = cy0;
+      for (let i = 0; i < 40; i++) {
+        const dx = px - cx, dy = py - cy, d = Math.hypot(dx, dy);
+        if (d <= 20) break;
+        const vx = dx / d * 11, vy = dy / d * 11;
+        let moved = false;
+        if (!hits(cx + vx, cy)) { cx += vx; moved = true; }
+        if (!hits(cx, cy + vy)) { cy += vy; moved = true; }
+        if (!moved) break;
+      }
+      const nx = Math.round((cx - 16) / TS), ny = Math.floor((cy + 20) / TS);
+      if (Math.abs(nx - x) + Math.abs(ny - y) < 3 || this.space(nx, ny)[0] !== 0) continue;
+      out.push([nx, ny, ax, ay, Math.hypot(cx - cx0, cy - cy0)]);
+    }
+    this.hkMemo.set(key, out);
+    return out;
+  },
+
   // ----- A* -----
   plan(sx, sy, goalFn, heur, maxNodes = 16000) {
     this.stamp = (this.stamp || 0) + 1;
     this.power = this.pickPower();
     this.blocks = Bot.spareBlocks(false) + Math.max(0, Bot.count('wood_platform') - Bot.PLATFORM_KEEP); // only blocks we may spend (not the ones reserved for the current goal); platforms pillar too
     this.avoidBackrooms = !G.inBackrooms(G.player);
+    this.hookOk = G.player.hasHook();
     const w = G.world, WW = w.w, N = WW * w.h;
     if (!this.gA || this.gA.length !== N) { this.gA = new Float64Array(N); this.gS = new Uint32Array(N); this.fromA = new Int32Array(N); this.mvA = new Uint8Array(N); this.fallA = new Uint8Array(N); this.vertA = new Uint8Array(N); }
     const gA = this.gA, gS = this.gS, fromA = this.fromA, mvA = this.mvA, fallA = this.fallA, vertA = this.vertA, stamp = this.stamp;
-    const MV = ['walk', 'up', 'drop', 'jump', 'down', 'fall', 'swim', 'pillar', 'leap', 'bridge'], PILLAR = 7, FALL = 5, BRIDGE = 9;
-    const digMap = new Map();
+    const MV = ['walk', 'up', 'drop', 'jump', 'down', 'fall', 'swim', 'pillar', 'leap', 'bridge', 'hook'], PILLAR = 7, FALL = 5, BRIDGE = 9, HOOK = 10;
+    const digMap = new Map(), hookMap = new Map();
     const key = (x, y) => y * WW + x;
     // binary min-heap of [f, cost, x, y]
     const heap = [];
@@ -97,7 +144,8 @@ const Nav = {
     const W = this.W || 2.5; // weighted A*: greedy toward the goal (dig costs make the plain heuristic far too optimistic)
     hpush([heur(sx, sy) * W, 0, sx, sy]);
     const open = heap;
-    gA[key(sx, sy)] = 0; gS[key(sx, sy)] = stamp; fromA[key(sx, sy)] = -1; mvA[key(sx, sy)] = 0; fallA[key(sx, sy)] = 0; vertA[key(sx, sy)] = 0;
+    const hung = G.player.hook && G.player.hook.state === 'latched';   // hanging from the hook already: the next throw starts here
+    gA[key(sx, sy)] = 0; gS[key(sx, sy)] = stamp; fromA[key(sx, sy)] = -1; mvA[key(sx, sy)] = hung ? HOOK : 0; fallA[key(sx, sy)] = 0; vertA[key(sx, sy)] = 0;
     let expanded = 0, best = null, bestH = Infinity;
     const push = (x, y, cost, prevK, move) => {
       if (this.bans.size && this.banned(x, y, move.t)) return;
@@ -116,6 +164,7 @@ const Nav = {
       gA[k] = cost; gS[k] = stamp; fromA[k] = prevK; mvA[k] = MV.indexOf(move.t);
       fallA[k] = fall; vertA[k] = vert;
       if (move.digs) digMap.set(k, move.digs); else digMap.delete(k);
+      if (move.ax != null) hookMap.set(k, [move.ax, move.ay]); else hookMap.delete(k);
       hpush([cost + heur(x, y) * W, cost, x, y]);
     };
     while (open.length && expanded < maxNodes) {
@@ -182,6 +231,10 @@ const Nav = {
         // standing on platforms only (no solid floor under us): hold S and drop through them, like a player
         else if (c === 0 && !w.solid(x, y + 1) && !w.solid(x + 1, y + 1)) push(x, y + 1, cost + 0.6, k, { t: 'fall', digs: [] });
       }
+      // the grappling hook: from the ground, or chained from where the last throw left us hanging (up a shaft, over a gap)
+      if (this.hookOk && (this.standable(x, y) || mvA[k] === HOOK)) {
+        for (const [hx, hy, ax, ay, len] of this.hookArrivals(x, y)) push(hx, hy, cost + 3 + len / TS * 0.35, k, { t: 'hook', digs: null, ax, ay });
+      }
       // climb straight up: swim, or pillar with blocks
       {
         const [c, d] = this.space(x, y - 3, 0, 0);
@@ -194,7 +247,7 @@ const Nav = {
     // rebuild
     const path = [];
     let k = best;
-    while (fromA[k] !== -1 && gS[k] === stamp) { path.push({ x: k % WW, y: Math.floor(k / WW), move: { t: MV[mvA[k]], digs: digMap.get(k) || [] } }); k = fromA[k]; }
+    while (fromA[k] !== -1 && gS[k] === stamp) { const hk = hookMap.get(k); path.push({ x: k % WW, y: Math.floor(k / WW), move: { t: MV[mvA[k]], digs: digMap.get(k) || [], ax: hk && hk[0], ay: hk && hk[1] } }); k = fromA[k]; }
     path.reverse();
     return { path, reached: goalFn(best % WW, Math.floor(best / WW)), expanded };
   },
@@ -232,6 +285,7 @@ Object.assign(Bot, {
     const [nx, ny] = Nav.nodeOf(p);
     const goalFn = (x, y) => Math.abs(x + 0.5 - tx) <= tol + 0.5 && Math.abs(y - ty) <= Math.max(1, tol);
     if (goalFn(nx, ny) && (p.onGround || p.wet)) { this.nav = null; return true; }
+    if (goalFn(nx, ny) && p.hook && p.hook.state === 'latched') { this.jump(); return false; }   // got there hanging from the hook: let go
     const ng = this.nav;
     const moved = !ng || Math.abs(ng.tx - tx) > 2 || Math.abs(ng.ty - ty) > 2 || ng.tol !== tol;
     // a moving goal (chasing an enemy) must not trigger a full A* every tick
@@ -280,9 +334,13 @@ Object.assign(Bot, {
     const p = G.player, w = G.world, nav = this.nav;
     if (!nav || !nav.path.length) return false;
     const [nx, ny] = Nav.nodeOf(p);
-    const settled = p.onGround || p.wet;
+    const latched = !!(p.hook && p.hook.state === 'latched');
+    this.latchT = latched ? (this.latchT || 0) + 1 : 0;
+    const hanging = latched && this.latchT > 3 && Math.abs(p.vx) + Math.abs(p.vy) < 0.5;   // (the tick it latches we haven't moved yet)
+    const settled = p.onGround || p.wet || hanging;
     // a path that doesn't start next to us is stale (respawned, knocked back, fell): plan again
-    if (nav.i === 0 && settled && (Math.abs(nav.path[0].x - nx) > 5 || nav.path[0].y - ny > 20 || ny - nav.path[0].y > 5)) { nav.replan = true; nav.cooldown = 0; this.replanWhy = 'stale-start'; return false; }
+    const hk0 = nav.path[0].move.t === 'hook';   // (a hook step lands up to ~18 tiles off)
+    if (nav.i === 0 && settled && (Math.abs(nav.path[0].x - nx) > (hk0 ? 19 : 5) || nav.path[0].y - ny > 20 || ny - nav.path[0].y > (hk0 ? 19 : 5))) { nav.replan = true; nav.cooldown = 0; this.replanWhy = 'stale-start'; return false; }
     // resync: find where we are on the path (we may have skipped ahead or fallen off)
     let found = -1;
     for (let j = Math.max(0, nav.i - 2); j < Math.min(nav.path.length, nav.i + 8); j++) {
@@ -299,6 +357,32 @@ Object.assign(Bot, {
     if (nav.i >= nav.path.length) { nav.replan = true; nav.cooldown = 0; this.replanWhy = 'path-end'; return false; }
     if (G.tick - nav.lastProgress > 300) { const bm = nav.path[nav.i]; if (bm) Nav.ban(bm.x, bm.y, bm.move.t); nav.replan = true; nav.cooldown = 0; this.replanWhy = 'no-progress'; this.stuckReplans = (this.stuckReplans || 0) + 1; if (this.stuckReplans > 5) { this.stuckReplans = 0; return 'fail'; } return false; }
     const n = nav.path[nav.i], m = n.move;
+    // the grappling hook: throw it at the anchor, ride the pull, hang; then on to the next step (which lets go)
+    if (m.t === 'hook') {
+      const h = p.hook;
+      if (h && h.state === 'latched') {
+        // still hanging from the last step's hook (the game throws no second one while one holds): let go, throw in mid-air
+        if (this.hookFor !== n) { this.jump(); return false; }
+        if (Math.abs(Math.floor(h.x / TS) - m.ax) > 1 || Math.abs(Math.floor(h.y / TS) - m.ay) > 1) { this.jump(); Nav.ban(n.x, n.y, 'hook'); nav.replan = true; nav.cooldown = 0; this.replanWhy = 'hook-wrong'; return false; }
+        // stopped at the anchor, or stuck on a corner on the way (no movement for a while): the next step starts from here
+        const moved = this.hookPos ? Math.abs(p.x - this.hookPos[0]) + Math.abs(p.y - this.hookPos[1]) : 99; this.hookPos = [p.x, p.y];
+        this.hookStall = moved < 0.3 ? (this.hookStall || 0) + 1 : 0;
+        if (hanging || this.hookStall > 6) {
+          this.hookThrows = 0; nav.lastProgress = G.tick;
+          if (hanging && Math.abs(p.cx - (n.x * TS + 16)) < 14 && Math.abs(ny - n.y) <= 1) nav.i++;
+          else { nav.replan = true; nav.cooldown = 0; this.replanWhy = 'hook-short'; }
+        }
+        return false;
+      }
+      if (h && this.hookFor === n) return false;   // flying out
+      if (h) return false;   // reeling back in
+      this.hookPos = null; this.hookFor = n;
+      this.aimWorld(m.ax * TS + 8, m.ay * TS + 8); this.press('e');
+      if ((this.hookThrows = (this.hookThrows || 0) + 1) > 6) { this.hookThrows = 0; Nav.ban(n.x, n.y, 'hook'); nav.replan = true; nav.cooldown = 0; this.replanWhy = 'hook-miss'; }
+      return false;
+    }
+    // any other step while hanging from the hook: let go first (a jump), the move's own keys do the rest
+    if (p.hook && p.hook.state === 'latched') this.jump();
     // 1) dig whatever blocks the next step
     for (const [dx, dy] of m.digs || []) {
       const t = w.tile(dx, dy);

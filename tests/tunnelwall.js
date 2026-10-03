@@ -43,7 +43,7 @@ run(async (page) => {
       Bot.wantsDraw = false; G.update(); if (Bot.wantsDraw || G.tick % 1200 === 0) G.draw(); Input.endFrame();
       if (p.life < last) taken += last - p.life; last = p.life;
       wall = G.npcs.find(n => n.type === 'wall_of_flesh');
-      if (i % STEP === 0) o.push(`${i} pots ${Bot.potionCount()} sick ${!!p.buffs.potion_sickness} life ${Math.round(p.life)} @${Bot.feet()} wall ${wall ? Math.round(wall.life) + ' x=' + Math.round(wall.x / TS) + '-' + Math.round((wall.x + wall.w) / TS) + ' y=' + Math.round(wall.y / TS) : '-'} why=${Bot.why} goal=${Bot.goal}`);
+      if (i % STEP === 0) o.push(`${i} pots ${Bot.potionCount()} sick ${!!p.buffs.potion_sickness} life ${Math.round(p.life)} @${Bot.feet()} wall ${wall ? Math.round(wall.life) + ' x=' + Math.round(wall.x / TS) + '-' + Math.round((wall.x + wall.w) / TS) + ' y=' + Math.round(wall.y / TS) : '-'} why=${Bot.why} hook=${p.hook ? p.hook.state : '-'} v=${p.vx.toFixed(1)} goal=${Bot.goal}`);
       if (p.dead) { o.push('DEAD ' + G.deathCause + ' at +' + i); break; }
       if (w.flags.wall_of_flesh) { o.push('WALL DEFEATED at +' + i + ' (' + (i / 60).toFixed(1) + ' s), bot at ' + Bot.feet() + ', took ' + Math.round(taken)); break; }
       if (!wall && i > 10) { o.push('wall gone'); break; }

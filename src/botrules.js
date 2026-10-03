@@ -131,6 +131,9 @@ Object.assign(Bot, {
     const reqs = [];
     if (!this.houseValid() || !this.houseFinished) reqs.push({ label: 'build a house', ids: new Set(['build', 'chop']) });
     for (const st of ['furnace', 'iron_anvil']) if (!this.stationPlaced(st === 'iron_anvil' ? 'anvil' : st)) reqs.push({ label: 'place ' + st, item: st });
+    // a Hook from a skeleton: the grappling hook first (9 iron bars). It climbs out of caves and shafts, crosses gaps and
+    // carries us out of a boss's way far faster than any pillar or ladder
+    if (this.owns('hook') && !this.owns('grappling_hook')) reqs.push({ label: 'grappling hook', item: 'grappling_hook' });
     if (pick < R.pick) for (const id of PLAN_PICKS) if ((ITEMS[id] && ITEMS[id].pick || 0) > pick) reqs.push({ label: 'better pickaxe', item: id });
     // the nightmare pickaxe (and shadow armor) needs rotten chunks + demonite from the Brainrot biome: that skill farms both
     if (pick < 65 && R.pick >= 65) reqs.push({ label: 'farm the Brainrot for a nightmare pickaxe', ids: new Set(['brainrot', 'craft:nightmare_pickaxe']) });
@@ -200,6 +203,20 @@ Object.assign(Bot, {
     // way, instead of only once the plan reaches "more max life" (that used to be after The 67, walking past crystals all along)
     const cr = has('crystal');
     if (cr && cr.dist <= 40 && life >= 0.6) return 'crystal';
+    // underground at night: finish the underground jobs before climbing out (the owner watched it go up at 1 am to craft, then
+    // back down for a crystal, and up again): the expedition, aura crystals, ore the plan wants, Tung's bones. Crafting at
+    // home waits for morning, unless a night boss can be summoned right now (summon in hand, ready).
+    const W = G.world, deep = fyb > W.worldSurface + 20;
+    if (G.isNight() && deep && life >= 0.5) {
+      const nightBossNow = cands.some(c => c.kind === 'boss' && BOSS_SUMMON[c.boss] && BOSS_SUMMON[c.boss].night && this.has(BOSS_SUMMON[c.boss].item) && this.bossReady(c.boss));
+      if (!nightBossNow) {
+        if (has('expedition')) return 'expedition';
+        if (cr && cr.dist <= 220 && p.lifeMax < 400) return 'crystal';
+        const plan0 = this.plan || this.planFrontier(cands);
+        const under = cands.filter(c => (c.kind === 'ore' && plan0.test(c)) || (c.id === 'boss:tung_sahur' && !this.has('kentongan') && this.count('bone') < 7));
+        if (under.length) return under.sort((a, b) => (a.dist || 0) - (b.dist || 0))[0].id;
+      }
+    }
     // the owner's plan: wood, the house and the furnace by day on the surface; then one mining expedition underground (day or
     // night: the caves don't get worse at night, the surface does) for everything the anvil and The 67 need; then craft at home
     if (has('expedition') && life >= 0.5 && (this.count('wood') >= 60 || G.isNight())) return 'expedition';
