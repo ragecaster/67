@@ -417,6 +417,12 @@ const Bot = {
         cd.wood = G.tick + 6000;
         this.setAct({ id: 'chop:stock', kind: 'reflex' }, this.taskChop(this.count('wood') + 150), foes); return;   // (a big batch by day: it ran out at night and underground)
       }
+      // the Wall chute's rope (~45) from the Merchant while we're home anyway: buying it only once the tunnel was dug meant a
+      // 400-column, 450-row trip back up from the bottom of the hell elevator (evalD never got back down before time ran out)
+      if (this.owns('the_67') && !G.world.flags.wall_of_flesh && this.count('rope') < 50 && !G.isNight() && this.base && Math.abs(this.feet()[0] - this.base[0]) < 40 && this.feet()[1] < G.world.worldSurface + 5 && !(cd.rope > G.tick)) {
+        const keeper = G.npcs.some(m => m.type === 'merchant' && !m.dead), n = 60 - this.count('rope');
+        if (keeper && invMoney(this.p().inv) >= n * buyPrice('rope') + 500) { cd.rope = G.tick + 6000; this.setAct({ id: 'buy:rope', kind: 'reflex' }, this.taskBuy('rope', n), foes); return; }
+      }
       // keep ~30 wood platforms on hand (15 wood, crafted by hand on the spot): pillars, arenas, perches
       // (wood is never placed as a block: pillars and bridges use these, so turn spare wood into them as soon as we're low)
       const spareWood = this.count('wood') - this.reserved('wood') - 10;
@@ -2445,7 +2451,7 @@ const Bot = {
           }
         }
         if (!H.x0) {
-          const isl = self.findIsland(fx);
+          const isl = self.findIsland(self.base ? self.base[0] : fx);   // (near home: respawns and rope trips start there)
           if (!isl) return fail(this, 'no island');
           Object.assign(H, isl, { ph: isl.tunnel ? 'platforms' : isl.sx != null ? 'shop' : 'prep' });
           self.log('Ohio plan: island ' + isl.x0 + '-' + isl.x1 + '@' + isl.y + ', stand at ' + isl.col + ', bridge ' + (isl.dir > 0 ? 'east' : 'west') + ' to ' + isl.xEnd);
