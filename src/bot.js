@@ -1927,7 +1927,13 @@ const Bot = {
   tunnelPlatforms(H) { const top = H.top || topSolid(G.world, H.sx); return this.TUNNEL_LEN + 2 * Math.ceil(Math.max(0, (H.F || G.world.hellLayer) - top) / 15) + 40; },
   blockCount() { return ['stone_block', 'ash_block', 'dirt_block', 'mud_block', 'clay_block', 'sand_block'].reduce((n, id) => n + this.count(id), 0); },
   // a floating platform >= 6 wide in the cavern with lava under the side the doll is dropped to and open runway on the other side
+  // the longest Wall tunnel the rock allows: 400 columns wins most (tests/tunnelwall.js), a shorter one beats no plan at all
+  // (evalD had no 400-column site anywhere and never started the Wall)
   findIsland(fx) {
+    for (const L of [400, 360, 330, 300]) { this.TUNNEL_LEN = L; const r = this.findIsland0(fx); if (r) return r; }
+    this.TUNNEL_LEN = 400; return null;
+  },
+  findIsland0(fx) {
     const w = G.world, lava = (x, y) => w.liq(x, y) > 100 && w.ltype[w.idx(x, y)] === 1;
     const lavaBelow = (x, y) => { for (let j = y + 1; j < w.h - 1; j++) { if (w.solid(x, j)) return false; if (lava(x, j)) return true; } return false; };
     const stand = (x, y) => { if (!w.solid(x, y + 1) || !w.solid(x + 1, y + 1)) return false; for (let j = 0; j < 3; j++) if (w.solid(x, y - j) || w.solid(x + 1, y - j)) return false; return true; };

@@ -24,7 +24,8 @@ const BOSS_READY = {
 // Ohio's flyers (the owner watched the bot burn and stall there mining it for a sword it didn't need)
 const PLAN_WEAPONS = ['the_67', 'lights_bane', 'gold_broadsword', 'silver_broadsword', 'iron_broadsword', 'copper_broadsword', 'gold_bow', 'iron_bow', 'demon_bow'];  // best first: the plan takes the first one it can make progress on
 const PLAN_PICKS = ['iron_pickaxe', 'silver_pickaxe', 'gold_pickaxe', 'nightmare_pickaxe'];
-const PLAN_ARMOR = ['wood_helmet', 'wood_greaves', 'copper_helmet', 'copper_chainmail', 'copper_greaves', 'iron_helmet', 'iron_chainmail', 'iron_greaves',
+// (iron first: the only gate is the Wall's 8, a copper set tops out at 6 and its ~180 ore would be thrown away)
+const PLAN_ARMOR = ['iron_chainmail', 'iron_greaves', 'iron_helmet', 'wood_helmet', 'wood_greaves', 'copper_helmet', 'copper_chainmail', 'copper_greaves',
   'silver_helmet', 'silver_chainmail', 'silver_greaves', 'gold_helmet', 'gold_chainmail', 'gold_greaves', 'shadow_helmet', 'shadow_scalemail', 'shadow_greaves'];
 
 Object.assign(Bot, {
@@ -144,13 +145,15 @@ Object.assign(Bot, {
     if (losing && !this.owns('the_67')) reqs.push({ label: 'better weapon', item: 'the_67' });
     else if (losing) for (const id of PLAN_WEAPONS) { const it = ITEMS[id]; if (it && expectedHit(it) * 60 / Math.max(6, it.useAnim || it.useTime) > dps * 1.15) reqs.push({ label: 'better weapon', item: id }); }
     // below the Wall's defense gate after the Eye: the Brainrot set (its chunks only drop from Doomscrollers, so the farm skill gets them)
-    if (p.calc.defense < R.def && G.world.flags.eye_of_cthulhu && this.brainrotWants().some(id => id.startsWith('shadow_')))
-      reqs.push({ label: 'Brainrot armor', ids: new Set(['brainrot', ...this.SHADOW_SET.map(id => 'craft:' + id), 'craft:demonite_bar']) });
+    // metal first (an iron set is 9 defense for ~180 ore, plentiful): the Brainrot set needs 35 rotten chunks from Doomscrollers,
+    // and farming them ran past the end of the 90 minutes in 4 of 6 runs
     if (p.calc.defense < R.def) for (const id of PLAN_ARMOR) {
-      const it = ITEMS[id]; if (!it || !it.armor) continue;
+      const it = ITEMS[id]; if (!it || !it.armor || id.startsWith('shadow_')) continue;
       const cur = p.armor[{ head: 0, body: 1, legs: 2 }[it.armor]];
       if ((it.defense || 0) > (cur ? ITEMS[cur.id].defense || 0 : 0)) reqs.push({ label: 'more defense', item: id });
     }
+    if (p.calc.defense < R.def && G.world.flags.eye_of_cthulhu && this.brainrotWants().some(id => id.startsWith('shadow_')))
+      reqs.push({ label: 'Brainrot armor', ids: new Set(['brainrot', ...this.SHADOW_SET.map(id => 'craft:' + id), 'craft:demonite_bar']) });
     if (this.effLife() < R.lifeMax) reqs.push({ label: 'more max life', ids: new Set(['crystal', 'explore']) });
     if (this.potionCount() < R.potions) reqs.push({ label: 'healing potions', item: 'lesser_healing_potion' });
     // arrows only for a bow we'd actually fight with (The 67 counts as ranged, it fires 6s and 7s, but needs no ammo)
