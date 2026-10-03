@@ -3,7 +3,59 @@
 This is a Terraria clone with Gen Z / Gen Alpha brainrot memes. It runs in the browser with plain JS and a canvas, and there's no build step. It's live at https://ragecaster.github.io/67/ (GitHub Pages deploys from `main`, root).
 Watch the playtest bot at https://ragecaster.github.io/67/?bot&turbo=4. In the game, F8 toggles the bot and F9 cycles its speed from 1x to 64x.
 
-## Session 6: the Wall of Brainrot from a tunnel (work in progress, read this first)
+## Session 7: priorities, grappling hook, and the Wall pipeline (read this first)
+
+Goal (still open): all 4 bosses in under 324k ticks. Status on evalA–F with `NEED=4 TRIPS=1 node tests/bosstime.js 330000 <seed> teacher`:
+- All six seeds usually kill King, Eye and Tung. The best seed (evalF) has all three by 154k, the Wall tunnel dug by 249k, and the doll thrown at 259–308k.
+- No seed has beaten the Wall within 324k. The real fight is lost to the Wall's eye lasers (`passTiles`: they hit through the tunnel rock from spawn), to Ohio's imps and demons following the bot into the tunnel, and to one 50-HP lesser potion per fight (potion sickness lasts 3600 ticks).
+
+**Test infrastructure**
+- Headless runs are deterministic: the harness seeds `Math.random` per `newGame` and stops the page's rAF loop (`REALTIME=1` turns it back on). A seed always replays the same way, but a small code change reshuffles whole runs, so judge changes on all 6 seeds.
+- `bosstime.js PRE='...'` evaluates setup code for A/B runs.
+- Wall fight tests: `tests/tunnelwall.js` with `KNOBS` (ARMOR, SWIFT, POTID, ...), `HOOK=1`, and `FROW=0 PLAT=1 TRENCH=4 POTS=20 LIFE=360`.
+- Other new tests: `tests/hookbrake.js` (rungless shaft) and `tests/hooknav.js`.
+
+**What was added this session** (see `git log`)
+- Night priorities: underground jobs get finished at night; night bosses get a dusk lead that counts the walk back to the arena, and are never summoned within 7000 ticks of dawn.
+- The grappling hook is crafted and used in A* hook moves (with bans on short or missed hooks), and it brakes falls (`hookBrake`) and rescues the bot when it falls toward lava.
+- Navigation: the climb back to the surface uses A* weight 1.2, so the bot walks out of caves instead of digging up.
+- The inventory cleanup no longer throws away whole stacks of kept items such as bones and lenses.
+- `?bot` runs teacher mode by default; `&mode=jev` selects the old, stale model.
+- Wall pipeline:
+  - The nightmare pickaxe is required, because the tunnel rows are Ohiostone (minPick 65).
+  - The tunnel is 400 columns, falling back to 300 when the site is short.
+  - The shaft is lined with blocks through caves, and a stuck shaft re-sites the plan.
+  - Rope is bought early, the second house is searched for out to 60 tiles, and the elevator is placed near home.
+  - Wall prep runs while waiting for night; the life gate is 300 and is checked only after the tunnel is dug.
+  - Fight tactics: a 50–100 px gap, widening to 90–150 below 60% life; the bot heals in the tunnel when hurt on the rope, and no longer jumps just because it is on fire.
+
+**Measured** (isolated tunnel fights, 360 life, 20 lesser potions, 7 seeds)
+
+| Setup | Wins | Notes |
+|---|---|---|
+| Bare | 3/7 | |
+| Iron armor | 5/7 | |
+| Grappling hook | 6/7 | |
+| Swiftness | 7/7 | needs up to 600 columns |
+| Iron + swiftness | 7/7 | |
+| Iron + hook | 6/7 | |
+
+The real fight is harsher than these tests (Ohio monsters, lasers before the Wall reaches the tunnel).
+
+**Tried and reverted**
+- Early nightmare pickaxe as a plan step.
+- Sheltering at night before getting The 67.
+- A 2-row trench.
+- A taller tunnel with laser hops.
+- Constant hook dashes.
+- Hook hunting as a gate.
+- Using Him-mode emotes.
+- A retry after losing the Wall at life 200.
+- Saved patches, not applied: `tools/jev/patches/wall_fight_experiments.patch` (clear Ohio flyers before the throw, shoot imps first, wait 25 columns in) and `iron_armor_filler.patch` (iron armor in the idle hours, untested).
+
+**Open question for the owner:** may the game be rebalanced? Options: the Merchant sells 100-HP Healing Potions, lasers stop at rock, or potion sickness is shorter. Without a rebalance, the Wall needs a bigger redesign.
+
+## Session 6: the Wall of Brainrot from a tunnel
 
 Goal: all 4 bosses in under 324k ticks. The first three come in at 225–330k on evalA–F (`s6a`), so the Wall still needs a working plan, and the early game needs to get faster.
 

@@ -1,0 +1,17 @@
+diff --git a/src/botrules.js b/src/botrules.js
+index 85b5aa5..067e590 100644
+--- a/src/botrules.js
++++ b/src/botrules.js
+@@ -179,6 +179,12 @@ Object.assign(Bot, {
+     // then its elevator and tunnel: ~100k ticks that otherwise all come after the third boss), else extra life
+     if (key !== 'wall_of_flesh' && this.owns('the_67') && SDK.obs().inv.pick.power < 65 && byId('brainrot')) return { label: 'Wall prep: nightmare pickaxe (waiting for night)', boss: key, test: c => c.id === 'brainrot' || c.id === 'craft:nightmare_pickaxe' };
+     if (key !== 'wall_of_flesh' && byId('hell')) return { label: 'Wall prep (waiting for night)', boss: key, test: c => c.id === 'hell' };
++    // then an iron set (9 defense; with a speed buff it won 7/7 Wall fights in tests/tunnelwall.js against 3/7 bare), piece by
++    // piece in these idle hours rather than as a gate in front of the Wall (as a gate it took 50-130k ticks)
++    if (key !== 'wall_of_flesh') {
++      const slotOf = { head: 0, body: 1, legs: 2 }, pieces = ['iron_chainmail', 'iron_greaves', 'iron_helmet'].filter(id => { const cur = p.armor[slotOf[ITEMS[id].armor]]; return (cur ? ITEMS[cur.id].defense || 0 : 0) < ITEMS[id].defense; });
++      if (pieces.length) { const ids = new Set([...pieces.map(id => 'craft:' + id), 'craft:iron_bar', 'ore:iron_ore']); if ([...ids].some(byId)) return { label: 'Wall prep: iron armor (waiting for night)', boss: key, test: c => ids.has(c.id) }; }
++    }
+     if (byId('crystal') && this.p().lifeMax < 400) return { label: 'more max life (waiting for night)', boss: key, test: c => c.id === 'crystal' };
+     // nothing actionable: explore, or mine an ore the plan actually needs (not whatever copper is closest)
+     const wanted = new Set(['gold_ore', 'silver_ore', 'iron_ore', 'copper_ore'].filter(ore => [this.committed && this.committed.item, 'the_67', S && S.item].some(id => id && !this.owns(id) && (this.rawNeeds(id, 1)[ore] || 0) > this.count(ore))));

@@ -1,0 +1,113 @@
+diff --git a/src/bot.js b/src/bot.js
+index 4cfe559..ee67a8f 100644
+--- a/src/bot.js
++++ b/src/bot.js
+@@ -902,6 +902,7 @@ const Bot = {
+     const bn = (w.flags.eye_of_cthulhu || this.owns('the_67')) && this.brainrotWants().length ? this.brainrotNeeds() : null;   // (materials in hand: the crafts take over)
+     if (bn && (this.count('rotten_chunk') < bn.chunks || this.count('demonite_ore') < bn.ore)) add('brainrot', 'brainrot', () => this.taskBrainrot(), { ready: Math.min(1, this.count('rotten_chunk') / 6) });
+     if (this.owns('the_67') && p.lifeMax >= 200 && !w.flags.wall_of_flesh && (this.othersDown() || this.hellPrepOk())) add('hell', 'hell', () => this.taskHell(), { ready: Math.min(1, p.lifeMax / 300) });
++    if (this.owns('the_67') && !this.owns('hook') && !this.owns('grappling_hook') && !w.flags.wall_of_flesh) add('hookfarm', 'farm', () => this.taskHookFarm());
+     add('explore', 'explore', () => this.taskExplore());
+     // (not from down in Ohio once the hell elevator stands: the walk home pathfinds through the void and into the lava)
+     if (this.base && !(this.hell && this.hell.R && this.feet()[1] > this.hell.R - 40)) add('home', 'home', () => this.taskGoHome(), { dist: Math.abs(this.base[0] - this.feet()[0]) + Math.abs(this.base[1] - this.feet()[1]) });
+@@ -2187,9 +2188,13 @@ const Bot = {
+   // the tunnel plan's summon, from the rope: the doll thrown sideways from ~20 rows over the island carries past its edge
+   // into the lava on the side away from the tunnel (the Wall then comes from there and heads the tunnel's way). One tick;
+   // true once thrown. (Used by the task and by the fight reflex: Ohio is never quiet enough for the task alone.)
++  // Ohio's flyers within ~700 px: thrown into a crowd, the imps and demons follow us into the tunnel and soak up The 67's homing
++  // shots (the Wall then wins even against a hook or iron armor, evalF replays)
++  ohioCrowd() { const p = this.p(); return G.npcs.filter(n => !n.dead && !n.friendly && !n.town && !n.boss && n.type !== 'hungry' && dist(n.cx, n.cy, p.cx, p.cy) < 700).length; },
+   ropeThrow(H) {
+     const p = this.p(), dir = H.dir;
+     if (!p.onRope || !this.has('guide_voodoo_doll')) return false;
++    if (this.ohioCrowd() >= 2 && !(H.clearSince && G.tick - H.clearSince >= 4000)) return false;
+     // from a height where it really lands in lava: the throw simulated over the actual tiles (thrown from the rope's end it
+     // landed on the island; from mid-rope it sometimes clipped the lumpy rock beside the chute)
+     const fy = this.feet()[1];
+@@ -2645,6 +2650,13 @@ const Bot = {
+             }
+             self.moveTo(Math.floor(lying.x / TS), Math.floor(lying.y / TS), 1); return;
+           }
++          // doll in hand and a crowd about: clear it from the tunnel first (out of Ohio's spawn zone, nothing new comes), then
++          // drop down to throw with nothing following us back up
++          if (!(doll && self.ohioCrowd() >= 2)) H.clearSince = 0; else if (!H.clearSince) H.clearSince = G.tick;
++          if (doll && self.readyForWall() && self.ohioCrowd() >= 2 && p.life >= p.lifeMax * 0.5 && G.tick - H.clearSince < 4000) {
++            self.goal = 'clearing Ohio\'s flyers before the throw (' + self.ohioCrowd() + ')';
++            const t = self.toTunnel(H); if (t === true && Math.abs(fx - H.sx) < 6) self.hold(H.dir > 0 ? 'd' : 'a'); return;
++          }
+           if (doll && p.onRope && !H.ropeFail && self.readyForWall() && G.npcs.some(n => n.type === 'guide' && !n.dead)) {
+             if (p.life < p.lifeMax * 0.7 && self.potionCount() > 0 && !p.buffs.potion_sickness) self.press('h');
+             if (p.life >= p.lifeMax * 0.5) { self.goal = 'throwing the voodoo doll into lava'; self.ropeThrow(H); return; }
+@@ -2709,6 +2721,13 @@ const Bot = {
+     // homing pulls the shots down into the floor after ~110 px, so fight close (50-100 px), aiming level
+     const w = G.world, [fx, fy] = this.feet(), tunnel = (H && H.tunnelDone && fy === H.F - 1) || ([2, 3, 4].some(k => w.solid(fx, fy - k)) && n.cy > p.cy + 48);
+     this.aimWorld(n.cx, tunnel ? p.cy : n.cy);
++    // an imp or a demon close by while the Wall is still out of reach: shoot it first (they followed us up from the rope and
++    // burned the bot down in the tunnel while The 67 kept firing at the Wall; replays of evalF)
++    if (tunnel && gap > 60) {
++      const pest = G.npcs.filter(m => !m.dead && !m.friendly && !m.town && !m.boss && m.type !== 'hungry' && dist(m.cx, m.cy, p.cx, p.cy) < 350)
++        .sort((a, b) => dist(a.cx, a.cy, p.cx, p.cy) - dist(b.cx, b.cy, p.cx, p.cy))[0];
++      if (pest) { this.aimWorld(pest.cx, pest.cy); this.why = 'wall-pest'; }
++    }
+     if (gap > -40 && gap < 780 && p.itemAnim === 0) this.clickOnce();
+     if (tunnel) {
+       // it outruns us once it's below a third of its life (up to 3.9 px/tick, we run 3): the grappling hook pulls at 11, so
+@@ -2723,6 +2742,9 @@ const Bot = {
+       // from 340 life: always close 4/6 within ~320 columns; always far 6/6 but 400-760 columns, longer than the tunnel
+       const hurt = p.life < p.lifeMax * (window.WALL_HURT || 0.6), lo = window.WALL_LO || (hurt ? 90 : 50), hi = window.WALL_HI || (hurt ? 150 : 100);
+       if (gap < lo) { this.hold(dir > 0 ? 'd' : 'a'); this.why = 'wall-tunnel-back'; }
++      // waiting for it at the chute, Ohio's imps and demons coming up the chute took ~150 of 360 life before the Wall even got
++      // there (evalF): wait ~25 columns in, out of their way (the Wall comes along the tunnel to us anyway)
++      else if (H && H.tunnelDone && dir * (fx - (H.sx + 1)) < 25 && gap > lo + 40) { this.hold(dir > 0 ? 'd' : 'a'); this.why = 'wall-tunnel-settle'; }
+       // (closing in stops at the chute: past it is the nook, a dead end the bot once walked into to meet the Wall, and died there)
+       else if (gap > hi && !(H && H.tunnelDone && -H.dir * (fx - (H.sx + 1)) >= 0)) { this.hold(dir > 0 ? 'a' : 'd'); this.why = 'wall-tunnel-close'; }
+       else this.why = 'wall-tunnel';
+@@ -2740,6 +2762,23 @@ const Bot = {
+   },
+   // would a human attempt the Wall of Brainrot now? (it kills the Guide and chases you across the whole underworld)
+   wallReadiness() { const p = this.p(); return 'life ' + p.lifeMax + ' def ' + p.calc.defense + ' the_67 ' + this.owns('the_67') + ' arrows ' + this.count('wooden_arrow'); },
++  // the Hook (4% from Mewing Skeletons, cavern layer) for the grappling hook: the owner says it makes the Wall far easier, and
++  // tests/tunnelwall.js agrees (no armor, 340 life: 6/6 with a grappling hook, 3/6 without). Hunt skeletons until one drops.
++  taskHookFarm() {
++    const self = this, w = G.world, t0 = G.tick; let tgt = null;
++    this.goal = 'hunting Mewing Skeletons for a hook';
++    return { step() {
++      if (self.owns('hook') || self.owns('grappling_hook')) { this.done = true; return; }
++      if (G.tick - t0 > 30000) { self.log('no hook in 30000 ticks, later'); (self.cooldowns = self.cooldowns || {}).hookfarm = G.tick + 20000; this.done = true; return; }
++      const P = self.p(), ign = self.ignore || {};
++      const prey = G.npcs.filter(n => n.type === 'skeleton' && !n.dead && Math.abs(n.cx - P.cx) < 1000 && Math.abs(n.cy - P.cy) < 640 && !(ign[n.uid] > G.tick))
++        .sort((a, b) => dist(a.cx, a.cy, P.cx, P.cy) - dist(b.cx, b.cy, P.cx, P.cy))[0];
++      self.goal = 'hunting Mewing Skeletons for a hook';
++      if (prey) { if (self.moveTo(Math.floor(prey.cx / TS), Math.floor((prey.y + prey.h - 1) / TS), 2) === 'fail') (self.ignore = self.ignore || {})[prey.uid] = G.tick + 1800; return; }
++      const fx = self.feet()[0];
++      if (!tgt || self.moveTo(tgt[0], tgt[1], 4) !== false) tgt = [clamp(fx + randInt(-60, 60), 60, w.w - 60), randInt(w.rockLayer + 5, w.hellLayer - 40)];
++    } };
++  },
+   othersDown() { const f = G.world.flags; return f.king_slime && f.eye_of_cthulhu && f.tung_sahur; },
+   // Wall prep ahead of time (the other bosses still alive): the hell elevator and the tunnel, dug in otherwise idle hours.
+   // They took ~100k ticks after the third boss, more than the 90 minutes had left
+diff --git a/src/botrules.js b/src/botrules.js
+index 2cc5174..a4bfc8c 100644
+--- a/src/botrules.js
++++ b/src/botrules.js
+@@ -165,6 +165,10 @@ Object.assign(Bot, {
+     // the summon item itself (and its ingredients) before the fight
+     const S = BOSS_SUMMON[key];
+     if (S && !this.has(S.item)) reqs.push({ label: 'summon item', item: S.item });
++    // the Wall without a grappling hook loses half its fights: a Hook from the skeletons first
++    // (once the tunnel is dug: as a step ahead of the prep it held up the elevator by ~60k ticks on evalF)
++    const Hk = this.hell, tunnelReady = !!(Hk && (Hk.tunnelDone || ['chute', 'ropeShop', 'ride', 'wait'].includes(Hk.ph)));
++
+     reqs.push({ label: 'fight ' + BOSS_TYPES[key].name, ids: new Set(key === 'wall_of_flesh' ? ['hell'] : ['boss:' + key]) });
+     // the first requirement some candidate can actually advance
+     for (const r of reqs) {
+@@ -176,6 +180,9 @@ Object.assign(Bot, {
+     // then its elevator and tunnel: ~100k ticks that otherwise all come after the third boss), else extra life
+     if (key !== 'wall_of_flesh' && this.owns('the_67') && SDK.obs().inv.pick.power < 65 && byId('brainrot')) return { label: 'Wall prep: nightmare pickaxe (waiting for night)', boss: key, test: c => c.id === 'brainrot' || c.id === 'craft:nightmare_pickaxe' };
+     if (key !== 'wall_of_flesh' && byId('hell')) return { label: 'Wall prep (waiting for night)', boss: key, test: c => c.id === 'hell' };
++    // (the hook last: hunting skeletons in these hours ahead of the pickaxe and the tunnel put the third boss 70k later; the
++    // tunnel is dug in the cavern layer anyway, where the skeletons come to us)
++    if (key !== 'wall_of_flesh' && byId('hookfarm')) return { label: 'Wall prep: a hook (waiting for night)', boss: key, test: c => c.id === 'hookfarm' };
+     if (byId('crystal') && this.p().lifeMax < 400) return { label: 'more max life (waiting for night)', boss: key, test: c => c.id === 'crystal' };
+     // nothing actionable: explore, or mine an ore the plan actually needs (not whatever copper is closest)
+     const wanted = new Set(['gold_ore', 'silver_ore', 'iron_ore', 'copper_ore'].filter(ore => [this.committed && this.committed.item, 'the_67', S && S.item].some(id => id && !this.owns(id) && (this.rawNeeds(id, 1)[ore] || 0) > this.count(ore))));
