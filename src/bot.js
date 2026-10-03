@@ -1070,7 +1070,9 @@ const Bot = {
         const p = self.p();
         if (step === 0) { if (!UI.invOpen) self.press('Escape'); step = 1; return; }
         // shift-click (trash) the first junk stack beyond what we keep, then gear we've outgrown
-        let i = p.inv.findIndex((s, k) => k >= 10 && s && junk.includes(s.id) && invCount(p.inv, s.id) > (keep[s.id] || 0));
+        // (only a stack whose loss still leaves the keep amount: trashing the whole stack once we held more than the keep threw
+        // away all 9 bones with Tung's 7 needed, and every lens, over and over)
+        let i = p.inv.findIndex((s, k) => k >= 10 && s && junk.includes(s.id) && invCount(p.inv, s.id) - s.count >= (keep[s.id] || 0));
         if (i < 0) i = p.inv.findIndex((s, k) => k >= 10 && s && self.obsolete(s.id));
         if (i < 0 || step > 40) { if (UI.invOpen) self.press('Escape'); this.done = true; self.uiBusy = false; return; }
         Input.keys.Shift = true; Input.shift = true;
