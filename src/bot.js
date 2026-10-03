@@ -235,7 +235,7 @@ const Bot = {
     TerraJev.recentHurt = (TerraJev.recentHurt || 0) * 0.99 + Math.max(0, (this.prevLife || p.life) - p.life);
     this.prevLife = p.life;
     // close menus the bot didn't open
-    if (UI.talk) UI.closeTalk();
+    if (UI.talk && !this.shopping) UI.closeTalk();   // (an NPC chat the bot didn't ask for; taskBuy opens one on purpose)
     if (G.victory) G.victory = null;
     // stuck detection
     const pos = Math.round(p.x) + ',' + Math.round(p.y);
@@ -834,7 +834,7 @@ const Bot = {
     }
     const bn = w.flags.eye_of_cthulhu && this.brainrotWants().length ? this.brainrotNeeds() : null;   // (materials in hand: the crafts take over)
     if (bn && (this.count('rotten_chunk') < bn.chunks || this.count('demonite_ore') < bn.ore)) add('brainrot', 'brainrot', () => this.taskBrainrot(), { ready: Math.min(1, this.count('rotten_chunk') / 6) });
-    if (this.hasBetterPick(65) && !w.flags.wall_of_flesh) add('hell', 'hell', () => this.taskHell(), { ready: Math.min(1, p.lifeMax / 300) });
+    if (this.owns('the_67') && p.lifeMax >= 200 && !w.flags.wall_of_flesh) add('hell', 'hell', () => this.taskHell(), { ready: Math.min(1, p.lifeMax / 300) });
     add('explore', 'explore', () => this.taskExplore());
     if (this.base) add('home', 'home', () => this.taskGoHome(), { dist: Math.abs(this.base[0] - this.feet()[0]) + Math.abs(this.base[1] - this.feet()[1]) });
     // the cooldown memory: drop candidates that just failed (unless that leaves nothing)
@@ -1033,6 +1033,48 @@ const Bot = {
       return inv.some(o => o !== id && ITEMS[o].damage && !ITEMS[o].ammoType && !ITEMS[o].pick && !ITEMS[o].axe && !ITEMS[o].hammer && !ITEMS[o].consumable && power(o) > power(id) * 1.2);
     }
     return false;
+  },
+  // buy n of an item from whichever town NPC sells it, through the real UI: walk over, right-click them, press 'Shop', click
+  // the item once per unit (they stack on the cursor), then drop the stack into an empty inventory slot
+  taskBuy(id, n) {
+    const self = this, t0 = G.tick, price = buyPrice(id);
+    let step = 'go', clicks = 0;
+    this.goal = 'buying ' + n + ' ' + ITEMS[id].name;
+    const end = (t, why) => { if (why) self.log('buying ' + ITEMS[id].name + ': ' + why); if (UI.invOpen) self.press('Escape'); UI.closeTalk(); self.uiBusy = false; self.shopping = false; t.done = true; };
+    return { step() {
+      const p = self.p(), keeper = G.npcs.find(m => m.town && !m.dead && SHOPS[m.type] && SHOPS[m.type]().includes(id));
+      if (!keeper) return end(this, 'nobody sells it');
+      if (G.tick - t0 > 6000 && step !== 'stow') return end(this, 'took too long');
+      if (step === 'go') {
+        if (dist(keeper.cx, keeper.cy, p.cx, p.cy) < 110 && p.onGround) { step = 'talk'; return; }
+        const r = self.moveTo(Math.floor(keeper.cx / TS), Math.floor((keeper.y + keeper.h - 1) / TS), 3);
+        if (r === 'fail') return end(this, 'cannot reach ' + keeper.name);
+        self.goal = 'going to ' + keeper.name + ' to buy ' + ITEMS[id].name; return;
+      }
+      if (step === 'talk') {
+        self.shopping = true;
+        if (UI.shop) { step = 'buy'; self.uiBusy = true; return; }
+        if (UI.talk && UI.talkButtons && UI.talkButtons.Shop) { self.uiBusy = true; const b = UI.talkButtons.Shop; self.uiClick(b.x, b.y); return; }
+        // a right-click on them in the world (the game ignores it while the mouse counts as over the UI)
+        if (!UI.talk) { self.uiBusy = false; UI.mouseOverUI = false; self.aimWorld(keeper.cx, keeper.cy); Input.rClick = true; self.wantsDraw = true; if (++clicks > 30) return end(this, 'could not talk to ' + keeper.name); }
+        else { self.uiBusy = true; self.wantsDraw = true; }   // (open but not drawn yet: its buttons appear on the next draw; busy, or the UI gets closed)
+        return;
+      }
+      self.uiBusy = true;
+      if (step === 'buy') {
+        const held = p.mouseItem && p.mouseItem.id === id ? p.mouseItem.count : 0;
+        if (held >= n || invMoney(p.inv) < price || clicks > n + 60) { step = 'stow'; return; }
+        const s = (UI.shopSlots || []).find(q => q.id === id && !q.buyback);
+        if (!s) { self.wantsDraw = true; return; }
+        self.uiClick(s.x, s.y); clicks++; return;
+      }
+      // stow the cursor stack: onto a stack of the same item, else an empty slot
+      if (!p.mouseItem) { self.log('bought ' + ITEMS[id].name + ' (' + self.count(id) + ' now)'); return end(this); }
+      let i = p.inv.findIndex((q, k) => k >= 10 && k < 50 && q && q.id === p.mouseItem.id && q.count < maxStack(q.id));
+      if (i < 0) i = p.inv.findIndex((q, k) => k >= 10 && k < 50 && !q);
+      if (i < 0) return end(this, 'no room in the inventory');
+      const [x, y] = self.slotPos(i); self.uiClick(x, y);
+    } };
   },
   // equip / use an item, tracked by id (its slot is looked up live every step, so it can't loop on a stale slot)
   taskEquip(id) {
@@ -1977,7 +2019,7 @@ const Bot = {
   },
   // would a human attempt the Wall of Brainrot now? (it kills the Guide and chases you across the whole underworld)
   wallReadiness() { const p = this.p(); return 'life ' + p.lifeMax + ' def ' + p.calc.defense + ' the_67 ' + this.owns('the_67') + ' arrows ' + this.count('wooden_arrow'); },
-  readyForWall() { const p = this.p(); return p.lifeMax >= 200 && p.calc.defense >= 10 && this.owns('the_67') && this.has('guide_voodoo_doll') ; },
+  readyForWall() { const p = this.p(); return p.lifeMax >= 200 && this.owns('the_67') && this.has('guide_voodoo_doll'); },
   // the deepest ore the plan still needs that the local scan doesn't know about (gold before silver before iron)
   // ore still missing for the iron anvil (if not placed) and The 67 (the boss gate): {ore id: count}
   expeditionNeeds() {

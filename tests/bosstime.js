@@ -32,7 +32,7 @@ run(async (page) => {
       return { t: G.tick, n: Object.keys(W.kills).length, line: `t=${G.tick} day=${Math.floor(G.tick / 60000)} deaths=${Bot.deaths} life=${p.lifeMax} def=${p.calc.defense} pots=${Bot.potionCount()} dps=${Math.round(Bot.weaponDps(null).dps)} bosses=${Object.keys(W.kills).join('+') || '-'} | ${Bot.plan && Bot.plan.label} | ${Bot.goal}` };
     }, CH);
     console.error(r.line);
-    if (r.n >= 3) break;
+    if (r.n >= (+process.env.NEED || 4)) break;   // NEED=3: stop after the first three (the old metric)
   }
   const W = await page.evaluate(() => window.__b);
   const show = (title, o, n) => { const tot = Object.values(o).reduce((a, b) => a + b, 0); console.log('\n' + title); for (const [k, v] of Object.entries(o).sort((a, b) => b[1] - a[1]).slice(0, n)) console.log(`  ${String(v).padStart(7)} ${(100 * v / tot).toFixed(1).padStart(5)}%  ${k}`); };
@@ -40,5 +40,5 @@ run(async (page) => {
   show('ticks per plan step', W.plan, 20); show('ticks per goal (D=day N=night)', W.goal, 25);
   console.log('\nevents:'); for (const e of W.events.slice(-60)) console.log('  ' + e);
   const k = Object.values(W.kills).sort((a, b) => a - b);
-  console.log(`\nBOSSES ${k.length} ${JSON.stringify(W.kills)} third=${k[2] || 'none'}`);
+  console.log(`\nBOSSES ${k.length} ${JSON.stringify(W.kills)} third=${k[2] || 'none'} fourth=${k[3] || 'none'}`);
 });

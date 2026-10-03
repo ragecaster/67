@@ -336,12 +336,14 @@ const UI = {
     const p = G.player, sh = this.shop;
     txt(ctx, sh.title + '  (prices incl. 6.7% Fanum tax · shift-click your items to sell)', x0, y0 - 4, '#fff', 13);
     const list = sh.items.concat(sh.buyback.map(s => s.id));
+    this.shopSlots = [];   // where each item is drawn (the playtest bot clicks these)
     for (let i = 0; i < Math.min(40, list.length); i++) {
       const id = list[i];
       const x = x0 + (i % 10) * (SLOT + GAP), y = y0 + Math.floor(i / 10) * (SLOT + GAP);
       const isBuyback = i >= sh.items.length;
       const stack = isBuyback ? sh.buyback[i - sh.items.length] : { id, count: 1 };
       const price = isBuyback ? sellPrice(id) * stack.count : buyPrice(id);
+      this.shopSlots.push({ id, buyback: isBuyback, x: x + SLOT / 2, y: y + SLOT / 2 });
       const hot = this.drawSlot(ctx, x, y, stack, { color: isBuyback ? 'rgba(120,90,40,0.8)' : 'rgba(40,120,90,0.75)', price });
       if (hot && (Input.mClick || Input.rClick)) {
         if (invSpend(p.inv, price)) {
@@ -499,7 +501,8 @@ const UI = {
     this.addRect(x, y, w, h);
     let bx = x + 12;
     const by = y + h - 32;
-    const b = (label, fn) => { ctx.font = 'bold 13px ' + UI_FONT; const bw = ctx.measureText(label).width + 20; if (this.button(ctx, bx, by, bw, 24, label)) fn(); bx += bw + 8; };
+    this.talkButtons = {};   // label -> centre (the playtest bot clicks these)
+    const b = (label, fn) => { ctx.font = 'bold 13px ' + UI_FONT; const bw = ctx.measureText(label).width + 20; this.talkButtons[label] = { x: bx + bw / 2, y: by + 12 }; if (this.button(ctx, bx, by, bw, 24, label)) fn(); bx += bw + 8; };
     if (SHOPS[n.type]) b('Shop', () => { this.shop = { npc: n, title: n.shortName + "'s Shop", items: SHOPS[n.type](), buyback: [] }; this.invOpen = true; n.talking = false; this.talk = null; });
     if (n.type === 'nurse') {
       const c = nurseCost(p);

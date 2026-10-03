@@ -13,7 +13,9 @@ const BOSS_READY = {
   tung_sahur: { lifeMax: 100, def: 0, dps: 60, potions: 0, pick: 35 },   // copper mines everything up to gold
   // The 67 is best in slot up to the Wall (its homing 6s and 7s land ~220/s there; Night's Edge is melee only and costs a hellstone
   // sword + Tung's bat; Brainrot/Ohio bows land far less): the gate is The 67, and demonite goes into armor and the pickaxe
-  wall_of_flesh: { lifeMax: 300, def: 16, dps: 80, potions: 10, pick: 65, arrows: 300 },
+  // (no pickaxe gate: a gold pickaxe digs everything on the way to Ohio but Ohiostone, which the planner routes around;
+  // life is what the runway fight costs, ~170 in tests/wallrun.js)
+  wall_of_flesh: { lifeMax: 200, def: 0, dps: 80, potions: 0, pick: 35, arrows: 300 },
 };
 // upgrade paths the plan walks (cheapest first)
 // No Ohio (hellstone) gear: the Wall is the last boss, The 67 + Brainrot armor clear its gate, and hellstone sits in lava under
