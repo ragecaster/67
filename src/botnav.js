@@ -370,7 +370,9 @@ Object.assign(Bot, {
         if (hanging || this.hookStall > 6) {
           this.hookThrows = 0; nav.lastProgress = G.tick;
           if (hanging && Math.abs(p.cx - (n.x * TS + 16)) < 14 && Math.abs(ny - n.y) <= 1) nav.i++;
-          else { nav.replan = true; nav.cooldown = 0; this.replanWhy = 'hook-short'; }
+          // (banned: the hook caught a tile short of the planned anchor and the same plan came back every time, hook up, fall,
+          // hook up, for 130k ticks next to the house)
+          else { Nav.ban(n.x, n.y, 'hook'); nav.replan = true; nav.cooldown = 0; this.replanWhy = 'hook-short'; }
         }
         return false;
       }

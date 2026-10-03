@@ -15,7 +15,9 @@ const BOSS_READY = {
   // sword + Tung's bat; Brainrot/Ohio bows land far less): the gate is The 67, and demonite goes into armor and the pickaxe
   // (no pickaxe gate: a gold pickaxe digs everything on the way to Ohio but Ohiostone, which the planner routes around;
   // life is what the runway fight costs, ~170 in tests/wallrun.js)
-  wall_of_flesh: { lifeMax: 200, def: 0, dps: 80, potions: 0, pick: 35, arrows: 300 },
+  // (tests/tunnelwall.js from the tunnel, 340 life, 10 potions: no armor won 4/6, an iron set (9 defense) 6/6, the Brainrot set
+  // 8/8; the winners backed off 256-380 columns, so the tunnel is 400 long)
+  wall_of_flesh: { lifeMax: 200, def: 8, dps: 80, potions: 0, pick: 35, arrows: 300 },
 };
 // upgrade paths the plan walks (cheapest first)
 // No Ohio (hellstone) gear: the Wall is the last boss, The 67 + Brainrot armor clear its gate, and hellstone sits in lava under
