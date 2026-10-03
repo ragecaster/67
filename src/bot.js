@@ -132,15 +132,23 @@ const Bot = {
   // the house shell (walls, floor, roof) is never dug; the interior is not protected: a block left in there (a pillar the
   // builder stood on) made the inside of the house impassable for the planner, stations included
   isProtected(x, y) {
-    const h = this.houseSpot;
-    if (!(h && this.milestones.house)) return false;
-    if (!(x >= h[0] && x <= h[0] + 10 && y >= h[1] - 6 && y <= h[1])) return false;
-    return x === h[0] || x === h[0] + 10 || y === h[1] - 6 || y === h[1];
+    for (const h of this.builtHouses()) {
+      if (!(x >= h[0] && x <= h[0] + 10 && y >= h[1] - 6 && y <= h[1])) continue;
+      if (x === h[0] || x === h[0] + 10 || y === h[1] - 6 || y === h[1]) return true;
+    }
+    return false;
+  },
+  // the houses standing (the home, and the Merchant's once it's finished): the home is homeSpot even while the builder borrows
+  // houseSpot for the second one
+  builtHouses() {
+    const o = [];
+    if (this.milestones.house) { const h1 = this.homeSpot || this.houseSpot; if (h1) o.push(h1); }
+    if (this.house2Finished && this.house2Spot) o.push(this.house2Spot);
+    return o;
   },
   // the yard around the house: digging shafts/pits right beside the walls cuts the house off, so A* pays extra to dig there
   inYard(x, y) {
-    const h = this.houseSpot;
-    return !!(h && this.milestones.house && x >= h[0] - 12 && x <= h[0] + 22 && y >= h[1] - 12 && y <= h[1] + 10);
+    return this.builtHouses().some(h => x >= h[0] - 12 && x <= h[0] + 22 && y >= h[1] - 12 && y <= h[1] + 10);
   },
   // is there a drop-off within n tiles on either side (the Ohio islands/bridges)? hops and chases are not worth it there
   nearEdge(n) { const p = G.player, w = G.world, fy = Math.floor((p.y + p.h - 1) / TS), fx = Math.floor(p.cx / TS); for (const d of [-1, 1]) for (let k = 0; k <= n; k++) { let ground = false; for (let y = fy + 1; y <= fy + 14 && !ground; y++) if (w.solid(fx + d * k, y)) ground = true; if (!ground) return true; } return false; },
@@ -780,6 +788,8 @@ const Bot = {
       if (!near) continue;
       add('ore:' + ore, 'ore', () => { const want = this.count(ore) + 15; return this.taskMine('ore', () => this.count(ore) >= want, [tile]); }, { value: Math.log1p(ITEMS[ore].value || 1) / 8, dist: Math.abs(near[0] - this.feet()[0]) + Math.abs(near[1] - this.feet()[1]), needs: Math.min(this.count(ore), 200) / 100 });
     }
+    // the Merchant's house: once The 67 is made (he sells the rope for the hell elevator)
+    if (this.houseFinished && this.owns('the_67') && !this.house2Finished && !(this.house2Failed && G.tick - this.house2Failed < 30000)) add('house2', 'build', () => this.taskBuildHouse2(), { ready: 0.5 });
     // the mining expedition: all the ore the anvil and The 67 still need, in one trip underground (see taskExpedition)
     if (this.houseFinished && this.stationPlaced('furnace') && Object.keys(this.expeditionNeeds()).length) add('expedition', 'ore', () => this.taskExpedition(), { ready: 0.5 });
     // craftable goals: gear, stations, ammo, consumables, summons (the skill resolves missing ingredients itself)
@@ -1323,7 +1333,34 @@ const Bot = {
     }
     if (!this.houseSpot) this.houseSpot = [w.spawnX + 3, topSolid(w, w.spawnX + 3)];
     this.base = [this.houseSpot[0] + 5, this.houseSpot[1] - 1];
+    this.homeSpot = this.houseSpot;
     this.log('house site at ' + this.houseSpot);
+  },
+  // A second house beside the first, so the Merchant can move in (he sells rope; he comes once we carry 50 silver and there's
+  // a free valid room). Same 11-wide build, on flat ground right or left of home, its doorstep clear of the first one's.
+  pickHouse2Site() {
+    if (this.house2Spot) return this.house2Spot;
+    const w = G.world, h = this.homeSpot || this.houseSpot;
+    for (const x0 of [h[0] + 14, h[0] - 15, h[0] + 18, h[0] - 19]) {
+      const ys = []; for (let i = -3; i < 11; i++) ys.push(topSolid(w, x0 + i));
+      if (ys.some(y => y < 0) || Math.max(...ys) - Math.min(...ys) > 3 || Math.abs(ys[3] - h[1]) > 8) continue;
+      if (ys.some((y, i) => w.liq(x0 + i - 3, y - 1))) continue;
+      return (this.house2Spot = [x0, Math.max(...ys.slice(3))]);
+    }
+    return null;
+  },
+  // the house builder works on this.houseSpot: lend it the second site during each of its steps, then put the home back
+  taskBuildHouse2() {
+    const self = this, site = this.pickHouse2Site();
+    if (!site) { this.log('no flat ground for a second house'); this.house2Failed = G.tick; return { done: true, step() {} }; }
+    const borrow = fn => {
+      const keep = [self.houseSpot, self.base, self.houseFinished];
+      self.houseSpot = site; self.houseFinished = false;
+      try { return fn(); } finally { const fin = self.houseFinished; [self.houseSpot, self.base, self.houseFinished] = keep; if (fin) { self.house2Finished = true; self.log('second house finished (for the Merchant)'); } }
+    };
+    const inner = borrow(() => self.taskBuildHouse());
+    this.goal = 'building a second house (for the Merchant)';
+    return { step() { borrow(() => inner.step()); if (inner.done) this.done = true; if (!/^building/.test(self.goal || '')) {} else self.goal = 'building a second house (for the Merchant)'; } };
   },
   // the build order: [op, x, y, item]
   housePlan() {
