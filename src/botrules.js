@@ -54,6 +54,8 @@ Object.assign(Bot, {
   },
   // max life plus what carried potions add over a boss fight (bench: 100 life + 5 potions beats King like 140 life does)
   effLife() { return this.p().lifeMax + 12 * Math.min(this.potionCount(), 4); },
+  // down by the hell elevator / the Wall tunnel (the shaft reaches the tunnel's rows): no fleeing home from here
+  inDeepHell(fy) { const H = this.hell, top = H && (H.R || (H.tunnel && H.bot >= H.F - 1 ? H.F : 0)); return !!top && fy > top - 40; },
   potionCount() { return this.p().inv.reduce((n, s) => n + (s && ITEMS[s.id].heal && ITEMS[s.id].potion ? s.count : 0), 0); },
   // reflexes the model is never asked about
   survivalReflex(foes) {
@@ -63,7 +65,7 @@ Object.assign(Bot, {
     // in Ohio home is ~470 tiles up through lava: potions (the 40% reflex) are the way out, not running
     if (fy > G.world.hellLayer - 20 && this.potionCount() > 0) return null;
     // with a hell elevator a death costs a respawn and a ride down; climbing ~450 rows home costs far more
-    if (this.hell && this.hell.R && fy > this.hell.R - 40) return null;
+    if (this.inDeepHell(fy)) return null;
     if (p.life < p.lifeMax * 0.35 && dHome > 6) return 'flee';     // badly hurt away from home: go home, enemies or not
     return null;
   },

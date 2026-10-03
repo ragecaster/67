@@ -3,7 +3,39 @@
 This is a Terraria clone with Gen Z / Gen Alpha brainrot memes. It runs in the browser with plain JS and a canvas, and there's no build step. It's live at https://ragecaster.github.io/67/ (GitHub Pages deploys from `main`, root).
 Watch the playtest bot at https://ragecaster.github.io/67/?bot&turbo=4. In the game, F8 toggles the bot and F9 cycles its speed from 1x to 64x.
 
-## Session 5: the owner's gameplay feedback (read this first)
+## Session 6: the Wall of Brainrot from a tunnel (work in progress, read this first)
+
+Goal: all 4 bosses in under 324k ticks. The first three come in at 225–330k on evalA–F (`s6a`), so the Wall still needs a working plan, and the early game needs to get faster.
+
+**The Wall plan** (`taskHell` with `H.tunnel`; `findIsland` now also needs a feasible tunnel):
+1. Chop wood and craft about 340 wood platforms (`platforms` phase).
+2. Buy rope and potions from the Merchant.
+3. Dig the hell elevator shaft, stopping at row hellLayer−1 (599).
+4. `digTunnel`: 300 columns from the shaft, heading away from the island's lava side.
+   - Body rows 597–599, so the bot's centre stays in the **cavern** spawn zone, not Ohio's.
+   - Wood-platform floor on row 600.
+   - 4-row open **trench** (601–604) under the floor. The Wall's hitbox never rises above row 600, and The 67's homing shots dive into the floor over solid rock; over the trench they hit. A 6-row trench deals more damage, but 604 is the bot's reach limit.
+5. `digChute`: a 3-wide chute from the floor into the void. The rope hangs from the rung at (sx+1, 600+1) down to the island; the bot digs while hanging on it and never free-falls.
+6. Hang on the rope about 9 rows under the void's ceiling (`hangRow`) and shoot demons; Voodoo Demon dolls fall into the pickup magnet within about 1,000 ticks.
+7. `ropeThrow`: drink a cappuccino (`drinkSpeed`) and throw the doll sideways into the lava. If it lands on the island, the bot picks it up and throws from the island's edge instead.
+8. `toTunnel`: climb the rope, jump through the rung, and fight from the tunnel (`wallFight`, 50–100 px gap, level aim).
+
+**Measured** (`tests/tunnelwall.js` carves the tunnel; `tests/tunneldig.js`; `tests/tunnelflow.js` carves shaft+tunnel and runs the late phases):
+- Fight with a 6-row trench: wins about 15/16 with gold armour, 300 life, no potions.
+- With the 4-row trench, a **speed buff is needed**: gold + Zoomies/cappuccino 8/8, iron + 200 life + Zoomies 4/4, no armour 5/8. Without a buff the late phase is lost, because the Wall outruns 3 px/tick below about 35% of its life. Shadow armour (+15% speed) gets 8/8 but costs 35 rotten chunks.
+- A long-range or upward aim, or a tunnel at rows 600–602 or 611–613 (Ohio zone), all lose.
+- Digging is limited by pickaxe speed: about 150 ticks per column, so about 45k ticks for the tunnel. The shaft takes about 19k ticks.
+- Full flow on bot67 (`helldbg.js`): the shaft and tunnel get dug.
+- Latest `tunnelflow` run: the rope throw summoned the Wall and the bot climbed into the tunnel, but it died with the Wall at **252/8000**.
+
+**Open problems:**
+- Ohio is deadly while hanging and waiting: Ohio Demons kill in about 1,000 ticks, and lava from killed Ohio Slimes collects on the island.
+- After a failed fight, the bot dies again and again until the Wall reaches the world's edge.
+- Cappuccinos need to be kept and not trashed. Ballerinas drop them in the cavern zone, which the tunnel dig passes through.
+- Overall time: the Wall pipeline is about 70k+ ticks, so it has to run on day 2–3 between boss nights, and the early game needs to get faster.
+- With `GIVE=cappuccino` at the start, `helldbg` on bot67 gets stuck building the house (not yet understood; the same build with drawing on works).
+
+## Session 5: the owner's gameplay feedback
 
 The owner watched the bot and asked for player-like play. Here is what each request led to. Everything is committed on local `main` (not pushed).
 
