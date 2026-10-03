@@ -157,7 +157,10 @@ Object.assign(Bot, {
     }
     if (p.calc.defense < R.def && G.world.flags.eye_of_cthulhu && this.brainrotWants().some(id => id.startsWith('shadow_')))
       reqs.push({ label: 'Brainrot armor', ids: new Set(['brainrot', ...this.SHADOW_SET.map(id => 'craft:' + id), 'craft:demonite_bar']) });
-    if (this.effLife() < R.lifeMax) reqs.push({ label: 'more max life', ids: new Set(['crystal', 'explore']) });
+    // (for the Wall, the life only matters at the throw: the elevator and the tunnel come first, crystals on the way; ahead of
+    // them "more max life" held up the shaft by ~40k ticks on evalF)
+    const Hl = this.hell, wallDug = !!(Hl && (Hl.tunnelDone || ['chute', 'ropeShop', 'ride', 'wait'].includes(Hl.ph)));
+    if (this.effLife() < R.lifeMax && (key !== 'wall_of_flesh' || wallDug)) reqs.push({ label: 'more max life', ids: new Set(['crystal', 'explore']) });
     if (this.potionCount() < R.potions) reqs.push({ label: 'healing potions', item: 'lesser_healing_potion' });
     // arrows only for a bow we'd actually fight with (The 67 counts as ranged, it fires 6s and 7s, but needs no ammo)
     const rs = this.rangedSlot();

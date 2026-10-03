@@ -2628,6 +2628,8 @@ const Bot = {
         // down to the island's edge to throw it; the climb back up to the tunnel is the Wall fight's first step
         if (H.tunnel) {
           const hang = self.hangRow(H), doll = self.has('guide_voodoo_doll');
+          // short of the Wall's life gate: go get crystals first (the plan only asks for them once the tunnel is dug)
+          if (p.lifeMax < BOSS_READY.wall_of_flesh.lifeMax && !H.thrownAt && !G.npcs.some(n => n.type === 'wall_of_flesh')) { self.log('more max life before the Wall (' + p.lifeMax + ')'); (self.cooldowns = self.cooldowns || {}).hell = G.tick + 6000; this.done = true; return; }
           // just thrown: straight back up to the tunnel (the Wall shows up a moment later ~50 tiles off); no Wall after a while:
           // the doll landed on the island instead of in the lava, go and get it
           if (H.thrownAt && G.tick - H.thrownAt < 900 && !doll) { const t = self.toTunnel(H); if (t === true) self.goal = 'waiting in the tunnel for the Wall'; return; }
