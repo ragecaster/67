@@ -24,6 +24,9 @@ const G = {
         Menu.open();
         this.state = 'menu';
         const qs = new URLSearchParams(location.search);
+        // ?bot plays by the rules (the tuned planner); ?bot&mode=jev lets the trained TerraJev model decide (it was trained on
+        // an older planner and still hides in the house all night)
+        if (qs.has('bot')) TerraJev.mode = qs.get('mode') || 'teacher';
         if (qs.has('bot')) Menu.startBotRun(qs.get('seed') || 'bot67', parseInt(qs.get('turbo') || '8'), qs.get('size') || 'small');
       })
       .catch(e => {
