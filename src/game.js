@@ -582,24 +582,37 @@ const G = {
   },
 
   // ---------- enemy spawning (Terraria-style rates/limits) ----------
-  spawnEnemies(p) {
+  // spawn rate and cap around a player: { zone, rate (1 in rate per tick), max, hostile (what counts toward max) }
+  spawnLimits(p) {
     const w = this.world;
-    if (p.dead) return;
-    const ptx = Math.floor(p.cx / TS), pty = Math.floor(p.cy / TS);
+    const pty = Math.floor(p.cy / TS);
     const night = !w.dayTime, blood = night && w.flags.bloodMoon;
     const zone = pty < w.worldSurface ? 'surface' : pty < w.rockLayer ? 'underground' : pty < w.hellLayer ? 'cavern' : 'hell';
+    // Terraria (wiki "NPC spawning", 1.4.5 source): one 1-in-spawnRate roll per tick; base 1/600, max 5;
+    // surface night 1/360 & 6, blood moon 1/108 & 10, underground 1/300 & 8, caverns 1/240 & 9, underworld 1/600 & 10
     let rate = 600, max = 5;
-    if (zone === 'surface' && night) { rate = 300; max = 8; }
-    if (zone === 'underground') { rate = 450; max = 7; }
-    if (zone === 'cavern') { rate = 380; max = 8; }
-    if (zone === 'hell') { rate = 280; max = 9; }
-    if (blood) { rate = 120; max = 14; }
+    if (zone === 'surface' && night) { rate = 360; max = 6; }
+    if (zone === 'underground') { rate = 300; max = 8; }
+    if (zone === 'cavern') { rate = 240; max = 9; }
+    if (zone === 'hell') { rate = 600; max = 10; }
+    if (blood && zone === 'surface') { rate = 108; max = 10; }
     if (p.buffs.battle) { rate *= 0.5; max *= 2; }
     const towns = this.npcs.filter(n => n.town && dist(n.cx, n.cy, p.cx, p.cy) < 60 * TS).length;
     if (towns >= 2 && zone === 'surface') { rate *= 3; max = Math.max(2, max - 3); }
     if (this.npcs.some(n => n.boss)) { rate *= 2; }
-    const hostile = this.npcs.filter(n => !n.friendly && !n.boss && !n.town && Math.abs(n.cx - p.cx) < 1600 && Math.abs(n.cy - p.cy) < 1000).length;
-    if (hostile >= max || Math.random() > 1 / rate * 4) return;
+    // count everything that hasn't despawned yet (NPC.update drops them past 2400 x 1600 px), so off-screen ones still fill the cap
+    const hostile = this.npcs.filter(n => !n.friendly && !n.boss && !n.town && !n.dead && Math.abs(n.cx - p.cx) < 2400 && Math.abs(n.cy - p.cy) < 1600).length;
+    // a thin crowd spawns faster: ×0.6 under 20% of the cap, ×0.7 under 40%, ×0.8 under 60%, ×0.9 under 80%
+    const fill = hostile / max;
+    rate *= fill < 0.2 ? 0.6 : fill < 0.4 ? 0.7 : fill < 0.6 ? 0.8 : fill < 0.8 ? 0.9 : 1;
+    return { zone, night, blood, rate: Math.floor(rate), max, hostile };
+  },
+  spawnEnemies(p) {
+    const w = this.world;
+    if (p.dead) return;
+    const ptx = Math.floor(p.cx / TS), pty = Math.floor(p.cy / TS);
+    const { zone, night, blood, rate, max, hostile } = this.spawnLimits(p);
+    if (hostile >= max || Math.random() * rate >= 1) return;
     // pick a spot just off-screen
     const vw = p === this.player ? this.viewW : 1600, vh = p === this.player ? this.viewH : 900;
     const halfW = Math.ceil(vw / TS / 2) + 3, halfH = Math.ceil(vh / TS / 2) + 3;

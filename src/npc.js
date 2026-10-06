@@ -14,7 +14,7 @@ const NPC_TYPES = {
   cave_bat: { name: 'Crashout Bat', img: 'npcs/Cave_Bat', w: 22, h: 18, life: 16, damage: 13, defense: 2, kb: 0.8, ai: 'bat', speed: 3.5, value: 90, drops: [] },
   skeleton: { name: 'Mewing Skeleton', img: 'npcs/Skeleton', w: 22, h: 44, life: 60, damage: 20, defense: 8, kb: 0.5, ai: 'fighter', speed: 1.3, value: 130, drops: [['bone', 0.5, 1, 3], ['hook', 0.04, 1, 1]] },
   undead_miner: { name: 'Unc Miner', img: 'npcs/Undead_Miner', w: 22, h: 44, life: 70, damage: 22, defense: 9, kb: 0.5, ai: 'fighter', speed: 1.1, value: 200, drops: [['bomb', 0.5, 1, 5], ['bone', 0.3, 1, 2]] },
-  fire_imp: { name: 'Ohio Imp', img: 'npcs/Fire_Imp', w: 28, h: 40, life: 70, damage: 20, defense: 16, kb: 0.5, ai: 'caster', value: 300, drops: [['obsidian', 0.4, 1, 3]], lavaImmune: true },
+  fire_imp: { name: 'Ohio Imp', img: 'npcs/Fire_Imp', w: 28, h: 40, life: 70, damage: 20, defense: 16, kb: 0.5, ai: 'caster', value: 300, drops: [['obsidian', 0.4, 1, 3], ['obsidian_rose', 0.05, 1, 1]], lavaImmune: true },
   demon: { name: 'Ohio Demon', img: 'npcs/Demon', w: 48, h: 40, life: 120, damage: 32, defense: 8, kb: 0.8, ai: 'demon', value: 300, drops: [['demon_scythe', 0.03, 1, 1]], lavaImmune: true },
   voodoo_demon: { name: 'Voodoo Ohio Demon', img: 'npcs/Voodoo_Demon', w: 48, h: 48, life: 140, damage: 32, defense: 8, kb: 0.8, ai: 'demon', value: 300, drops: [['guide_voodoo_doll', 1, 1, 1], ['demon_scythe', 0.03, 1, 1]], lavaImmune: true },
   hellbat: { name: 'Ohio Bat', img: 'npcs/Hellbat', w: 22, h: 18, life: 35, damage: 21, defense: 8, kb: 0.8, ai: 'bat', speed: 4, value: 150, drops: [], lavaImmune: true, onHitFire: true },
@@ -171,7 +171,7 @@ class NPC {
       if (rectsOverlap(this, p)) {
         const hit = p.hurt(this.damage, this.cx < p.cx ? 1 : -1, this, 'enemy');
         if (hit) {
-          if (d.onHitFire && !p.calc.fx.fireBlockImmune) p.addBuff('on_fire', 180);
+          if (d.onHitFire) p.addBuff('on_fire', 180);   // (Terraria: the Obsidian Skull only stops burns from fire blocks, not hits)
           if (d.thief) this.steal(p);
           if (this.boss && d.onPlayerHit) d.onPlayerHit(this, p);
         }
@@ -357,7 +357,9 @@ const NPC_AI = {
     const tx = p.cx + Math.cos(n.ai[0] / 60) * 150, ty = p.cy - 120 + Math.sin(n.ai[0] / 40) * 40;
     n.vx += clamp((tx - n.cx) * 0.002, -0.12, 0.12); n.vy += clamp((ty - n.cy) * 0.002, -0.12, 0.12);
     n.vx *= 0.98; n.vy *= 0.98;
-    n.x += n.vx; n.y += n.vy;
+    // (they collide with blocks, as in Terraria: they used to fly through rock, so no tunnel or wall in Ohio kept them off)
+    moveEntity(n, world, { stepUp: false });
+    if (n.collidedX) n.vx = -n.vx * 0.7; if (n.collidedY) n.vy = -n.vy * 0.7;
     n.dir = p.cx < n.cx ? -1 : 1;
     if (n.ai[0] % 180 === 0 && !p.dead) {
       for (let k = -1; k <= 1; k++) {

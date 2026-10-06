@@ -240,6 +240,7 @@ acc('shackle', "Unc's Shackle", 'items/Shackle', { defense: 1 }, { tooltip: '+1 
 acc('aglet', 'Drip Aglet', 'items/Aglet', { moveSpeed: 0.05 }, { tooltip: '5% increased movement speed. Drip check passed.' });
 acc('lucky_horseshoe', 'Lucky Horseshoe', 'items/Lucky_Horseshoe', { noFallDmg: true }, { tooltip: 'Negates fall damage. Locked in.' });
 acc('obsidian_skull', 'Ohio Skull', 'items/Obsidian_Skull', { fireBlockImmune: true, defense: 1 }, { tooltip: 'Grants immunity to Ohiostone burns.' });
+acc('obsidian_rose', 'Ohio Rose', 'items/Obsidian_Rose', { lavaRose: true }, { rare: 3, value: 20000, tooltip: 'Reduces damage from touching lava.\nA rose from Ohio. Lowkey romantic.' });
 acc('feral_claws', 'Crashout Claws', 'items/Feral_Claws', { meleeSpeed: 0.12 }, { tooltip: '12% increased melee speed.' });
 acc('band_of_starpower', 'Band of Aura', 'items/Band_of_Starpower', { maxMana: 20 }, { tooltip: 'Increases maximum mana by 20.' });
 acc('cobalt_shield', 'Sigma Shield', 'items/Cobalt_Shield', { noKnockback: true, defense: 1 }, { rare: 2, tooltip: 'Grants immunity to knockback. Unbothered. Moisturized.' });

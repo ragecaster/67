@@ -214,6 +214,7 @@ const ASSET_MANIFEST = {
 "Water_Bolt.png",
 "Flamelash.png",
 "Obsidian_Skull.png",
+"Obsidian_Rose.png",
 "Lucky_Horseshoe.png",
 "Feral_Claws.png",
 "Band_of_Starpower.png",

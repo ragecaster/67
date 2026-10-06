@@ -184,6 +184,9 @@ const Bot = {
     for (let i = 1; i <= cols; i++) { let ok = false; for (let j = -3; j <= 4; j++) if (w.solid(fx + dir * i, fy + 1 + j) && !w.solid(fx + dir * i, fy + j)) { ok = true; break; } if (!ok) return true; }
     return false;
   },
+  // the ground row of column x seen from the sky, through any lake on it (topSolid says -1 for a water column, and "climb to
+  // row -2" sent A* through its whole 220k-node budget every 25 ticks next to a lake on evalF: the game crawled, the bot stood)
+  groundY(x) { const w = G.world; for (let y = 5; y < w.h - 1; y++) { const t = w.tile(x, y); if (t && TILES[t].solid) return y; } return w.h - 2; },
   nearLava(x, y) { const w = G.world; for (let j = -2; j <= 1; j++) for (let i = -1; i <= 1; i++) if (w.liq(x + i, y + j) > 20 && w.ltype[w.idx(x + i, y + j)] === 1) return true; return false; },
 
   // ================= main tick =================
@@ -294,7 +297,7 @@ const Bot = {
       if (t) { this.aimWorld(t[0] * TS + 8, t[1] * TS + 8); this.press('e'); this.hookBrake = G.tick; this.why = 'hook-rescue'; return; }
     }
     // long fall in progress (the game hurts above 25 tiles): drop a block right under our feet; it lands us and resets the fall
-    if (!p.onGround && p.vy > 4 && p.fallStart != null && (p.y - p.fallStart) / TS > 14 && !UI.invOpen) {
+    if (!p.onGround && p.vy > 4 && p.fallStart != null && (p.y - p.fallStart) / TS > 14 && !UI.invOpen && !(G.tick - (this.shaftDropAt || -99) < 30)) {
       const w = G.world, fy2 = Math.floor((p.y + p.h) / TS);
       // a deadly fall outranks the reservation: use any block
       let bs = this.spareBlockSlot(false); if (bs < 0) bs = this.slotOf(it => ['dirt_block', 'stone_block', 'clay_block', 'mud_block', 'sand_block', 'ash_block'].includes(it.id));
@@ -900,7 +903,9 @@ const Bot = {
     }
     // (from The 67 on, not only after the Eye: the nightmare pickaxe opens the Wall tunnel, which is dug ahead of time now)
     const bn = (w.flags.eye_of_cthulhu || this.owns('the_67')) && this.brainrotWants().length ? this.brainrotNeeds() : null;   // (materials in hand: the crafts take over)
-    if (bn && (this.count('rotten_chunk') < bn.chunks || this.count('demonite_ore') < bn.ore)) add('brainrot', 'brainrot', () => this.taskBrainrot(), { ready: Math.min(1, this.count('rotten_chunk') / 6) });
+    // (demonite still missing but the pickaxe can't mine it yet: nothing for the trip to do; it ended on its first step and was
+    // picked again, a task loop for thousands of ticks on evalE)
+    if (bn && (this.count('rotten_chunk') < bn.chunks || (this.count('demonite_ore') < bn.ore && SDK.obs().inv.pick.power >= TILES[T.DEMONITE].minPick))) add('brainrot', 'brainrot', () => this.taskBrainrot(), { ready: Math.min(1, this.count('rotten_chunk') / 6) });
     if (this.owns('the_67') && p.lifeMax >= 200 && !w.flags.wall_of_flesh && (this.othersDown() || this.hellPrepOk())) add('hell', 'hell', () => this.taskHell(), { ready: Math.min(1, p.lifeMax / 300) });
     add('explore', 'explore', () => this.taskExplore());
     // (not from down in Ohio once the hell elevator stands: the walk home pathfinds through the void and into the lava)
@@ -1200,7 +1205,12 @@ const Bot = {
             if (!st && item && item !== id && self.has(item)) { sub = sub || self.taskCraftAtBase([item, 0, 'place']); sub.step(); if (sub.done) sub = null; return; }
           }
           const res = self.moveTo(target[0], target[1], 2);
-          if (res === 'fail') { this.done = true; self.log('could not reach crafting station for ' + id); self.fail(id); return; }
+          if (res === 'fail') {
+            this.done = true; self.log('could not reach crafting station for ' + id); self.fail(id);
+            // an unreachable altar: the next try picks another (evalC retried the same one every 240 ticks until the watchdog)
+            if (r.station === 'altar' && self.craftAltar) { (self.badAltars = self.badAltars || []).push(self.craftAltar); self.craftAltar = null; }
+            return;
+          }
           if (res) phase = times ? 'open' : 'place'; // times 0: the item is already in the inventory, just place it
           return;
         }
@@ -1287,7 +1297,7 @@ const Bot = {
   stationSpot(id) {
     const t = ITEMS[id].place;
     if (!this.houseSpot || !TILES[t] || !TILES[t].station || !this.houseValid()) return null;
-    return this.houseFurnSpot(id, this.houseSpot[0] + (id === 'furnace' ? 5 : 2));
+    return this.houseFurnSpot(id, this.houseSpot[0] + (id === 'furnace' || id === 'hellforge' ? 5 : 2));   // (the Ohioforge takes the furnace's place)
   },
   // best spot around the base (outside the house) where an object fits
   onDoorstep(ox, oy, td) {
@@ -1321,20 +1331,23 @@ const Bot = {
     return null;
   },
   // mine: go to the nearest reachable stone/ore (pathfinding digs the tunnel), grab anything useful in reach
-  taskMine(what, doneFn, tiles) {
+  // opts: { area(t, x, y): where targets may be, reachOk(t, x, y): extra test for mining a block in reach right now,
+  //         over: stand above the target, not under it, wander(fx, fy): where to look when nothing is in sight }
+  taskMine(what, doneFn, tiles, opts = {}) {
     const self = this;
     this.goal = 'mining ' + what;
     let target = null, since = 0, bestD = Infinity, lastStep = 0;
     // a target we gave up on is skipped as a mining target for a while (it used to go into badTiles, which also made those
     // 25 cells impassable for the planner, forever)
     const bad = (x, y) => (self.badTiles && self.badTiles.has(x + ',' + y)) || (self.badMine && self.badMine.get(x + ',' + y) > G.tick);
-    const markBad = (t) => { const m = self.badMine = self.badMine || new Map(); for (let j = -2; j <= 2; j++) for (let i = -2; i <= 2; i++) m.set((t[0] + i) + ',' + (t[1] + j), G.tick + 20000); };
+    const br = opts.badRadius || 2;   // (a whole vein for the Ohio armor: one unreachable obsidian vein next to lava was retried block by block for 30k ticks)
+    const markBad = (t) => { const m = self.badMine = self.badMine || new Map(); for (let j = -br; j <= br; j++) for (let i = -br; i <= br; i++) m.set((t[0] + i) + ',' + (t[1] + j), G.tick + 20000); };
     return {
       step() {
         if (doneFn()) {
           // finish the vein we are standing at (a few more swings now beat a whole trip back for the next item)
           const p0 = self.p();
-          const more = tiles && (this.extra = (this.extra || 0) + 1) < 900 && self.nearestTile((t, x, y) => tiles.includes(t) && p0.inReach(x, y) && !self.isProtected(x, y) && !self.floorOverDrop(x, y) && !(self.badTiles && self.badTiles.has(x + ',' + y)), 7, 6);
+          const more = tiles && (this.extra = (this.extra || 0) + 1) < 900 && self.nearestTile((t, x, y) => tiles.includes(t) && p0.inReach(x, y) && !self.isProtected(x, y) && !self.floorOverDrop(x, y) && !(self.badTiles && self.badTiles.has(x + ',' + y)) && (!opts.reachOk || opts.reachOk(t, x, y)), 7, 6);
           if (more && self.dig(more[0], more[1]) !== 'fail') { self.goal = 'mining ' + TILES[tiles[0]].name; return; }
           this.done = true; return;
         }
@@ -1345,12 +1358,13 @@ const Bot = {
         const [fx, fy] = self.feet();
         const pick = self.bestSlot('pick'), power = pick >= 0 ? ITEMS[p.inv[pick].id].pick : 0;
         const want = tiles ? (t => tiles.includes(t) && TILES[t].minPick <= power) : what === 'stone' ? (t => t === T.STONE) : (t => (TILES[t] && TILES[t].ore && TILES[t].minPick <= power && t !== T.HELLSTONE) || t === T.LIFE_CRYSTAL);
-        const ok = (t, x, y) => want(t) && !self.nearLava(x, y) && !self.isProtected(x, y) && !bad(x, y) && !self.nearBackrooms(x, y) && Nav.cellCost(x, y) < Infinity;
-        const near = self.nearestTile((t, x, y) => ok(t, x, y) && p.inReach(x, y) && !self.floorOverDrop(x, y), 7, 6);
+        const ok = (t, x, y) => want(t) && !self.nearLava(x, y) && !self.isProtected(x, y) && !bad(x, y) && !self.nearBackrooms(x, y) && (t === T.HELLSTONE || Nav.cellCost(x, y) < Infinity) && (!opts.area || opts.area(t, x, y));
+        const near = self.nearestTile((t, x, y) => ok(t, x, y) && p.inReach(x, y) && !self.floorOverDrop(x, y) && (!opts.reachOk || opts.reachOk(t, x, y)), 7, 6);
         self.dbg = 'mine near=' + near + ' target=' + target;
         if (near) { if (self.dig(near[0], near[1]) === 'fail') markBad(near); self.goal = 'mining ' + TILES[w.tile(near[0], near[1])].name; since = G.tick; return; }
         if (!target || (!target.synthetic && !want(w.tile(target[0], target[1])))) {
           target = self.pickMineTarget(ok, w, fx, fy, want);
+          if (!target && opts.wander) { target = opts.wander(fx, fy); target.synthetic = true; }
           if (!target) { // nothing known nearby: head deeper, away from the house
             const depth = what === 'stone' ? w.worldSurface + 12 : w.rockLayer + 15;
             const side = self.houseSpot && Math.abs(fx - self.houseSpot[0]) < 20 ? (fx < self.houseSpot[0] + 5 ? -25 : 25) : (Math.random() < 0.5 ? -30 : 30);
@@ -1362,7 +1376,10 @@ const Bot = {
         }
         const d = Math.abs(fx - target[0]) + Math.abs(fy - target[1]);
         if (d < bestD - 1) { bestD = d; since = G.tick; }
-        const r = self.moveTo(target[0], target[1] + 1, 3);
+        // (over: exactly 3 columns aside and 3 rows up, where the target is in reach and below our feet: within a tolerance the
+        // bot stopped beside it, couldn't mine it from there, and re-picked it every tick)
+        const side = fx < target[0] ? -1 : 1;
+        const r = opts.over && !target.synthetic ? self.moveTo(target[0] + side * 3, target[1] - 3, 0) : self.moveTo(target[0], target[1] + 1, 3);
         if (r === 'fail' || G.tick - since > 1500) { self.log('giving up on target ' + target); markBad(target); target = null; }
         else if (r === true) target = null;
       },
@@ -1573,11 +1590,11 @@ const Bot = {
           if (!nightOk) {
             if (self.ticksToNight() > self.nightLead()) { this.done = true; return; }   // a whole day ahead: go do something useful first
             // (deep down at dusk: climb out right here, the boss comes to wherever we stand)
-            if (fy > topSolid(w, fx) + 3) { self.goal = 'climbing out before night to summon ' + name; if (self.moveTo(fx, topSolid(w, fx) - 1, 3) === 'fail') self.moveTo(home[0] - 6, home[1], 3); return; }
+            if (fy > self.groundY(fx) + 3) { self.goal = 'climbing out before night to summon ' + name; if (self.moveTo(fx, self.groundY(fx) - 1, 3) === 'fail') self.moveTo(home[0] - 6, home[1], 3); return; }
             self.goal = 'waiting for night to summon ' + name; self.moveTo(home[0] - 6, home[1], 3); return;
           }
           // every boss comes to wherever we are: get to the surface right here (Tung's perch gets built next to us)
-          if (fy > topSolid(w, fx) + 3 && !(self.perch && Math.abs(fx - self.perch[0]) <= (self.perch.len || self.LEDGE) + 3) && !(self.fightArena && Math.abs(fx - self.fightArena[0]) <= self.ARENA_LEN + 3)) { self.goal = 'climbing to the surface to summon ' + name; if (self.moveTo(fx, topSolid(w, fx) - 1, 3) === 'fail') self.moveTo(home[0] - 6, home[1], 3); return; }
+          if (fy > self.groundY(fx) + 3 && !(self.perch && Math.abs(fx - self.perch[0]) <= (self.perch.len || self.LEDGE) + 3) && !(self.fightArena && Math.abs(fx - self.fightArena[0]) <= self.ARENA_LEN + 3)) { self.goal = 'climbing to the surface to summon ' + name; if (self.moveTo(fx, self.groundY(fx) - 1, 3) === 'fail') self.moveTo(home[0] - 6, home[1], 3); return; }
           if (p.life < p.lifeMax * 0.85) { self.goal = 'healing up before ' + name; return; }
           if (!self.bossReady(key)) { self.log('not ready for ' + name + ' yet'); this.done = true; return; }
           // The sky arena (one per world, built once, kept): a 24-platform strip ~20 tiles over clear ground 40-120 tiles from the
@@ -1625,8 +1642,8 @@ const Bot = {
         const deep = farm === 'caverns';
         if (deep) {
           // roam the caverns (A* digs its own tunnels), meeting skeletons; move on when the area stops spawning
-          const crowdD = G.npcs.filter(n => !n.friendly && !n.boss && !n.town && !n.dead && Math.abs(n.cx - self.p().cx) < 1600 && Math.abs(n.cy - self.p().cy) < 1000).length;
-          this.clogD = crowdD >= 8 ? (this.clogD || 0) + 1 : 0;
+          const capD = G.spawnLimits(self.p()), crowdD = capD.hostile;
+          this.clogD = crowdD >= capD.max ? (this.clogD || 0) + 1 : 0;
           if (!this.deepT || this.clogD > 900 || (this.deepFails || 0) > 2) {
             const clogged = this.clogD > 900;
             this.clogD = 0; this.deepFails = 0; this.deepSide = -(this.deepSide || 1);
@@ -1656,13 +1673,13 @@ const Bot = {
           this.farmFails = 0; this.farmSide = -(this.farmSide || 1);
           this.farmX = clamp(home[0] + this.farmSide * 90, 60, w.w - 60);
         }
-        // the spawn cap counts every hostile within 100x62 tiles (cave monsters far below included) and they only despawn
-        // 150+ tiles away: a clogged area never spawns another Side-Eye, so move the farm 160 tiles over
-        const crowd = G.npcs.filter(n => !n.friendly && !n.boss && !n.town && !n.dead && Math.abs(n.cx - p.cx) < 1600 && Math.abs(n.cy - p.cy) < 1000).length;
-        this.clog = crowd >= (G.isNight() ? 6 : 4) ? (this.clog || 0) + 1 : 0;
+        // the spawn cap counts every hostile within 150x100 tiles (cave monsters far below included) and they only despawn
+        // 150+ tiles away: a full cap never spawns another Side-Eye, so move the farm 160 tiles over
+        const cap = G.spawnLimits(p), crowd = cap.hostile;
+        this.clog = crowd >= cap.max ? (this.clog || 0) + 1 : 0;
         if (this.clog > 900) { this.clog = 0; this.farmX = clamp(this.farmX + this.farmSide * 160, 60, w.w - 60); if (this.farmX <= 60 || this.farmX >= w.w - 60) this.farmSide = -this.farmSide; self.log('farm area clogged (' + crowd + ' monsters), moving to x=' + this.farmX); }
         const fxT = this.farmX + (Math.floor(G.tick / 600) % 2 ? 12 : -12);
-        const r = self.moveTo(fxT, topSolid(w, fxT) - 1, 3);
+        const r = self.moveTo(fxT, self.groundY(fxT) - 1, 3);
         if (r === 'fail') this.farmFails = (this.farmFails || 0) + 1;
       },
     };
@@ -1925,7 +1942,8 @@ const Bot = {
           // Doomscrollers get stuck in the chasms below (out of sight, never dying) and fill the spawn cap, so no new ones come:
           // go down to them like a player would (the digging A*, to the floor under one), give up on one after 900 ticks
           const P = self.p(), ign = self.ignore = self.ignore || {};
-          const prey = G.npcs.filter(m => m.type === 'eater_of_souls' && !m.dead && Math.abs(m.cx - P.cx) < 1600 && Math.abs(m.cy - P.cy) < 1000 && !(ign[m.uid] > G.tick))
+          // (as far out as the spawn cap counts them: every stuck one there is a Doomscroller that can't spawn)
+          const prey = G.npcs.filter(m => m.type === 'eater_of_souls' && !m.dead && Math.abs(m.cx - P.cx) < 2400 && Math.abs(m.cy - P.cy) < 1600 && !(ign[m.uid] > G.tick))
             .sort((a, b) => dist(a.cx, a.cy, P.cx, P.cy) - dist(b.cx, b.cy, P.cx, P.cy))[0];
           self.goal = 'hunting Doomscrollers for chunks (' + self.count('rotten_chunk') + '/' + n.chunks + ')';
           // no chunk for 8000 ticks (no Doomscrollers coming): leave it for a while (the waiting-for-night filler sent the bot back
@@ -1939,7 +1957,7 @@ const Bot = {
             if (self.moveTo(px, py, 3) === 'fail') ign[prey.uid] = G.tick + 1800;
             return;
           }
-          const bx = w.biomes.rotX; self.moveTo(bx + (Math.floor(self.t / 900) % 2 ? 20 : -20), topSolid(w, bx) - 1, 4); return;
+          const bx = w.biomes.rotX; self.moveTo(bx + (Math.floor(self.t / 900) % 2 ? 20 : -20), self.groundY(bx) - 1, 4); return;
         }
         // demonite is only in the Brainrot biome (worldgen: rotX +-80, cavern layer) and needs pickaxe power 55: no vein in sight,
         // go there first (evalD mined around 400 columns away from it for 190k ticks)
@@ -1961,7 +1979,7 @@ const Bot = {
   TUNNEL_LEN: 400,
   // the whole hell elevator's platforms: the tunnel floor, plus the shaft's rungs (2 every 15 rows: ~60 for a 450-row shaft,
   // which ran the tunnel dry 27 columns from its end and cost a 36k-tick trip up for more)
-  tunnelPlatforms(H) { const top = H.top || topSolid(G.world, H.sx); return this.TUNNEL_LEN + 2 * Math.ceil(Math.max(0, (H.F || G.world.hellLayer) - top) / 15) + 40; },
+  tunnelPlatforms(H) { const top = H.top || topSolid(G.world, H.sx); return (H.bridge ? H.len : this.TUNNEL_LEN) + 2 * Math.ceil(Math.max(0, (H.F || G.world.hellLayer) - top) / 15) + 40; },
   blockCount() { return ['stone_block', 'ash_block', 'dirt_block', 'mud_block', 'clay_block', 'sand_block'].reduce((n, id) => n + this.count(id), 0); },
   // a floating platform >= 6 wide in the cavern with lava under the side the doll is dropped to and open runway on the other side
   // the longest Wall tunnel the rock allows: 400 columns wins most (tests/tunnelwall.js), a shorter one beats no plan at all
@@ -2008,6 +2026,60 @@ const Bot = {
     }
     return best;
   },
+  // Ohio armor (molten): 25 defense for 45 Ohio bars (3 Ohiostone + 1 obsidian each, at an Ohioforge: furnace + 25 Ohiostone).
+  // The owner's plan: mine it and wear it before the Wall. Both are in the ceiling slab right where the hell elevator comes
+  // through (rows ~586-625: 112-409 Ohiostone and 34-117 obsidian within 40 columns of the shaft on evalA-F)
+  MOLTEN_SET: ['molten_breastplate', 'molten_greaves', 'molten_helmet'],
+  moltenWants() {
+    const p = this.p();
+    return this.MOLTEN_SET.filter(id => { const cur = p.armor[{ head: 0, body: 1, legs: 2 }[ITEMS[id].armor]]; return !this.owns(id) && (cur ? ITEMS[cur.id].defense || 0 : 0) < ITEMS[id].defense; });
+  },
+  moltenNeeds() {
+    const want = this.moltenWants();
+    if (!want.length) return { hs: 0, ob: 0 };
+    let bars = 0; for (const id of want) if (!this.has(id)) bars += RECIPES.find(r => r.out === id).ing[0][1];
+    bars = Math.max(0, bars - this.count('hellstone_bar'));
+    const forge = bars > 0 && !this.stationPlaced('hellforge') && !this.has('hellforge') ? 25 : 0;
+    const skull = this.owns('obsidian_skull') ? 0 : 20;   // (the Ohio Skull first: 20 obsidian, immune to Ohiostone burns)
+    return { hs: Math.max(0, bars * 3 + forge - this.count('hellstone')), ob: Math.max(0, bars + skull - this.count('obsidian')) };
+  },
+  // The hellbridge (the owner's plan, like a Terraria player's): a long wood-platform runway across Ohio's open void, from an ash
+  // island the hell elevator's rope comes down to. The island edge on the lava side is where the doll goes in; the runway runs the
+  // other way along the island's standing row, through as little rock as possible (every solid cell is digging, and Ohiostone
+  // spills lava when it breaks). Best: near home, open rows, short rope.
+  BRIDGE_LEN: 360,
+  findBridge(fx) {
+    const w = G.world, L = this.BRIDGE_LEN, lava = (x, y) => w.liq(x, y) > 100 && w.ltype[w.idx(x, y)] === 1;
+    const lavaBelow = (x, y) => { for (let j = y + 1; j < w.h - 1; j++) { if (w.solid(x, j)) return false; if (lava(x, j)) return true; } return false; };
+    const stand = (x, y) => { if (!w.solid(x, y + 1) || !w.solid(x + 1, y + 1)) return false; for (let j = 0; j < 3; j++) if (w.solid(x, y - j) || w.solid(x + 1, y - j)) return false; return true; };
+    let best = null;
+    for (let y = w.hellLayer + 15; y <= w.hellLayer + 45; y++) {
+      for (let x = 20; x < w.w - 22;) {
+        if (!stand(x, y)) { x++; continue; }
+        let x1 = x; while (stand(x1 + 1, y)) x1++;
+        if (x1 - x >= 5) {
+          let west = 0, east = 0;
+          for (let k = 3; k <= 9; k++) { if (lavaBelow(x - k, y)) west++; if (lavaBelow(x1 + 2 + k, y)) east++; }
+          for (const dir of [1, -1]) {
+            const lv = dir > 0 ? west : east, room = dir > 0 ? w.w - 40 - x1 : x - 40;
+            if (lv < 6 || room < L + 10) continue;
+            const col = dir > 0 ? x + 1 : x1, start = dir > 0 ? x1 + 2 : x - 1, xEnd = start + dir * L;
+            // rock on the runway: its body rows and the floor row; Ohiostone counts 4x (lava), lava on the way rules the row out
+            let rock = 0, bad = false;
+            for (let k = 0; k <= L && !bad; k++) { const c = start + dir * k; for (let r = y - 2; r <= y + 1; r++) { const t = w.tile(c, r); if (lava(c, r)) { bad = true; break; } if (t && TILES[t].solid) rock += t === T.HELLSTONE ? 4 : 1; } }
+            if (bad || rock > 260) continue;
+            const sx = Math.round((x + x1) / 2) - 2;
+            const cost = Math.abs(col - fx) + (y - w.hellLayer) * 0.5 + rock * 0.8;
+            if (best && cost >= best.cost) continue;
+            if (!this.shaftOk(sx)) continue;
+            best = { x0: x, x1, y, dir, col, start, xEnd, cost, rock, sx };
+          }
+        }
+        x = x1 + 1;
+      }
+    }
+    return best;
+  },
   // lay a straight 1-block-wide runway along row Y heading `dir`: clear the way, keep two floor cells placed ahead while walking; true at xt
   lineStep(dir, Y, xt) {
     const w = G.world, p = this.p(), [fx, fy] = this.feet();
@@ -2017,9 +2089,10 @@ const Bot = {
       if (w.solid(c, r)) { if (this.dig(c, r) === 'fail') return 'bad'; return false; }
     }
     // floor up to 5 ahead (a knock from an Ohio flyer carries ~4 tiles: the open end must be further than that)
-    const need = [1, 2, 3, 4, 5, 6, 7].map(k => fx + k * dir).find(c => !w.solid(c, Y + 1) && p.inReach(c, Y + 1));
+    const need = [1, 2, 3, 4, 5, 6, 7].map(k => fx + k * dir).find(c => !w.solid(c, Y + 1) && !w.isPlatform(c, Y + 1) && p.inReach(c, Y + 1));
     if (need !== undefined) {
-      const bs = this.spareBlockSlot(false);
+      // the hellbridge is wood platforms (the owner's plan); blocks only for the old island runway
+      const bs = this.hell && this.hell.bridge ? this.slotOf(it => it.id === 'wood_platform') : this.spareBlockSlot(false);
       if (bs < 0) return 'noblocks';
       if (bs > 9) { this.ensureHotbar(bs); return false; }
       this.selectSlot(bs);
@@ -2404,6 +2477,23 @@ const Bot = {
     if (H.R && r > H.R) return true;   // through the ceiling
     return false;
   },
+  // down the hell elevator's shaft to the lowest rung over the void's ceiling (the slab the Ohio armor is mined from): S through
+  // the rungs ~12 rows at a time (the next rung catches us; S held all the way was a free fall into the void), true once there
+  shaftDown(H, stop) {
+    const w = G.world, p = this.p(), sx = H.sx, [fx, fy] = this.feet(), nx = Nav.nodeOf(p)[0], R = Math.min(H.R || w.hellLayer, stop || 1e9);
+    const inside = Math.abs(nx - sx) <= 1 && fy >= (H.top || 0) - 2 && fy < R;
+    if (!inside) { this.moveTo(sx, (H.top || topSolid(w, sx)) - 1, 0); return false; }
+    if (p.hook && p.hook.state === 'latched') { this.jump(); return false; }
+    this.shaftDropAt = G.tick;   // (rung-to-rung drops of 15 rows: no fall-catch block, it plugged the shaft)
+    if (Math.abs(p.cx - (sx * TS + 16)) > 3) Input.keys[p.cx < sx * TS + 16 ? 'd' : 'a'] = true;
+    if (!p.onGround) { const fallen = p.fallStart != null ? (p.y - p.fallStart) / TS : 0; if (fallen < 12) Input.keys.s = true; return false; }
+    // the last rung over the ceiling: no other between us and the hole (S from there was a fall out of the shaft into Ohio)
+    let rungBelow = false; for (let y = fy + 2; y <= R; y++) if (w.isPlatform(sx, y) || w.isPlatform(sx + 1, y)) { rungBelow = true; break; }
+    if (!rungBelow || fy >= R - 3) return true;
+    // something in the shaft under us that isn't a rung (a fall-catch block, sand): dig it out
+    for (const x of [sx, sx + 1]) if (w.solid(x, fy + 1) && !w.isPlatform(x, fy + 1)) { this.dig(x, fy + 1); return false; }
+    Input.keys.s = true; return false;
+  },
   // one tick of the ride down (from anywhere above the island): true once standing on the island
   rideDown(H) {
     const w = G.world, p = this.p(), sx = H.sx, [fx, fy] = this.feet(), nx = Nav.nodeOf(p)[0];
@@ -2467,6 +2557,21 @@ const Bot = {
             self.goal = 'leaving Ohio to heal (' + Math.round(p.life) + '/' + p.lifeMax + ')'; self.moveTo(bx, by, 2); return;
           }
         }
+        // an Ohio Skull or an Ohio Rose (Ohio Imps drop it) in the bag: put it on when nothing's attacking (the trip stays
+        // committed, so the equip reflex in the decisions never gets to it)
+        if (!(sub && !sub.done && !sub.mining) && !self.uiBusy) {   // (not in the middle of a craft's clicks)
+          const accUnworn = ['obsidian_skull', 'obsidian_rose'].find(id => self.has(id) && !p.acc.some(a => a && a.id === id));
+          if (accUnworn && !self.foesNear().some(n => dist(n.cx, n.cy, p.cx, p.cy) < 300)) { sub = self.taskEquip(accUnworn); sub.equipAcc = true; }
+        }
+        if (sub && !sub.done && sub.equipAcc) { sub.step(); return; }
+        if (!H.x0) {
+          // the hellbridge first (the owner's plan: a platform runway through Ohio's open void); the ceiling tunnel if no site
+          const bx0 = self.base ? self.base[0] : fx;   // (near home: respawns and rope trips start there)
+          for (const L of [600, 520, 450]) {
+            self.BRIDGE_LEN = L; const b = self.findBridge(bx0);
+            if (b) { Object.assign(H, b, { ph: 'platforms', bridge: true, len: L }); self.log('Ohio plan: hellbridge from the island ' + b.x0 + '-' + b.x1 + '@' + b.y + ', ' + L + ' platforms ' + (b.dir > 0 ? 'east' : 'west') + ' to ' + b.xEnd + ' (' + b.rock + ' rock), elevator at ' + b.sx); break; }
+          }
+        }
         if (!H.x0) {
           const isl = self.findIsland(self.base ? self.base[0] : fx);   // (near home: respawns and rope trips start there)
           if (!isl) return fail(this, 'no island');
@@ -2476,9 +2581,11 @@ const Bot = {
         const dir = H.dir;
         // 0) the tunnel's floor is ~330 wood platforms: chop and craft them up top first
         if (H.ph === 'platforms') {
-          const need = self.tunnelPlatforms(H), have = self.count('wood_platform');
+          // (a hellbridge half built: what's left of it, plus a few)
+          let left = 0; if (H.bridge && H.R) for (let k = 0; k <= H.len; k++) { const c = H.start + H.dir * k; if (!w.solid(c, H.y + 1) && !w.isPlatform(c, H.y + 1)) left++; }
+          const need = H.bridge && H.R ? left + 20 : self.tunnelPlatforms(H), have = self.count('wood_platform');
           if (sub && !sub.done) { sub.step(); return; }   // (a craft finishes its clicks and closes the inventory first)
-          if (have >= need) H.ph = 'shop';
+          if (have >= need) H.ph = H.R ? 'ride' : 'shop';
           else if (self.count('wood') * 2 + have < need + 20) { sub = self.taskChop(Math.ceil((need + 20 - have) / 2)); self.goal = 'chopping wood for the Wall tunnel floor'; return; }
           else { sub = self.taskCraftAtBase(['wood_platform', Math.ceil((need - have) / 2)]); return; }
         }
@@ -2508,7 +2615,7 @@ const Bot = {
             H.sx = null; H.ph = 'prep'; return;
           }
           if (r === true && H.tunnel) { H.ph = 'nook'; self.milestone('hell elevator dug'); self.log('hell elevator down to the tunnel row at ' + H.sx + '; tunnel ' + (dir > 0 ? 'east' : 'west') + ' to ' + H.xEnd); }
-          else if (r === true) { H.ph = 'ride'; self.milestone('hell elevator dug'); self.log('hell elevator done: ' + H.sx + ', ceiling ' + H.R + ', rope to ' + H.ropeEnd); }
+          else if (r === true) { H.ph = self.moltenWants().length && !H.moltenSkip ? 'molten' : 'ride'; self.milestone('hell elevator dug'); self.log('hell elevator done: ' + H.sx + ', ceiling ' + H.R + ', rope to ' + H.ropeEnd); }
           return;
         }
         // 1) the Wall tunnel: a few columns the other way first (the chute's columns get dug as part of the main run), then the
@@ -2541,6 +2648,102 @@ const Bot = {
           if (r === 'off' || r === 'bad' || r === 'fail') { if (++bridgeFails > 60) return fail(this, H.ph + ' ' + r + ' at ' + self.feet()); }
           return;
         }
+        // 2b) Ohio armor before Ohio: Ohiostone and obsidian from the ceiling slab around the shaft's bottom, then home to the
+        // Ohioforge and the anvil, then wear it
+        if (H.ph === 'ride' && H.bridge && self.moltenWants().length && !H.moltenSkip && !(H.R && fy > H.R)) H.ph = 'molten';
+        if (H.ph === 'molten') {
+          if (sub && !sub.done && !sub.mining) { sub.step(); return; }   // (the crafting steps; the mining one is re-checked below)
+          // made: put it on here (the hell trip stays committed, so the equip reflex in the decisions never runs during it)
+          const unworn = self.MOLTEN_SET.find(id => self.has(id) && !p.armor.some(a => a && a.id === id));
+          if (unworn) { sub = self.taskEquip(unworn); self.goal = 'putting on the ' + ITEMS[unworn].name; sub.step(); return; }
+          if (!self.moltenWants().length) { self.log('Ohio armor on (defense ' + p.calc.defense + ')'); self.milestone('ohio armor'); H.ph = 'ride'; return; }
+          const n = self.moltenNeeds();
+          // (dying again and again in the ceiling: not worth the time, the runway wins the fight without it too)
+          // (only deaths down there count: a night death at home on the way is no reason to give up on the armor)
+          if (H.dSeen == null) H.dSeen = self.deaths;
+          if (self.deaths > H.dSeen) { if ((H.lastFy || 0) > w.hellLayer - 60) H.mDeaths = (H.mDeaths || 0) + 1; H.dSeen = self.deaths; }
+          if (!p.dead) H.lastFy = fy;
+          // the Ohio Skull as soon as there's obsidian for it: home to the furnace, and it's worn before any Ohiostone is mined
+          const needSkull = !self.owns('obsidian_skull');
+          if (needSkull && self.count('obsidian') >= 20) {
+            const st = self.resolve('obsidian_skull', 1); sub = st && self.taskForStep(st);
+            if (sub) { self.goal = 'making an Ohio Skull'; sub.step(); return; }
+          }
+          if (n.hs > 0 && (H.mDeaths || 0) >= 8) { H.moltenSkip = true; H.ph = 'ride'; self.log('8 deaths mining for the Ohio armor (' + self.count('hellstone') + ' Ohiostone, ' + self.count('obsidian') + ' obsidian): going without it'); return; }
+          if (n.hs > 0 || n.ob > 0) {
+            // lava in reach (an Ohiostone spill, an opened pocket): a block on it deletes it, before anything else
+            if (fy > H.R - 40) {
+              for (let y = fy - 3; y <= fy + 5; y++) for (let x = fx - 5; x <= fx + 6; x++) {
+                if (w.tile(x, y) || !(w.liq(x, y) > 0 && w.ltype[w.idx(x, y)] === 1) || !p.inReach(x, y)) continue;
+                const bs = self.spareBlockSlot(false); if (bs < 0) break;
+                if (bs > 9) { self.ensureHotbar(bs); return; }
+                self.selectSlot(bs); self.aimTile(x, y); if (p.itemAnim === 0) self.clickOnce(); self.why = 'plug-lava'; return;
+              }
+              // the shaft under us: closed a few rows down while we mine (the void's flyers came up it and killed us on the rung);
+              // the hole itself once we're near it. The ride down digs both out
+              const sealY = Math.min(H.R, fy + 4);
+              if (Math.abs(fx - H.sx) <= 3) for (const x of [H.sx, H.sx + 1]) if (!w.tile(x, sealY) && p.inReach(x, sealY)) {
+                const bs = self.spareBlockSlot(false); if (bs < 0) break;
+                if (bs > 9) { self.ensureHotbar(bs); return; }
+                self.selectSlot(bs); self.aimTile(x, sealY); if (p.itemAnim === 0) self.clickOnce(); self.why = 'plug-shaft'; return;
+              }
+              for (const x of [H.sx, H.sx + 1]) if (!w.tile(x, H.R) && p.inReach(x, H.R)) {
+                const bs = self.spareBlockSlot(false); if (bs < 0) break;
+                if (bs > 9) { self.ensureHotbar(bs); return; }
+                self.selectSlot(bs); self.aimTile(x, H.R); if (p.itemAnim === 0) self.clickOnce(); self.why = 'plug-shaft'; return;
+              }
+            }
+            // respawned (or still) up top: drop down the elevator shaft rung by rung, not a 400-row walk through the caves
+            // (for the skull's obsidian: only to the last rung over row hellLayer, so we stay in the cavern zone and Ohio's monsters
+            // don't spawn on us; the obsidian crust is right there. The Ohiostone below, with the skull on)
+            const stop = needSkull ? w.hellLayer : H.R;
+            // (kept in H: the task object gets remade, and every path that rose a few rows sent us back to the shaft)
+            if (fy >= stop - 16 && fy <= (H.R || stop) + 2) H.atStop = stop;   // (got low enough some other way: we're there too)
+            if (fy < stop - 16 && H.atStop !== stop) { self.goal = 'going down the hell elevator for Ohio armor'; if (self.shaftDown(H, stop) === true) H.atStop = stop; return; }
+            if (fy < stop - 60) H.atStop = null;   // (respawned up top)
+            const have = self.count('hellstone') + self.count('obsidian');
+            if (H.mHave !== have) { H.mHave = have; H.mAt = G.tick; H.moltenFails = 0; }   // (progress: the give-up count starts over)
+            else if (G.tick - (H.mAt || G.tick) > 9000) {
+              H.mAt = G.tick; H.moltenFails = (H.moltenFails || 0) + 1; self.log('no Ohiostone or obsidian in 9000 ticks (' + H.moltenFails + ')');
+              if (H.moltenFails >= 3) { H.moltenSkip = true; H.ph = 'ride'; self.log('giving up on the Ohio armor (' + self.count('hellstone') + ' Ohiostone, ' + self.count('obsidian') + ' obsidian)'); return; }
+            }
+            // (obsidian only until the skull is made: the Ohiostone waits for it)
+            const tiles = []; if (n.hs > 0 && !needSkull) tiles.push(T.HELLSTONE); if (n.ob > 0 || needSkull) tiles.push(T.OBSIDIAN);
+            const cx = H.sx + 1, top = w.hellLayer - 14, bottom = H.R || w.hellLayer + 25;
+            // (not the shaft's own columns, the rope's or its anchor)
+            const lowest = needSkull ? w.hellLayer + 3 : bottom;   // (the skull's obsidian from the cavern zone)
+            const area = (t, x, y) => Math.abs(x - cx) <= 80 && y >= top && y <= lowest && (x < H.sx - 2 || x > H.sx + 4);
+            // Ohiostone spills lava when it breaks: only below our feet and not in our own columns, so it runs down and away
+            // (2+ rows down: lava never flows up, so our rows stay dry; one row down, diagonally, a spill burned us to death)
+            const reachOk = (t, x, y) => { if (t !== T.HELLSTONE) return true; const [fx2, fy2] = self.feet(); return y >= fy2 + 2 && (x < fx2 || x > fx2 + 1); };
+            // (all of it before going home: stopping at the first one met sent us up 6 obsidian short of the greaves)
+            const enough = () => { const m = self.moltenNeeds(); return needSkull ? self.count('obsidian') >= 20 : m.hs <= 0 && m.ob <= 0; };
+            // nothing in sight: somewhere else in the slab, never down through the ceiling into Ohio's void (its flyers killed
+            // an unarmored bot there a dozen times while the default 'head deeper' wander took it there)
+            const wander = (x0) => [clamp(cx + (Math.random() < 0.5 ? -1 : 1) * randInt(12, 70), 30, w.w - 30), needSkull ? randInt(w.hellLayer - 10, w.hellLayer - 2) : randInt(w.hellLayer - 8, bottom - 4)];
+            const tkey = tiles.join(',');
+            if (!(sub && !sub.done && sub.mining && sub.tkey === tkey)) { sub = self.taskMine('ore', enough, tiles, { area, reachOk, over: true, wander, badRadius: 7 }); sub.mining = true; sub.tkey = tkey; }
+            self.goal = needSkull ? 'mining obsidian for an Ohio Skull (' + self.count('obsidian') + '/20)' : 'mining for Ohio armor (' + n.hs + ' Ohiostone, ' + n.ob + ' obsidian to go)';
+            sub.step(); return;
+          }
+          // everything in the bag: the Ohioforge, the bars, the pieces, one resolved step at a time (the planner walks home).
+          // The Ohioforge is made from the furnace at home (the owner's call: it replaces it, and it smelts like one): pick that
+          // one up rather than craft a second
+          if (!self.stationPlaced('hellforge') && !self.has('hellforge') && !self.has('furnace') && self.count('hellstone') >= 25 && self.base) {
+            // (just broken: pick it up before the planner sees "no furnace" and crafts a second one)
+            const lying = G.items.find(i => i.id === 'furnace' && i.life > 0 && Math.abs(i.x / TS - self.base[0]) < 20 && Math.abs(i.y / TS - self.base[1]) < 12);
+            if (lying) { self.goal = 'picking up the furnace for the Ohioforge'; self.moveTo(Math.floor(lying.x / TS), Math.floor(lying.y / TS), 1); return; }
+            const f = self.nearestTile(t => t === T.FURNACE, 14, 8, self.base);
+            if (f) { sub = self.taskBreakAt(f, 'the furnace (it becomes the Ohioforge)', 'pick'); self.goal = 'picking up the furnace for the Ohioforge'; sub.step(); return; }
+          }
+          const id = self.moltenWants()[0], step = self.resolve(id, 1);
+          if (!step) return;   // made, not worn yet: the equip reflex puts it on
+          sub = self.taskForStep(step);
+          if (!sub) { H.moltenSkip = true; H.ph = 'ride'; self.log('cannot make ' + ITEMS[id].name + ' (' + JSON.stringify(step) + '): no Ohio armor'); return; }
+          self.goal = 'making Ohio armor (' + ITEMS[id].name + ')'; sub.step(); return;
+        }
+        // with the other bosses alive, the Wall prep stops here: the elevator and the armor are ready, Ohio waits
+        if (H.bridge && H.ph === 'ride' && !self.othersDown()) { self.log('Wall prep done: hell elevator' + (self.moltenWants().length ? '' : ' and Ohio armor') + ' ready, the trip down waits for the other bosses'); this.done = true; return; }
         if (H.ph === 'ride') {
           if (H.tunnel && H.tunnelDone && p.onRope && fy >= self.hangRow(H) - 1) { H.ph = 'wait'; self.milestone('reached Ohio'); return; }
           const r = self.rideDown(H);
@@ -2580,13 +2783,14 @@ const Bot = {
         if ((H.ph === 'bridge' || H.ph === 'wait') && H.R && fy < H.R - 2) { H.ph = 'ride'; return; }
         // 3) the runway: hop along in 24-tile legs, the nav lays a block under the front foot wherever there is none
         if (H.ph === 'bridge') {
-          self.goal = 'bridging the Wall runway';
+          self.goal = H.bridge ? 'building the hellbridge (' + Math.abs(H.xEnd - fx) + ' columns to go)' : 'bridging the Wall runway';
           // two legs when the plan has both ends: west first, then back east over it and on
           if (H.xW != null && !H.westDone) { if (fx <= H.xW + 2) { H.westDone = true; self.log('west runway done at ' + fx); } }
           const legDir = H.xW != null && !H.westDone ? -1 : (H.xW != null ? 1 : dir), legEnd = H.xW != null && !H.westDone ? H.xW : (H.xW != null ? H.xE : H.xEnd);
-          if (H.xW != null ? (H.westDone && fx >= H.xE - 2) : dir * (fx - H.xEnd) >= -2) { H.ph = 'wait'; self.milestone('Wall runway built'); }
+          if (H.xW != null ? (H.westDone && fx >= H.xE - 2) : dir * (fx - H.xEnd) >= -2) { H.ph = 'wait'; H.bridgeDone = true; self.milestone('Wall runway built'); }
           else {
-            if (self.blockCount() < 30) { sub = sub || self.taskMine('stone', () => self.blockCount() >= 200); sub.step(); if (sub.done) sub = null; self.goal = 'mining blocks for the Wall bridge'; return; }
+            if (H.bridge && self.count('wood_platform') < 4) { self.log('out of platforms ' + Math.abs(H.xEnd - fx) + ' columns short of the hellbridge\'s end: up for more'); H.ph = 'platforms'; return; }
+            if (!H.bridge && self.blockCount() < 30) { sub = sub || self.taskMine('stone', () => self.blockCount() >= 200); sub.step(); if (sub.done) sub = null; self.goal = 'mining blocks for the Wall bridge'; return; }
             if (H.R && fy < H.R) { H.ph = 'ride'; return; }   // respawned up top: ride back down
             // off the runway in the void (knocked off, or fell short): no pathfinding through it (it walked us into the lava), go
             // back up the rope if we're on it, else let the elevator take us down again after we climb out / respawn
@@ -2599,6 +2803,7 @@ const Bot = {
               self.selectSlot(ws); self.aimWorld(foe.cx, foe.cy); self.clickOnce(); self.why = 'bridge-shoot'; return;
             }
             const r = self.lineStep(legDir, H.y, legEnd);
+            if (r === 'noblocks' && H.bridge) { H.ph = 'platforms'; return; }
             if (r === 'noblocks') { sub = sub || self.taskMine('stone', () => self.blockCount() >= 200); sub.step(); if (sub.done) sub = null; self.goal = 'mining blocks for the Wall bridge'; return; }
             if (r === 'off' || r === 'bad') { if (++bridgeFails > 40) return fail(this, 'runway ' + r + ' at ' + fx); }
             return;
@@ -2748,6 +2953,7 @@ const Bot = {
   hellPrepOk() {
     const H = this.hell;
     if (SDK.obs().inv.pick.power < 65) return false;
+    if (H && H.bridge) return !['ride', 'bridge', 'wait'].includes(H.ph) || (H.ph === 'ride' && this.moltenWants().length && !H.moltenSkip);
     return !(H && (H.tunnelDone || ['chute', 'ride', 'wait', 'ropeShop'].includes(H.ph)));
   },
   readyForWall() { const p = this.p(); return p.lifeMax >= BOSS_READY.wall_of_flesh.lifeMax && this.owns('the_67') && this.has('guide_voodoo_doll'); },
@@ -2789,17 +2995,24 @@ const Bot = {
         if (!ores.length) { self.log('expedition done in ' + (G.tick - startedAt) + ' ticks, heading home to craft'); this.done = true; return; }
         if (sub && !sub.done) { sub.step(); if (!/^mining|exploring/.test(self.goal || '')) self.goal = label(); return; }
         const pow = SDK.obs().inv.pick.power, tiles = ores.map(o => tileOf[o]).filter(t => TILES[t].minPick <= pow);
-        const seen = tiles.length && self.nearestTile(t => tiles.includes(t), 90, 70);
-        sub = seen ? self.taskMine('ore', () => !Object.keys(self.expeditionNeeds()).some(o => tiles.includes(tileOf[o])) || !self.nearestTile(t => tiles.includes(t), 90, 70), tiles) : self.taskExplore();
+        // (ore by the Backrooms doesn't count: taskMine never mines there, and 'seen' but unminable gold kept the bot wandering
+        // next to it, mining nothing, for 20k+ ticks at a time)
+        const minable = (t, x, y) => tiles.includes(t) && !self.nearBackrooms(x, y);
+        const seen = tiles.length && self.nearestTile(minable, 90, 70);
+        sub = seen ? self.taskMine('ore', () => !Object.keys(self.expeditionNeeds()).some(o => tiles.includes(tileOf[o])) || !self.nearestTile(minable, 90, 70), tiles) : self.taskExplore();
         self.goal = label();
       },
     };
   },
   oreWanted() {
-    const known = SDK.obs().near.ores || {}, items = [this.committed && this.committed.item, 'the_67', 'slime_crown'].filter(id => id && !this.owns(id));
+    const known = SDK.obs().near.ores || {}, items = [...new Set([this.committed && this.committed.item, 'the_67', 'slime_crown'])].filter(id => id && !this.owns(id));
+    // summed over the items, like the expedition counts it: 39 gold covers The 67 (24) and the crown (28) one at a time but
+    // not both, and with "no ore wanted" the expedition's explore wandered the surface for 140k ticks (evalB, gold 13 to go)
+    const acc = {}, exp = this.expeditionNeeds();
+    for (const id of items) this.rawNeeds(id, 1, acc);
     for (const ore of ['gold_ore', 'silver_ore', 'iron_ore', 'copper_ore']) {
       if (known[ore]) continue;
-      if (items.some(id => (this.rawNeeds(id, 1)[ore] || 0) > this.count(ore))) return ore;
+      if (exp[ore] > 0 || (acc[ore] || 0) > this.count(ore)) return ore;
     }
     return null;
   },
@@ -2815,6 +3028,8 @@ const Bot = {
           const band = { gold_ore: [w.rockLayer + 15, w.rockLayer + 70], silver_ore: [w.rockLayer, w.rockLayer + 50], iron_ore: [w.worldSurface + 10, w.rockLayer + 30], copper_ore: [w.worldSurface, w.rockLayer] }[ore];
           const ty = band ? (fy < band[0] || fy > band[1] ? randInt(band[0], band[1]) : fy + randInt(-8, 8)) : fy + randInt(-10, 30);
           target = [clamp(fx + randInt(-80, 80), 50, w.w - 50), clamp(ty, 50, w.h - 20)];
+          // not into the Backrooms' no-mining margin (nothing there is mined): out past its far side from us
+          if (self.nearBackrooms(target[0], target[1])) { const b = w.backrooms; target[0] = clamp(fx < b.x0 + b.w / 2 ? b.x0 - 80 : b.x0 + b.w + 80, 50, w.w - 50); }
           if (ore) self.goal = 'exploring for ' + ore.replace('_ore', '');
         }
         const r = self.moveTo(target[0], target[1], 3);

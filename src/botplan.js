@@ -60,8 +60,9 @@ Object.assign(Bot, {
     if (step.station) {
       const item = STATION_ITEM[step.station];
       if (this.has(item)) return this.taskCraftAtBase([item, 0, 'placeonly']);
+      // (the station's own station missing too, the Ohioforge's anvil: that one first, a station chain is short)
       const s2 = this.resolve(item, 1);
-      return s2 && !s2.station ? this.taskForStep(s2) : null;
+      return s2 && !(s2.station && s2.station === step.station) ? this.taskForStep(s2) : null;
     }
     if (step.craft) {
       const placeable = ITEMS[step.craft].place && TILES[ITEMS[step.craft].place] && TILES[ITEMS[step.craft].place].station;

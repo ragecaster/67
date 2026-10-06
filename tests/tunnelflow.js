@@ -2,14 +2,15 @@
 // world (as Bot.digShaft / Bot.digTunnel leave them), then the bot runs taskHell from the chute on: rope down to the
 // island, the doll hunt, the throw, the climb back up into the tunnel and the fight.
 // usage: node tunnelflow.js [ticks] [every]   env: SEED, PH (start phase, default chute), DOLL=1 (start with the doll),
-//        SWIFT=1 (a cappuccino in the bag), KILLAT=<tick> (die once there: the respawn path), GOD=1
+//        SWIFT=1 (a cappuccino in the bag), KILLAT=<tick> (die once there: the respawn path), GOD=1,
+//        NOARMOR=1 (no armor, like the natural runs), PRE='...' (setup code for A/B runs)
 const run = require('./harness');
 const { applyStage } = require('./stagelib');
 const TICKS = +process.argv[2] || 60000, EVERY = +process.argv[3] || 2000;
 run(async (page) => {
   await page.newGame(process.env.SEED || 'bot67');
   await applyStage(page, 'hell');
-  const env = { PH: process.env.PH || 'chute', DOLL: !!process.env.DOLL, SWIFT: !!process.env.SWIFT, KILLAT: +process.env.KILLAT || 0, GOD: !!process.env.GOD, TRACE: +process.env.TRACE || 0 };
+  const env = { PH: process.env.PH || 'chute', DOLL: !!process.env.DOLL, SWIFT: !!process.env.SWIFT, KILLAT: +process.env.KILLAT || 0, GOD: !!process.env.GOD, TRACE: +process.env.TRACE || 0, NOARMOR: !!process.env.NOARMOR };
   console.log(await page.evaluate((env) => {
     const w = G.world, p = G.player;
     for (const k of ['king_slime', 'eye_of_cthulhu', 'tung_sahur']) w.flags[k] = true;
@@ -32,6 +33,7 @@ run(async (page) => {
     if (env.DOLL) invAdd(p.inv, 'guide_voodoo_doll', 1);
     if (env.SWIFT) invAdd(p.inv, 'cappuccino', 2);
     if (env.GOD) G.godMode = true;
+    if (env.NOARMOR) p.armor[0] = p.armor[1] = p.armor[2] = null;
     window.__tr = env.TRACE;
     p.x = (sx + 1) * TS - p.w / 2; p.y = F * TS - p.h; p.vx = p.vy = 0; G.snapCamera && G.snapCamera();
     Bot.houseFinished = true;
@@ -40,6 +42,7 @@ run(async (page) => {
     Bot.task = null; window.__site = JSON.stringify(H);
     return 'site ' + window.__site;
   }, env));
+  if (process.env.PRE) await page.evaluate((src) => eval(src), process.env.PRE);
   let killed = false;
   for (let done = 0; done < TICKS; done += EVERY) {
     const s = await page.evaluate(([n, KILLAT]) => {

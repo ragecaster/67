@@ -3,7 +3,64 @@
 This is a Terraria clone with Gen Z / Gen Alpha brainrot memes. It runs in the browser with plain JS and a canvas, and there's no build step. It's live at https://ragecaster.github.io/67/ (GitHub Pages deploys from `main`, root).
 Watch the playtest bot at https://ragecaster.github.io/67/?bot&turbo=4. In the game, F8 toggles the bot and F9 cycles its speed from 1x to 64x.
 
-## Session 7: priorities, grappling hook, and the Wall pipeline (read this first)
+## Session 8: Terraria spawn rates, fall damage, early-game stalls (read this first)
+
+**Game changes**
+- Spawning (`G.spawnLimits` / `G.spawnEnemies` in game.js) now follows Terraria's source (wiki "NPC spawning", 1.4.5): one 1-in-rate roll per tick (it was 4-in-rate). Rate/cap per zone: surface day 600/5, night 360/6, blood moon 108/10 (surface only), underground 300/8, caverns 240/9, underworld 600/10. A thin crowd spawns faster (×0.6..0.9 under 20..80% of the cap). Everything not yet despawned (2400×1600 px) counts toward the cap. In Ohio, with a player killing everything in range, spawns went from 36/min to 8/min (`tests/_spawnbench.js`).
+- Fall damage: the rocket boots restart the fall every tick they fire, and the umbrella while it's open (Terraria). A boot-braked 60-tile drop went from 333 damage to 67.
+
+**Bot fixes** (found with `tests/_stuckscan.js`, which flags long underground stretches in a small box and long "N to go" counts that don't move, and dumps a trace with `OUT=`)
+- `oreWanted` summed: 39 gold covered The 67 (24) and the crown (28) one at a time, so "no ore wanted", and the expedition's explore wandered the surface for ~140k ticks (evalB, "gold 13 to go"). The 67 now comes at 107k instead of 255k there.
+- Ore next to the Backrooms (never mined) no longer counts as seen/known (expedition, its done-check, SDK `near.ores`), and explore targets skip that margin.
+- `groundY(x)`: `topSolid` returns −1 for a lake column, and "climb to the surface" planned to row −2, 720 ms of A* every 25 ticks (evalF froze for minutes, at real speed it's a hang).
+- Smaller loops: a full chest in a pillar's cell (badTiles now apply to non-solid cells too), an unreachable altar retried every 240 ticks (now goes to `badAltars`), Brainrot offered with a pickaxe that can't mine demonite (task loop).
+- The farm clog checks use the game's cap (`G.spawnLimits`), and the Doomscroller hunt looks as far out as the cap counts.
+
+**Measured** (`NEED=4 TRIPS=1 node tests/bosstime.js 400000 <seed> teacher`, evalA–F)
+
+| Code | Boss kills | Deaths | Dolls thrown | Wall |
+|---|---|---|---|---|
+| main @7ee9ad1 | 16/24 | 89 | 1 (evalF) | lost |
+| + spawn rates only | 15/24 | 42 | 1 (evalC) | lost |
+| + bot fixes | 17/24 (5 seeds with 3) | 56 | 2 (evalC, evalF) | both lost within ~1,300 ticks of the throw |
+
+- Monster-drop farming is the new bottleneck: lenses, chunks and bones take 2–3× longer (the Eye comes at 230–400k).
+- Wall pipeline A/B (`tests/tunnelflow.js`, new `NOARMOR=1` and `PRE=`; the old spawn rules can be swapped in through `G.spawnLimits`): with the new rates the bot lasts about twice as long in Ohio before its first death (2.5–4.2k ticks vs 1.3–2.0k), but 0/12 runs got a doll before dying, and gold armor (def 16) didn't change that. The usual death: hurt on the rope, healing in the tunnel with Imps and Ohio Slimes following it in. Respawn rides down tunnelflow's carved shaft die of falls on evalD/E (same on main; a test-carving artifact or a ride bug, not checked).
+- Open: the Wall still needs a different Ohio wait (fight back while healing, or kill the followers before healing) and/or defense (the Wall's def gate is 0 on purpose, see Session 7).
+
+**Later in session 8: the hellbridge and Ohio armor (owner's requests)**
+- Game:
+  - **The Wall's Horrified/Tongue/despawn now follow Terraria.**
+    - Horrified: within 50 tiles above Ohio and 120 tiles of the Wall.
+    - The Tongue: grabs a Horrified player who gets 2.5+ tiles behind it or climbs out of the zone, and pulls through blocks at 11 px/tick until the player is in its mouth. Past 187.5 tiles it kills instantly.
+    - Despawn: 4 s after everyone near it is dead.
+    - World edge: only Horrified players die.
+    - Before this, a respawned player was dragged back down (the "teleport" the owner saw, and evalF's 30 deaths in a row).
+  - Ohio Demons collide with blocks (Terraria); they used to fly through rock.
+- Bot (`taskHell`): the default site is now a **hellbridge** (`findBridge`).
+  - The site: an ash island with lava under the doll side and a mostly open runway row on the other side. A 600/520/450 platform runway is laid by `lineStep` with wood platforms. The tunnel plan is the fallback.
+  - The `molten` phase runs after the shaft. It mines Ohiostone (only 2+ rows below the feet, never in its own columns) and obsidian from the ceiling slab around the shaft. It plugs lava in reach and the shaft's hole, then goes home for the Ohioforge, bars and set, and wears it. After 8 deaths it skips the armor.
+  - The pathfinder never digs through Ohiostone.
+  - `shaftDown` drops rung to rung to the last rung over the ceiling.
+  - `taskForStep` places a station's own station (the anvil before the Ohioforge).
+- Tests:
+  - `tests/hellbridge.js` (runway laid, doll thrown): Ohio armor plus a 600 runway won 12/12 (lowest life 245–367 of 400). No armor plus a 600 runway won 6/6. A 360 runway always ran out under the bot.
+  - `tests/moltenflow.js` (shaft carved, armor phase from home): evalA made the full set (def 25) by about 59k ticks with 9 deaths. The other seeds died 17–35 times, mostly to lava, Imps and Demons. A gold set (def 16) didn't fix that.
+- **Natural runs (`bridge1`, 400k ticks): no doll throw on any seed** (the tunnel plan threw 2).
+  - The armor phase is a death loop in the ceiling (evalF: 8 deaths, then gave up).
+  - The unarmored runway build is a second death loop (Demons, Imps).
+  - **Then (owner):**
+    - **Obsidian Rose** ("Ohio Rose"): an accessory that cuts lava contact from 80 to 35 damage and On Fire! from 7 s to 3.5 s. Ohio Imps drop it 1 in 20 (wiki; tested 192/4000).
+    - **Ohio Skull:** the bot now crafts one. It mines its 20 obsidian first, stopping on the last rung over row 600 so it stays in the cavern zone, then goes home to the furnace and wears it before mining any Ohiostone. Ohiostone contact burns (20 damage every 20 ticks, logged as "lava") were most of the "lava" deaths. With the skull on, evalA mined 96 Ohiostone without a death.
+    - The skull no longer stops On Fire! from Ohio Bat and Ohio Slime hits (Terraria: fire blocks only).
+    - **The Ohioforge replaces the furnace** (owner's call): the bot picks up the house's furnace for the recipe, and the forge goes on the furnace's spot (`stationSpot`).
+    - Fixes: the shaft is sealed a few rows under the bot while it mines, `H.atStop` keeps the shaft-stop state, deaths count toward the armor cap only below row 540, and a failed obsidian target writes off a whole vein (`badRadius`).
+    - More fixes: the miner gathers all of both materials before going home (it used to stop at the first one met), the give-up count resets on progress, and the bot waits to pick up the broken furnace (it used to craft a second one).
+    - `tests/moltenflow.js` (stations at home), latest: evalA and evalD made the skull, the Ohioforge (from the furnace) and the full set, at 26 defense with 2 deaths each (83–112k ticks). evalC made the skull, then stalled on Ohiostone (12 deaths). evalF can't reach any obsidian near its shaft (one vein next to lava).
+    - Natural runs (`bridge5`, 400k ticks): the Wall prep starts after the nightmare pickaxe (230–350k), so no seed finishes the armor in time. evalC was mining Ohiostone with the skull on, evalD was making the skull, evalF went unarmored. The early game has to get faster for the 324k goal.
+  - **Open:** the bot needs to survive Ohio before it has Ohio armor. Options: an Obsidian Skin potion (lava immunity, Terraria's answer; needs blinkroot), a starter armor set before Ohio, better fighting in tunnels (Imps teleport in), or a game change.
+
+## Session 7: priorities, grappling hook, and the Wall pipeline
 
 Goal (still open): all 4 bosses in under 324k ticks. Status on evalA–F with `NEED=4 TRIPS=1 node tests/bosstime.js 330000 <seed> teacher`:
 - All six seeds usually kill King, Eye and Tung. The best seed (evalF) has all three by 154k, the Wall tunnel dug by 249k, and the doll thrown at 259–308k.

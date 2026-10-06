@@ -220,14 +220,36 @@ Object.assign(NPC_AI, {
     const ty = clamp(p.cy - n.h / 2, top, bot - n.h);
     n.y += (ty - n.y) * 0.05;
     n.bodyTop = top - 20 * TS; n.bodyBot = world.h * TS;
-    // tongue: pull player if they are behind the wall or too far away
-    const behind = dir > 0 ? p.cx < n.x : p.cx > n.x + n.w;
+    // Terraria's debuffs: Horrified on every living player within 50 tiles above Ohio and 120 tiles of the Wall; a Horrified
+    // player who gets 2.5+ tiles behind it or climbs out of that zone gets The Tongue: dragged to its mouth at up to 11 px/tick
+    // through blocks (past 187.5 tiles, an instant death). The dead and the respawned (far away up top) aren't Horrified: the
+    // old tongue grabbed anyone 2000 px away, so a respawn was dragged straight back down to die again.
+    const border = (world.hellLayer - 50) * TS;
+    let anyNear = false;
     for (const pl of G.players) {
-      const behindPl = dir > 0 ? pl.cx < n.x : pl.cx > n.x + n.w;
-      if (pl.dead || !(behindPl || Math.abs(pl.cx - n.cx) > 2000)) continue;
-      if (!pl.remote) { pl.x += (n.cx - pl.cx) * 0.08; pl.y += (n.cy - pl.cy) * 0.08; pl.vx = 0; pl.vy = 0; }
-      if (G.tick % 20 === 0) { if (pl.remote) G.hurtPlayer(pl, 60, 0, n); else pl.hurt(60, 0, n, 'enemy', true); combatText(pl.cx, pl.y - 20, 'TONGUED (cringe)', '#ff5a5a', { life: 40 }); }
+      if (pl.dead) { pl.wofTongue = null; continue; }
+      const near = pl.cy > border && Math.abs(pl.cx - n.cx) < 120 * TS;
+      if (near) { anyNear = true; if (!pl.remote) pl.addBuff('horrified', 30); }
+      if (!(near || (pl.buffs && pl.buffs.horrified) || (pl.remote && pl.wofHorrified > G.tick) || pl.wofTongue === n)) continue;
+      if (pl.remote && near) pl.wofHorrified = G.tick + 30;
+      const behindPl = dir > 0 ? pl.cx < n.x - 2.5 * TS : pl.cx > n.x + n.w + 2.5 * TS;
+      // once caught, it holds on until we're in its mouth
+      if (!(behindPl || pl.cy < border || pl.wofTongue === n)) continue;
+      const mx = n.cx, my = n.cy, d = Math.hypot(mx - pl.cx, my - pl.cy);
+      if (d < n.w / 2 + 24) { pl.wofTongue = null; continue; }
+      pl.wofTongue = n;
+      if (d > 187.5 * TS) { if (pl.remote) G.hurtPlayer(pl, 9999, 0, n); else pl.kill('enemy', n); continue; }
+      if (!pl.remote) {
+        pl.addBuff('tongue', 2);
+        const k = Math.min(11, d) / Math.max(1, d);
+        pl.x += (mx - pl.cx) * k; pl.y += (my - pl.cy) * k; pl.vx = 0; pl.vy = 0; pl.fallStart = null;
+        if (G.tick % 30 === 0) combatText(pl.cx, pl.y - 20, 'TONGUED (cringe)', '#ff5a5a', { life: 40 });
+      }
     }
+    // everyone nearby dead (or gone): it fades out over 4 s and despawns (Terraria 1.4.1); the Guide stays dead, a new doll
+    // starts the fight again
+    n.ai[2] = anyNear ? 0 : (n.ai[2] || 0) + 1;
+    if (n.ai[2] > 240) { n.dead = true; n.silentRemove = true; for (const h of G.npcs) if (h.type === 'hungry') { h.dead = true; h.silentRemove = true; } G.chat('The Wall of Brainrot loses interest and scrolls away...', '#af4bff'); return; }
     // contact along the whole wall column (clients check themselves)
     const lp = G.player;
     if (!lp.dead && lp.cx > n.x - 10 && lp.cx < n.x + n.w + 10 && lp.y + lp.h > n.bodyTop) lp.hurt(n.damage, dir, n, 'enemy');
@@ -244,8 +266,8 @@ Object.assign(NPC_AI, {
     if (n.ai[0] % 400 === 0) { n.say(pick(MEME.bossTaunts.wall_of_flesh)); if (Math.random() < 0.5) speak(n.speech, 0.9, 0.5); }
     // don't crush town npcs / keep hungry count
     if (n.ai[0] % 300 === 0 && G.npcs.filter(h => h.type === 'hungry').length < 3) { const h = G.spawnNPC('hungry', n.cx, n.cy); h.ai[1] = randRange(-150, 150); }
-    // reached world edge = player loses the arena; wall despawns (Terraria: WoF kills the player)
-    if (n.x < 0 || n.x + n.w > world.w * TS) { for (const pl of G.players) if (!pl.dead) { if (pl.remote) G.hurtPlayer(pl, 9999, 0, n); else pl.kill('enemy', n); } n.dead = true; n.silentRemove = true; }
+    // reached the world's edge: it despawns and takes every Horrified player with it (Terraria: "was licked")
+    if (n.x < 0 || n.x + n.w > world.w * TS) { for (const pl of G.players) if (!pl.dead && ((pl.buffs && pl.buffs.horrified) || pl.wofHorrified > G.tick)) { if (pl.remote) G.hurtPlayer(pl, 9999, 0, n); else pl.kill('enemy', n); } n.dead = true; n.silentRemove = true; for (const h of G.npcs) if (h.type === 'hungry') { h.dead = true; h.silentRemove = true; } }
   },
 });
 

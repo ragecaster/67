@@ -69,8 +69,8 @@ const SDK = {
     if (G.tick - this._scanT > 120 || !this._scan || Math.abs(this._scan.at[0] - fx) > 20 || Math.abs(this._scan.at[1] - fy) > 20) {
       this._scanT = G.tick;
       const nearest = (pred, rx, ry) => bot.nearestTile(pred, rx, ry);
-      const ores = {};
-      for (const [oid, tn] of Object.entries(typeof ORE_TILE !== 'undefined' ? ORE_TILE : {})) { const t = T[tn]; const c = nearest(tt => tt === t, 90, 80); if (c) ores[oid] = { x: c[0], y: c[1], d: Math.abs(c[0] - fx) + Math.abs(c[1] - fy) }; }
+      const ores = {};   // (ore by the Backrooms is never mined, so it isn't 'known' either)
+      for (const [oid, tn] of Object.entries(typeof ORE_TILE !== 'undefined' ? ORE_TILE : {})) { const t = T[tn]; const c = nearest((tt, x, y) => tt === t && !bot.nearBackrooms(x, y), 90, 80); if (c) ores[oid] = { x: c[0], y: c[1], d: Math.abs(c[0] - fx) + Math.abs(c[1] - fy) }; }
       const tree = nearest((t, x, y) => t === T.TREE && w.treeType(x, y) === TREE_BASE, 140, 40);
       const crystal = nearest(t => t === T.LIFE_CRYSTAL, 120, 90);
       const altar = nearest(t => t === T.ALTAR, 300, 250);

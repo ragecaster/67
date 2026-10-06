@@ -39,12 +39,16 @@ const Nav = {
     if (!t) return 0;
     const td = TILES[t];
     if (td.noclip && !this.allowNoclip) return Infinity; // don't wander into the Backrooms by accident
+    // (non-solid too: a pillar breaks the furniture in its cells first, and a full chest never breaks; the same pillar plan came
+    // back every 300 ticks, evalD)
+    if (Bot.badTiles && Bot.badTiles.has(x + ',' + y)) return Infinity; // a tile we already failed to break
     if (!td.solid) return td.web ? 1 : 0;
     if (td.door) return 1; // we open doors
     if (td.unbreakable || td.multi || td.chest) return Infinity;
     if (Bot.isProtected(x, y)) return Infinity; // never dig through our own house
-    if (Bot.badTiles && Bot.badTiles.has(x + ',' + y)) return Infinity; // a tile we already failed to break
     if (td.minPick > this.power) return Infinity;
+    // Ohiostone spills lava half the time it breaks: a path never digs through it (only the Ohio-armor mining does, from above)
+    if (t === T.HELLSTONE) return Infinity;
     // blocks holding up objects/trees can't be mined
     const above = TILES[w.tile(x, y - 1)];
     if (above && ((above.multi && !above.door) || above.tree || above.cactus)) return Infinity;

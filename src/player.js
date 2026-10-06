@@ -18,6 +18,8 @@ const BUFFS = {
   labubu: { name: 'Labubu', img: 'gen/item_labubu', tip: 'A Labubu is following you. Secret pull.' },
   him: { name: 'HIM MODE', img: 'buffs/Happy!', tip: 'You are literally him rn. +20% damage & speed, +10 defense' },
   cozy: { name: 'Cozy Fire', img: 'buffs/Cozy_Fire', tip: 'Life regen is slightly increased' },
+  horrified: { name: 'Lowkey Horrified', img: 'buffs/Bleeding', tip: 'The Wall of Brainrot is near. You cannot escape.', debuff: true },
+  tongue: { name: 'Tongued (cringe)', img: 'buffs/Poisoned', tip: 'You are being pulled into its mouth', debuff: true },
   happy: { name: 'Vibing', img: 'buffs/Happy!', tip: 'Sunflower nearby: movement speed up' },
 };
 
@@ -154,6 +156,7 @@ class Player {
           }
         } else if (fx.rocket && this.rocketTime > 0 && !this.onGround) {
           this.vy = Math.max(this.vy - 0.55, -6); this.rocketTime--;
+          this.fallStart = null;   // Terraria: rocketing restarts the fall, so slowing a drop with the boots also cuts its damage
           spawnDust(this.cx - this.dir * 4, this.y + this.h, pick(['#ffcf4a', '#ff7a1a', '#ffffff']), 2, 0.8, { vy: 2, grav: 0, life: 15 });
           if (G.tick % 12 === 0) playSound('item13', 0.25);
         }
@@ -167,13 +170,15 @@ class Player {
     // ---- move ----
     const wasOnGround = this.onGround;
     const oy = this.y;
-    moveEntity(this, world, { fallThrough: D });
+    // (the Wall's tongue moves us itself, through blocks)
+    if (this.wofTongue && !this.wofTongue.dead) { this.vx = 0; this.vy = 0; this.onGround = false; } else moveEntity(this, world, { fallThrough: D });
     // camera smoothing for step-ups
     if (this.stepOffset > 0) this.stepOffset = Math.max(0, this.stepOffset - 2);
 
     // ---- fall damage ----
     if (!this.onGround && this.vy > 0 && this.fallStart == null) this.fallStart = this.y;
     if (this.vy < 0 || this.wet || this.onRope || (this.hook && this.hook.state === 'latched')) this.fallStart = null;
+    if (fx.slowFall && !D && this.vy > 0) this.fallStart = this.y;   // gliding under an umbrella: only the drop after closing it counts
     if (this.onGround && this.fallStart != null) {
       const tiles = (this.y - this.fallStart) / TS;
       if (tiles > 25 && !fx.noFallDmg) this.hurt(Math.floor((tiles - 25) * 10), 0, null, 'fall', true);
@@ -183,7 +188,8 @@ class Player {
 
     // ---- lava / hazards ----
     if (this.lavaWet) {
-      if (!this.buffs.obsidian_skin) { this.hurt(80, 0, null, 'lava', true); this.addBuff('on_fire', 7 * 60); }
+      // (Terraria: 80 damage and 7 s On Fire!; the Obsidian Rose makes it 35 and 3.5 s)
+      if (!this.buffs.obsidian_skin) { const rose = fx.lavaRose; this.hurt(rose ? 35 : 80, 0, null, 'lava', true); this.addBuff('on_fire', rose ? 3.5 * 60 : 7 * 60); }
     }
     if (!fx.fireBlockImmune && G.tick % 20 === 0) {
       const tx0 = Math.floor((this.x - 1) / TS), tx1 = Math.floor((this.x + this.w + 1) / TS), ty0 = Math.floor(this.y / TS), ty1 = Math.floor((this.y + this.h + 1) / TS);
