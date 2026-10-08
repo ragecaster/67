@@ -3,6 +3,8 @@
 // world directly. Knowledge of the map (where trees/ores/altars are) is read from the world, like a player
 // with a good memory of the minimap. Run with index.html?bot (optionally &turbo=16), or press F8 in-game.
 const Bot = {
+  // the Wall of Ohio first (the owner's 2-hour goal): its trip needs none of the other bosses; false = King, Eye, Tung, then the Wall
+  WALL_FIRST: true,
   active: false, turbo: 8, wantsDraw: false, t: 0, logLines: [], milestones: {}, stuck: 0, lastPos: null,
   task: null, goal: '', plan: [], base: null, deaths: 0, errors: 0,
 
@@ -40,7 +42,13 @@ const Bot = {
   jump() { const p = G.player; if ((p.onGround || (p.hook && p.hook.state === 'latched')) && p.jumpHeld) return; Input.keys[' '] = true; },
   // key times in game time (ms at 60 fps), not wall-clock: the 6-7 emote checks how close two presses were, and at turbo speed
   // real time would make the game depend on how fast the machine is (non-reproducible runs)
-  press(k) { if (!Input.keys[k]) { Input.pressed[k] = true; Input.lastKeyTime[k] = G.tick * 1000 / 60; } },
+  press(k) {
+    // T throws whatever is held: only ever the voodoo doll, and no slot change in the same tick (a shot at an Ohio flyer
+    // re-selected The 67 between the doll's selection and the throw, and The 67 went into the lava: evalD, evalA)
+    if (k === 't') { const h = G.player.held && G.player.held(); if (!h || h.id !== 'guide_voodoo_doll') { this.why = 'throw-guard'; return; } this.throwTick = G.tick; }
+    else if (/^[0-9]$/.test(k) && this.throwTick === G.tick) return;
+    if (!Input.keys[k]) { Input.pressed[k] = true; Input.lastKeyTime[k] = G.tick * 1000 / 60; }
+  },
   aimWorld(x, y) { Input.mx = x - G.camX; Input.my = y - G.camY; },
   aimTile(tx, ty) { this.aimWorld(tx * TS + 8, ty * TS + 8); },
   // world clicks do nothing with the inventory open: a UI sub-task cut off midway (its goal met while it clicked) left it open
@@ -428,6 +436,13 @@ const Bot = {
         const keeper = G.npcs.some(m => m.type === 'merchant' && !m.dead), n = 60 - this.count('rope');
         if (keeper && invMoney(this.p().inv) >= n * buyPrice('rope') + 500) { cd.rope = G.tick + 6000; this.setAct({ id: 'buy:rope', kind: 'reflex' }, this.taskBuy('rope', n), foes); return; }
       }
+      // healing potions for Ohio with whatever the coins allow, whenever we're home (also after a death there): the Wall-first
+      // runs went down with none (no King, no Eye to drop them) and died to Ohio's flyers 6-10 times each
+      if (this.owns('the_67') && !G.world.flags.wall_of_flesh && this.potionCount() < 12 && this.base && Math.abs(this.feet()[0] - this.base[0]) < 40 && this.feet()[1] < G.world.worldSurface + 5 && !(cd.pots > G.tick)) {
+        const keeper = G.npcs.some(m => m.type === 'merchant' && !m.dead), keep = this.count('rope') < 50 ? 60 * buyPrice('rope') : 0;
+        const n = Math.min(15 - this.potionCount(), Math.floor((invMoney(this.p().inv) - keep - 100) / buyPrice('lesser_healing_potion')));
+        if (keeper && n >= 2) { cd.pots = G.tick + 6000; this.setAct({ id: 'buy:pots', kind: 'reflex' }, this.taskBuy('lesser_healing_potion', n), foes); return; }
+      }
       // keep ~30 wood platforms on hand (15 wood, crafted by hand on the spot): pillars, arenas, perches
       // (wood is never placed as a block: pillars and bridges use these, so turn spare wood into them as soon as we're low)
       const spareWood = this.count('wood') - this.reserved('wood') - 10;
@@ -576,7 +591,8 @@ const Bot = {
     this.aimWorld(ax, ay);
     // Ohio: a Voodoo Demon killed over the lava drops its doll in and summons the Wall wherever we stand (it chased us through a
     // dozen respawns): hold fire while one is in range over the lava; over the runway/island its doll just lands on the floor
-    const holdFire = this.voodooOverLava();
+    // (only one near enough for this shot to find: holding fire for any of them within 1200 px, the bot hardly ever shot in Ohio)
+    const holdFire = this.voodooOverLava(Math.min(1200, d + 400));
     if (!holdFire && (melee ? d < 90 : d < 520)) { if (it.autoReuse) this.clickHold(); else if (p.itemAnim === 0) this.clickOnce(); }
     this.goal = (kite ? 'kiting ' : 'fighting ') + n.name;
   },
@@ -894,6 +910,7 @@ const Bot = {
     if (p.lifeMax < 400) { const c = this.findCrystal(); if (c) add('crystal', 'crystal', () => this.taskBreakAt(c, 'aura crystal', 'pick'), { dist: Math.abs(c[0] - this.feet()[0]) + Math.abs(c[1] - this.feet()[1]) }); }
     for (const key of Object.keys(BOSS_SUMMON)) {
       if (w.flags[key] || !this.houseValid()) continue;
+      if (this.WALL_FIRST && !w.flags.wall_of_flesh) continue;   // (Wall first: the others' summons and drops wait)
       const B = BOSS_SUMMON[key], needs = this.rawNeeds(B.item, 1);
       const total = Object.values(needs).reduce((a, b) => a + b, 0) || 1, have = this.has(B.item) ? total : Object.entries(needs).reduce((a, [k, v]) => a + Math.min(v, this.count(k)), 0);
       if (this.has(B.item) && !this.bossReady(key)) continue;   // readiness gate: holding the summon isn't enough
@@ -911,7 +928,9 @@ const Bot = {
     // (not from down in Ohio once the hell elevator stands: the walk home pathfinds through the void and into the lava)
     if (this.base && !(this.hell && this.hell.R && this.feet()[1] > this.hell.R - 40)) add('home', 'home', () => this.taskGoHome(), { dist: Math.abs(this.base[0] - this.feet()[0]) + Math.abs(this.base[1] - this.feet()[1]) });
     // the cooldown memory: drop candidates that just failed (unless that leaves nothing)
-    const fresh = out.filter(c => !(this.cooldowns && this.cooldowns[c.id] > G.tick));
+    // (in Ohio a cooled-down hell trip is still the only sensible thing: without it the bot explored down there, into the lava)
+    const inOhio = this.WALL_FIRST && this.feet()[1] > G.world.hellLayer - 3;
+    const fresh = out.filter(c => !(this.cooldowns && this.cooldowns[c.id] > G.tick) || (inOhio && c.id === 'hell'));
     return fresh.length ? fresh : out;
   },
   // can the next step of a goal actually be done right now with what we have / know?
@@ -964,6 +983,8 @@ const Bot = {
   dig(tx, ty) {
     const w = G.world, t = TILES[w.tile(tx, ty)];
     if (!t) return;
+    // an object standing on it (a pot on an Ohio island, a torch): the game won't mine the block under it, break that first
+    { const up = TILES[w.tile(tx, ty - 1)]; if (t.solid && up && !up.solid && (up.multi || up.pot || up.torch) && !up.chest && !up.station && !up.door) return this.dig(tx, ty - 1); }
     // detect tiles that never break (protected by an object on top, unbreakable, ...)
     const key = tx + ',' + ty;
     if (this.digKey !== key) { this.digKey = key; this.digTicks = 0; }
@@ -1067,6 +1088,7 @@ const Bot = {
   taskTrash() {
     const self = this;
     const junk = ['dirt_block', 'sand_block', 'clay_block', 'mud_block', 'ash_block', 'snow_block', 'ice_block', 'ebonstone_block', 'cobweb', 'mushroom', 'acorn', 'daybloom', 'blinkroot', 'cactus', 'sandstone_block', 'ebonsand_block', 'wallpaper_block', 'carpet_block', 'granite', 'marble', 'meme67_block', 'bone', 'stone_block', 'glass', 'gel', 'lens'];
+    if ((this.wantBed && this.wantBed()) || (this.WALL_FIRST && this.BED_IF_WEBS && !this.owns('bed') && this.count('cobweb') < 40)) junk.splice(junk.indexOf('cobweb'), 1);   // (silk for the bed by the hell elevator)
     const keep = { dirt_block: 60, stone_block: 60, gel: 99, lens: 6, bone: 7, glass: 10, acorn: 30 };   // acorns grow trees on the spot
     if (this.hell && this.hell.x0) Object.assign(keep, { dirt_block: 400, stone_block: 700, ash_block: 300 });   // the Wall runway is ~450 blocks
     this.goal = 'cleaning inventory';
@@ -1201,7 +1223,7 @@ const Bot = {
             if (st) target = [st[0], st[1] + (TILES[G.world.tile(st[0], st[1])].multi[1] - 1 - (G.world.frame(st[0], st[1]) >> 4))];
             // the station is in the bag, not standing at the base (hasStation counts both): set it down first, or the recipe
             // never shows up (a whole run once went by on "recipe not available: wooden_chair" with the work bench in the bag)
-            const item = { work_bench: 'work_bench', furnace: 'furnace', anvil: 'iron_anvil' }[r.station];
+            const item = { work_bench: 'work_bench', furnace: 'furnace', anvil: 'iron_anvil', loom: 'loom', sawmill: 'sawmill' }[r.station];
             if (!st && item && item !== id && self.has(item)) { sub = sub || self.taskCraftAtBase([item, 0, 'place']); sub.step(); if (sub.done) sub = null; return; }
           }
           const res = self.moveTo(target[0], target[1], 2);
@@ -2049,6 +2071,9 @@ const Bot = {
   // spills lava when it breaks). Best: near home, open rows, short rope.
   BRIDGE_LEN: 360,
   findBridge(fx) {
+    // (a runway row the pickaxe can't dig rules the site out: Ohiostone without the nightmare pickaxe held evalC and evalD at
+    // one column of their runways for ~200k ticks, burning)
+    const pow = SDK.obs().inv.pick.power;
     const w = G.world, L = this.BRIDGE_LEN, lava = (x, y) => w.liq(x, y) > 100 && w.ltype[w.idx(x, y)] === 1;
     const lavaBelow = (x, y) => { for (let j = y + 1; j < w.h - 1; j++) { if (w.solid(x, j)) return false; if (lava(x, j)) return true; } return false; };
     const stand = (x, y) => { if (!w.solid(x, y + 1) || !w.solid(x + 1, y + 1)) return false; for (let j = 0; j < 3; j++) if (w.solid(x, y - j) || w.solid(x + 1, y - j)) return false; return true; };
@@ -2066,12 +2091,25 @@ const Bot = {
             const col = dir > 0 ? x + 1 : x1, start = dir > 0 ? x1 + 2 : x - 1, xEnd = start + dir * L;
             // rock on the runway: its body rows and the floor row; Ohiostone counts 4x (lava), lava on the way rules the row out
             let rock = 0, bad = false;
-            for (let k = 0; k <= L && !bad; k++) { const c = start + dir * k; for (let r = y - 2; r <= y + 1; r++) { const t = w.tile(c, r); if (lava(c, r)) { bad = true; break; } if (t && TILES[t].solid) rock += t === T.HELLSTONE ? 4 : 1; } }
+            // (a chest on the way rules it out too: a full one never breaks, nor the block under it; evalA's runway stopped at one)
+            for (let k = 0; k <= L && !bad; k++) { const c = start + dir * k; for (let r = y - 4; r <= y + 1; r++) { const t = w.tile(c, r); if (lava(c, r) || (t && (TILES[t].chest || TILES[t].unbreakable || (r >= y - 2 && TILES[t].solid && TILES[t].minPick > pow)))) { bad = true; break; } if (r >= y - 2 && t && TILES[t].solid) rock += t === T.HELLSTONE ? 4 : 1; } }   // (y-4..: a chest sitting on a body-row block blocks it too)
             if (bad || rock > 260) continue;
-            const sx = Math.round((x + x1) / 2) - 2;
             const cost = Math.abs(col - fx) + (y - w.hellLayer) * 0.5 + rock * 0.8;
             if (best && cost >= best.cost) continue;
-            if (!this.shaftOk(sx)) continue;
+            // the shaft over the island: its middle if that column works, else any other over it (the house stood on evalJ's
+            // only site's middle: "no island" for ~150k ticks)
+            const mid = Math.round((x + x1) / 2) - 2, cols = []; for (let c = x; c <= x1 - 3; c++) cols.push(c);
+            cols.sort((a, b) => Math.abs(a - mid) - Math.abs(b - mid));
+            // (and a clear drop under the void's ceiling down to the island in the shaft's columns and one beside them for the
+            // rope, like digShaft needs to call the shaft done: evalL dug past the ceiling for ~200k ticks without one)
+            const voidOk = (c) => {
+              let R = y - 1; while (R > w.hellLayer - 40 && !w.solid(c, R) && !w.solid(c + 1, R)) R--;
+              if (R <= w.hellLayer - 30) return false;
+              const clear = (cx) => { for (let r = R + 1; r < y; r++) if (w.solid(cx, r)) return false; return true; };
+              return clear(c + 2) || clear(c - 1);
+            };
+            const sx = cols.find(c => voidOk(c) && this.shaftOk(c, y));
+            if (sx == null) continue;
             best = { x0: x, x1, y, dir, col, start, xEnd, cost, rock, sx };
           }
         }
@@ -2085,8 +2123,19 @@ const Bot = {
     const w = G.world, p = this.p(), [fx, fy] = this.feet();
     if (dir * (fx - xt) >= 0) return true;
     if (fy !== Y) { const r = this.moveTo(fx, Y, 0); return r === 'fail' ? 'off' : false; }
+    // lava on the way (an Ohiostone spill, a pocket we opened): a block on it deletes it; that block is dug like any stone
+    for (let k = 1; k <= 5; k++) for (let r = Y - 3; r <= Y + 1; r++) {
+      const c = fx + k * dir;
+      if (w.tile(c, r) || !(w.liq(c, r) > 0 && w.ltype[w.idx(c, r)] === 1) || !p.inReach(c, r)) continue;
+      const bs = this.spareBlockSlot(false); if (bs < 0) break;
+      if (bs > 9) { this.ensureHotbar(bs); return false; }
+      this.selectSlot(bs); this.aimTile(c, r); if (p.itemAnim === 0) this.clickOnce(); this.why = 'bridge-plug-lava'; return false;
+    }
     for (const c of [fx + dir, fx + 2 * dir]) for (const r of [Y, Y - 1, Y - 2]) {
-      if (w.solid(c, r)) { if (this.dig(c, r) === 'fail') return 'bad'; return false; }
+      if (!w.solid(c, r)) continue;
+      // Ohiostone right next to us spills its lava onto us: back off a tile and dig it from two away (then the plug above)
+      if (w.tile(c, r) === T.HELLSTONE && c === fx + dir) { this.hold(dir > 0 ? 'a' : 'd'); this.why = 'bridge-hellstone-back'; return false; }
+      if (this.dig(c, r) === 'fail') return 'bad'; return false;
     }
     // floor up to 5 ahead (a knock from an Ohio flyer carries ~4 tiles: the open end must be further than that)
     const need = [1, 2, 3, 4, 5, 6, 7].map(k => fx + k * dir).find(c => !w.solid(c, Y + 1) && !w.isPlatform(c, Y + 1) && p.inReach(c, Y + 1));
@@ -2326,11 +2375,34 @@ const Bot = {
   },
   // a Voodoo Demon near enough for The 67's homing shots (they find targets within ~400 px of where they fly), with no
   // floor under it (only Ohio's void and its lava): killing it there summons the Wall. Not while the Wall is already up.
-  voodooOverLava() {
+  // one tick of shooting at Ohio's flyers with The 67 during the hell trip (it stays committed: the decisions that start
+  // ordinary fights never run there, and the bot stood on the island taking hits with 0 shots fired). true = busy with it
+  hellShoot() {
+    const p = this.p(), foe = this.foesNear().filter(n => !n.boss && dist(n.cx, n.cy, p.cx, p.cy) < 420).sort((a, b) => dist(a.cx, a.cy, p.cx, p.cy) - dist(b.cx, b.cy, p.cx, p.cy))[0];
+    if (!foe) return false;
+    // half-way through a hard block (obsidian: 4 hits, and the damage fades between them): finish it first unless one is on us
+    // (shooting every other tick, evalD never broke the obsidian across its runway, ~200k ticks)
+    if (this.digKey && this.digTicks > 5 && this.digTicks < 200 && dist(foe.cx, foe.cy, p.cx, p.cy) > 100) { const [dx, dy] = this.digKey.split(',').map(Number), td = TILES[G.world.tile(dx, dy)]; if (td && td.hp >= 150) return false; }
+    const ws = this.slotOf(it => it.id === 'the_67');
+    if (ws > 9) { this.ensureHotbar(ws); return true; }
+    if (ws < 0 || p.itemAnim > 0 || this.voodooOverLava(Math.min(1200, dist(foe.cx, foe.cy, p.cx, p.cy) + 400))) return false;
+    if ((this.hellShotT = (this.hellShotT || 0) + 1) % 2 === 0) return false;   // (every other tick: the building/moving goes on between)
+    this.selectSlot(ws); this.aimWorld(foe.cx, foe.cy); this.clickOnce(); this.why = 'hell-shoot'; return true;
+  },
+  // maxD: how far out a Voodoo Demon counts (a shot at a foe d px away homes on things within ~400 px of its path: d + 400)
+  voodooOverLava(maxD = 1200) {
     const w = G.world, p = this.p();
     if (Math.floor(p.cy / TS) < w.hellLayer - 30 || G.npcs.some(n => n.type === 'wall_of_flesh')) return false;
+    // ready for the Wall on a finished hellbridge (near full life, by the island, the Guide alive): a Voodoo Demon over the lava
+    // behind us (the island's lava side) is welcome, its doll summons the Wall from behind and it chases us down the runway, the
+    // way a player summons it; no need to wait for one to die over the floor and throw its doll in
+    // (anywhere on the runway with 450+ tiles of it still ahead, not only by the island: the Wall comes from the doll toward us,
+    // and Voodoo Demons are 6% of Ohio's spawns, one every ~10k ticks; evalA waited ~180k ticks at the island for one)
+    const fxv = Math.floor(p.cx / TS), H = this.hell, onRunway = H && H.bridge && H.start != null && Math.abs(Math.floor((p.y + p.h) / TS) - 1 - H.y) <= 1 && H.dir * (fxv - H.start) >= 0 && H.dir * (H.xEnd - fxv) >= 450;
+    const ready = H && H.bridge && H.bridgeDone && p.life >= p.lifeMax * 0.6 && (Math.abs(fxv - H.col) < 40 || onRunway) && G.npcs.some(n => n.type === 'guide' && !n.dead) && this.readyForWallLife();
     return G.npcs.some(v => {
-      if (v.type !== 'voodoo_demon' || v.dead || dist(v.cx, v.cy, p.cx, p.cy) > 1200) return false;   // (a shot flies ~810 px and homes within 400 px of itself)
+      if (v.type !== 'voodoo_demon' || v.dead || dist(v.cx, v.cy, p.cx, p.cy) > maxD) return false;
+      if (ready && H.dir * (v.cx - p.cx) < 0) return false;   // (a shot flies ~810 px and homes within 400 px of itself)
       // safe only with floor under it and 3 tiles to either side (a dropped doll scatters a little: off the runway's end is lava)
       const cx = Math.floor(v.cx / TS), y0 = Math.floor((v.y + v.h) / TS);
       const floorUnder = x => { for (let y = y0; y < w.h - 1; y++) { if (w.solid(x, y)) return true; if (w.liq(x, y) > 100) return false; } return false; };
@@ -2379,13 +2451,16 @@ const Bot = {
   // rung every 15 rows (catch points: hold S to drop past them, the navigator stops on one before a fall can hurt) and a rope
   // hung under the ceiling in column sx+2, down to just over the island. Going down is then a free fall with S held, a step to
   // the side under the ceiling, W to grab the rope (a grab forgets the fall), a slide and a short drop: also after a death.
-  shaftOk(sx) {
+  // (yEnd: the island's row; the void's ceiling slab under the Ohio line has Ohiostone in it too, which a gold pickaxe can't
+  // break and which burns: evalL's shaft stopped on it 6 rows into the slab and the bot burned there again and again)
+  shaftOk(sx, yEnd) {
     if (this.badShafts && this.badShafts.some(b => Math.abs(b - sx) < 4)) return false;
     const w = G.world, pow = SDK.obs().inv.pick.power, b = w.backrooms, top = topSolid(w, sx);
     if (top < 0) return false;
+    for (let y = w.hellLayer + 2; y < (yEnd || 0); y++) for (const x of [sx, sx + 1]) { const td = TILES[w.tile(x, y)]; if (td && td.solid && (td.unbreakable || td.minPick > pow)) return false; }
     for (let y = top - 2; y < w.hellLayer + 2; y++) for (const x of [sx, sx + 1, sx + 2]) {
       const t = w.tile(x, y), td = TILES[t];
-      if (td && td.solid && (td.unbreakable || td.multi || td.chest || td.minPick > pow) && x !== sx + 2) return false;
+      if (td && ((td.solid && (td.unbreakable || td.multi || td.minPick > pow)) || td.chest) && x !== sx + 2) return false;   // (a chest isn't solid: evalP's shaft stopped on one in a cave for ~200k ticks)
       if (td && td.noclip) return false;
       if (b && x >= b.x0 - 3 && x <= b.x0 + b.w + 3 && y >= b.y0 - 3 && y <= b.y0 + b.h + 3) return false;
       if (this.isProtected(x, y) || this.inYard(x, y)) return false;
@@ -2405,7 +2480,7 @@ const Bot = {
     if (!(nx === sx && fy >= H.top - 2 && p.onGround)) {
       const by = H.bot || H.top - 1;
       if (Math.abs(nx - sx) <= 1 && Math.abs(fy - by) <= 1 && p.onGround) { Input.keys[nx < sx ? 'd' : 'a'] = true; return false; }
-      const r = this.moveTo(sx, by, 0); if (r === 'fail') { H.fails = (H.fails || 0) + 1; if (H.fails > 20) return 'fail'; }
+      const r = this.headTo(H, sx, by, 0); if (r === 'fail') { H.fails = (H.fails || 0) + 1; if (H.fails > 20) return 'fail'; }
       this.goal = 'heading to the hell elevator'; return false;
     }
     if (H.bot !== fy) H.digFails = 0;   // (failures count per row: a few misses over 400 rows used to add up to giving up)
@@ -2473,8 +2548,21 @@ const Bot = {
         }
       }
     }
+    // water in the shaft under us (a pond the shaft cut through drains into it): a block on it deletes it, then it's dug like
+    // any other; swimming down to dig under it, the breath reflex pulled us back up every 120 ticks (evalE: ~170k ticks)
+    if (r < w.hellLayer - 30) for (let y = r; y <= r + 3; y++) for (const x of [sx, sx + 1]) {
+      if (w.tile(x, y) || w.liq(x, y) <= 0 || this.lavaAt(x, y) || !p.inReach(x, y)) continue;
+      const bs = this.spareBlockSlot(false); if (bs < 0) break;
+      if (bs > 9) { this.ensureHotbar(bs); return false; }
+      this.selectSlot(bs); this.aimTile(x, y); if (p.itemAnim === 0) this.clickOnce(); this.why = 'shaft-water'; return false;
+    }
+    // through the ceiling: done, before any digging (standing on the island, the dig below opened a hole in its floor at the
+    // shaft's columns, and every later ride down fell through it into the lava under it: evalA, 18 deaths)
+    if (H.R && r > H.R) return true;
     for (const x of [sx, sx + 1]) if (w.solid(x, r)) { if (this.dig(x, r) === 'fail') { H.digFails = (H.digFails || 0) + 1; if (H.digFails > 200) return 'fail'; } return false; }
-    if (H.R && r > H.R) return true;   // through the ceiling
+    // nothing under the shaft's two columns, yet standing: on the lip of a wall (a 20 px body 2 px over it): to the middle
+    if (p.onGround && Math.abs(p.cx - (sx + 1) * TS) > 2) Input.keys[p.cx < (sx + 1) * TS ? 'd' : 'a'] = true;
+    Input.keys.s = true;
     return false;
   },
   // down the hell elevator's shaft to the lowest rung over the void's ceiling (the slab the Ohio armor is mined from): S through
@@ -2494,6 +2582,43 @@ const Bot = {
     for (const x of [sx, sx + 1]) if (w.solid(x, fy + 1) && !w.isPlatform(x, fy + 1)) { this.dig(x, fy + 1); return false; }
     Input.keys.s = true; return false;
   },
+  // moveTo for the long walks to the hell elevator, with a way out of a cave the planner can't find its way out of: no
+  // distance gained for 4000 ticks underground -> straight up to the surface at this column, then on (evalE: a cave 260
+  // columns from the shaft, ~150k ticks of "heading to the hell elevator", bobbing between two rows)
+  headTo(H, tx, ty, tol) {
+    const [fx, fy] = this.feet(), d = Math.abs(fx - tx) + Math.abs(fy - ty);
+    const S = H.head || (H.head = { t: G.tick, d, key: tx + ',' + ty });
+    if (S.key !== tx + ',' + ty || d < S.d - 4) { S.key = tx + ',' + ty; S.t = G.tick; S.d = d; S.up = false; }
+    if (!S.up && G.tick - S.t > 4000 && fy > this.groundY(fx) + 4) { S.up = true; S.upT = G.tick; this.log('no way found toward the hell elevator from ' + fx + ',' + fy + ': up to the surface first'); }
+    if (S.up) {
+      if (fy <= this.groundY(fx) + 1 || G.tick - S.upT > 6000) { S.up = false; S.t = G.tick; S.d = d; }
+      else { this.goal = 'climbing out to the surface (on the way to the hell elevator)'; this.moveTo(fx, this.groundY(fx) - 1, 3); return false; }
+    }
+    // stuck near the surface (in a pond, where the path follower kept going "offpath": evalA ~150k ticks): straight at it for a
+    // while, swimming and hopping, then the planner again from wherever that got us
+    if (!S.up && !S.push && G.tick - S.t > 4000) { S.push = G.tick; this.nav = null; this.log('no way found toward the hell elevator from ' + fx + ',' + fy + ': pushing straight on'); }
+    if (S.push) {
+      if (G.tick - S.push > 500) { S.push = 0; S.t = G.tick; S.d = d; }
+      else {
+        const p = this.p(), k = tx < fx ? 'a' : 'd'; Input.keys[k] = true;
+        if (p.wet || (p.onGround && (G.world.solid(fx + (tx < fx ? -1 : 1), fy) || G.world.solid(fx + (tx < fx ? -1 : 1), fy - 1)))) this.jump();
+        this.goal = 'pushing on toward the hell elevator'; return false;
+      }
+    }
+    // a long walk over the surface: 80 columns at a time, standing on the ground there (one A* over 450 columns took ~1 s and
+    // was redone every few hundred ticks when following it failed: evalL, a visible stall in the live game)
+    if (Math.abs(tx - fx) > 110 && ty < G.world.worldSurface + 10 && fy <= Nav.surfAt(fx) + 4 && !(S.wpBan > G.tick)) {
+      const wx = fx + Math.sign(tx - fx) * 80; Nav.surfAt(wx); const wy = Nav.rawSurf(wx) - 1;   // (surfAt sets up rawSurf's cache)
+      if (wy > 5 && !(G.world.liq(wx, wy) > 0)) {
+        if (!S.wp || Math.abs(S.wp[0] - fx) > 120 || Math.abs(S.wp[0] - fx) < 6 || G.tick - S.wpT > 3000) { S.wp = [wx, wy]; S.wpT = G.tick; }
+        const r = this.moveTo(S.wp[0], S.wp[1], 4);
+        if (r === true) { S.wp = null; return false; }
+        if (r !== 'fail') return r;
+        S.wp = null; S.wpBan = G.tick + 3000;   // (failed: straight at the goal for a while; switching goals each tick replanned both)
+      }
+    }
+    return this.moveTo(tx, ty, tol);
+  },
   // one tick of the ride down (from anywhere above the island): true once standing on the island
   rideDown(H) {
     const w = G.world, p = this.p(), sx = H.sx, [fx, fy] = this.feet(), nx = Nav.nodeOf(p)[0];
@@ -2501,6 +2626,10 @@ const Bot = {
     this.goal = 'riding the hell elevator down';
     this.dbg = 'ride node=' + nx + ',' + fy + ' sx=' + sx + ' top=' + H.top + ' R=' + H.R + ' gnd=' + p.onGround + ' rope=' + !!p.onRope + (this.nav ? ' nav->' + this.nav.tx + ',' + this.nav.ty + ' ' + this.replanWhy : '');
     if (p.onRope) {   // slide to the rope's end, then step off onto the island
+      // (near the end, or the slide stalled with nothing to dig: let go toward the island's middle; the slide stops ~2 rows
+      // over the rope's end, and holding S there left us hanging for thousands of ticks while Ohio's flyers killed us)
+      const mid = H.x0 != null ? Math.round((H.x0 + H.x1) / 2) : sx + 2;
+      if (fy >= (H.ropeEnd || H.y) - 5 || (this.ropeStuck || 0) > 40) { this.ropeStuck = 0; if (!p.jumpHeld) Input.keys[' '] = true; Input.keys[mid < fx ? 'a' : 'd'] = true; return false; }
       if (fy < (H.ropeEnd || H.y) - 1) {
         Input.keys.s = true;
         // sliding stopped short of the rope's end: rock under our 20-px-wide body (the void's ceiling is lumpy): dig it out
@@ -2518,7 +2647,17 @@ const Bot = {
       // in the shaft: S through the rungs, but only for ~16 rows at a time: the next rung catches us before a fall can hurt
       // (a free fall to the rope is only as safe as the shaft is clear: a block we pillared into it once killed us)
       const fallen = p.fallStart != null ? (p.y - p.fallStart) / TS : 0;
-      if (fy <= (H.R || 0)) { if (fallen < 16 || fy > (H.R || 0) - 20) Input.keys.s = true; if (Math.abs(p.cx - (sx * TS + 16)) > 3) Input.keys[p.cx < sx * TS + 16 ? 'd' : 'a'] = true; }
+      // (S passes the next rung only when what's under it is still a safe fall from where this one began: a stretch of
+      // missing rungs, or the short ones the rung fix lays, would otherwise be one long fall)
+      const R0 = H.R || 0, catchAt = (y0) => { for (let y = y0; y < R0; y++) if (w.isPlatform(sx, y) || w.isPlatform(sx + 1, y) || w.solid(sx, y) || w.solid(sx + 1, y)) return y; return R0; };
+      // (the rung we're dropping through, the one this fall began on, isn't "the next one": counting it, the bot let go of S
+      // right after stepping off it and landed back on it, for ~100k ticks on evalE)
+      let nr = catchAt(fy + 1); if (nr <= Math.floor(fy - fallen) + 1) nr = catchAt(nr + 1);
+      const passOk = nr >= R0 || catchAt(nr + 1) - (fy - fallen) < 22;
+      // (fallen < 1.5: still in the rung we stepped off, S through it)
+      if (fy <= R0) { if (fallen < 1.5 || (fallen < 16 && passOk) || fy > R0 - 20) Input.keys.s = true; if (Math.abs(p.cx - (sx * TS + 16)) > 3) Input.keys[p.cx < sx * TS + 16 ? 'd' : 'a'] = true; }
+      // (near the rope's end: we let go on purpose, fall on to the island; grabbing it again here was a loop at its bottom)
+      else if (H.ropeEnd && fy >= H.ropeEnd - 7) { const mid = H.x0 != null ? Math.round((H.x0 + H.x1) / 2) : sx + 2; if (Math.abs(fx - mid) > 1) Input.keys[mid < fx ? 'a' : 'd'] = true; }
       else if (H.ropeEnd) { const rc = H.rc != null ? H.rc : sx + 2; Input.keys[rc > sx ? 'd' : 'a'] = true; if (Math.floor(p.cx / TS) === rc) Input.keys.w = true; }   // under the ceiling: onto the rope and grab it
       return false;
     }
@@ -2527,13 +2666,78 @@ const Bot = {
       if (nx !== sx) { Input.keys[nx < sx ? 'd' : 'a'] = true; return false; }
       // an object in the shaft (a station we set down in it, a pot...): break it, nothing under an object can be mined
       for (let y = fy - 2; y <= fy + 1; y++) for (const x of [sx, sx + 1]) { const t = w.tile(x, y), td = TILES[t]; if (t && !td.solid && t !== T.PLATFORM && t !== T.ROPE && (!td.cut || td.multi)) { this.dig(x, y); return false; } }
+      // a missing rung under this one (the digging ran out of platforms, or a cave wall took it): a long free fall. A new rung
+      // within reach first (evalF fell ~75 rows down a rungless stretch and died there 26 times in a row)
+      // lava in the drop (a spill from the ceiling slab: evalF died in it on ten rides in a row): plugged with a block once it's
+      // in reach (the block is dug out again below), and until then the short rung-fix steps down to it
+      let lavaIn = false;
+      if (p.onGround) for (let y = fy + 1; y <= Math.min((H.R || w.hellLayer) + 2, fy + 40) && !lavaIn; y++) for (const x of [sx, sx + 1]) {
+        if (!this.lavaAt(x, y)) continue;
+        lavaIn = true;
+        if (!w.tile(x, y) && p.inReach(x, y)) { const bs = this.spareBlockSlot(false); if (bs >= 0) { if (bs > 9) { this.ensureHotbar(bs); return false; } this.selectSlot(bs); this.aimTile(x, y); if (p.itemAnim === 0 && p.sel === bs) this.clickOnce(); this.why = 'ride-plug-lava'; return false; } }
+        break;
+      }
+      if (p.onGround && !w.solid(sx, fy + 1) && !w.solid(sx + 1, fy + 1)) {
+        const bottom = H.R || w.hellLayer; let gap = 0;
+        for (let y = fy + 2; y < bottom && !(w.isPlatform(sx, y) || w.isPlatform(sx + 1, y) || w.solid(sx, y) || w.solid(sx + 1, y)); y++) gap++;
+        if ((gap >= 20 || (lavaIn && gap >= 4)) && fy + 3 < bottom - 2 && (this.rungFix || 0) < 40) {
+          const s0 = this.slotOf(it => it.id === 'wood_platform');
+          if (s0 >= 0) {
+            if (s0 > 9) { this.ensureHotbar(s0); return false; }
+            this.selectSlot(s0); this.aimTile(sx, fy + 3); if (p.itemAnim === 0 && p.sel === s0) { this.clickOnce(); this.rungFix = (this.rungFix || 0) + 1; }
+            this.why = 'shaft-rung-fix'; return false;
+          }
+        }
+      }
+      if (!p.onGround || w.isPlatform(sx, fy + 3)) this.rungFix = 0;
       Input.keys.s = true;
       if (w.solid(sx, fy + 1) || w.solid(sx + 1, fy + 1)) { const x = w.solid(sx, fy + 1) ? sx : sx + 1; this.dig(x, fy + 1); return 'blocked'; }   // something fell in: dig it
       return false;
     }
+    // standing somewhere under the ceiling (a ledge beside the rope, a lower island): down to the island, not back up the
+    // whole elevator to its mouth (it walked 450 rows up from a ledge 5 rows over the island, again and again)
+    // (a clear drop straight down to the island's row, platforms at most: S through them. The navigator tried hook moves off a
+    // platform ledge 14 rows over the island for ~45k ticks on evalC, "hook-wrong" again and again)
+    // right at the ceiling's row, on a lump of it beside the hole (neither "in the shaft" nor "under the ceiling", so it set off
+    // back up to the shaft's mouth: evalG, 9 deaths there): dig the lump out and drop
+    if (H.R && Math.abs(fy - H.R) <= 1 && Math.abs(nx - sx) <= 3 && p.onGround) {
+      for (const x of [fx, fx + 1]) if (w.solid(x, fy + 1) && fy + 1 < H.y - 1) { this.dig(x, fy + 1); Input.keys.s = true; this.why = 'ride-ceiling-lump'; return false; }
+      Input.keys.s = true; if (Math.abs(nx - sx) > 0) Input.keys[nx < sx ? 'd' : 'a'] = true; this.why = 'ride-ceiling-drop'; return false;
+    }
+    // (stuck there anyway, on a stack of platforms a climb out left behind: evalD was killed on one by Ohio's flyers 20 times):
+    // dig out what's under our feet
+    if (H.R && fy > H.R && fy < H.y - 1 && p.onGround) {
+      const key = fx + ',' + fy; if (this.ceilKey !== key) { this.ceilKey = key; this.ceilT = G.tick; }
+      if (G.tick - this.ceilT > 120) { for (const x of [fx, fx + 1]) if (w.tile(x, fy + 1)) { this.dig(x, fy + 1); Input.keys.s = true; this.why = 'ride-ledge-dig'; return false; } }
+    }
+    if (H.R && fy > H.R && fy < H.y && p.onGround && fx >= (H.x0 != null ? H.x0 : sx - 3) && fx <= (H.x1 != null ? H.x1 : sx + 6)) {
+      let clear = true; for (let y = fy + 1; y <= H.y && clear; y++) for (const x of [fx, fx + 1]) if (w.solid(x, y) || w.liq(x, y) > 0) clear = false;
+      if (clear) { Input.keys.s = true; return false; }
+    }
+    if (H.R && fy > H.R && fy < H.y + 8 && p.onGround) { const mid = H.x0 != null ? Math.round((H.x0 + H.x1) / 2) : sx + 2; if (this.moveTo(mid, H.y, 2) === 'fail') return 'fail'; return false; }
+    // deep underground beside the shaft (a crystal or a fight took us off it): into the shaft at a rung near our depth, not the
+    // whole climb back to its mouth (evalC climbed ~350 rows up after a crystal 40 tiles from the shaft)
+    // (only from near the shaft, and given up after 900 ticks without getting closer: from a cave 190 columns off, the planner
+    // never got going, "stale-start" for ~150k ticks on evalE)
+    if (H.R && fy > H.top + 30 && fy < H.R - 5 && Math.abs(fx - sx) <= 45 && !(H.deepFail > G.tick)) {
+      const d = Math.abs(fx - sx) + Math.abs(fy - (H.deepY || fy));
+      if (!H.deepT || G.tick - H.deepT > 2000) { H.deepT = G.tick; H.deepD = d; }
+      else if (d < H.deepD - 3) { H.deepT = G.tick; H.deepD = d; }
+      else if (G.tick - H.deepT > 900) { H.deepFail = G.tick + 6000; H.deepT = 0; }
+    }
+    if (H.R && fy > H.top + 30 && fy < H.R - 5 && Math.abs(fx - sx) <= 45 && !(H.deepFail > G.tick)) {
+      let best = null;
+      for (let y = Math.max(H.top + 2, fy - 40); y <= Math.min(H.R - 1, fy + 40); y++) if ((w.isPlatform(sx, y) || w.isPlatform(sx + 1, y)) && !w.solid(sx, y - 1) && !w.solid(sx + 1, y - 1) && (!best || Math.abs(y - fy) < Math.abs(best - fy))) best = y;
+      if (best != null) {
+        H.deepY = best - 1;
+        if (Math.abs(nx - sx) <= 1 && fy === best - 1) { Input.keys.s = true; return false; }
+        const r = this.moveTo(sx, best - 1, 1);
+        if (r === 'fail') H.deepFail = G.tick + 3000; else return false;
+      }
+    }
     // at the mouth: walk in (straight keys: the cliff guard would stop us at the edge we mean to drop off)
     if (Math.abs(nx - sx) <= 5 && Math.abs(fy - (H.top - 1)) <= 3) { Input.keys[nx < sx ? 'd' : 'a'] = true; return false; }
-    const r = this.moveTo(sx - 3, H.top - 1, 2); if (r === 'fail') return 'fail';
+    const r = this.headTo(H, sx - 3, H.top - 1, 2); if (r === 'fail') return 'fail';
     return false;
   },
   taskHell() {
@@ -2574,6 +2778,8 @@ const Bot = {
         }
         if (!H.x0) {
           const isl = self.findIsland(self.base ? self.base[0] : fx);   // (near home: respawns and rope trips start there)
+          // (no site the pickaxe in hand can dig: back to wanting the gold one; evalQ explored ~250k ticks after the soft gate)
+          if (!isl && self.WALL_FIRST && SDK.obs().inv.pick.power < 55 && !self.wallPickGate) { self.wallPickGate = 55; self.log('no hellbridge site for this pickaxe: the gold pickaxe first'); }
           if (!isl) return fail(this, 'no island');
           Object.assign(H, isl, { ph: isl.tunnel ? 'platforms' : isl.sx != null ? 'shop' : 'prep' });
           self.log('Ohio plan: island ' + isl.x0 + '-' + isl.x1 + '@' + isl.y + ', stand at ' + isl.col + ', bridge ' + (isl.dir > 0 ? 'east' : 'west') + ' to ' + isl.xEnd);
@@ -2612,6 +2818,13 @@ const Bot = {
             // a new site (this column excluded) for the same tunnel plan: the old fallback was the open-air bridge over Ohio,
             // where the demons killed the bot over and over (evalD: five deaths, no Wall)
             if (H.tunnel) { (self.badShafts = self.badShafts || []).push(H.sx); for (const k of Object.keys(H)) delete H[k]; this.done = true; return; }
+            // the hellbridge: a column that won't dig gets a new site; a way there that won't plan is retried later (the old
+            // fallback, walking down to Ohio with no elevator, ended in "going down to Ohio" for ~40k ticks on evalI)
+            if (H.bridge) {
+              if ((H.digFails || 0) > 200) { (self.badShafts = self.badShafts || []).push(H.sx); for (const k of Object.keys(H)) delete H[k]; }
+              else { H.fails = 0; (self.cooldowns = self.cooldowns || {}).hell = G.tick + 3000; }
+              this.done = true; return;
+            }
             H.sx = null; H.ph = 'prep'; return;
           }
           if (r === true && H.tunnel) { H.ph = 'nook'; self.milestone('hell elevator dug'); self.log('hell elevator down to the tunnel row at ' + H.sx + '; tunnel ' + (dir > 0 ? 'east' : 'west') + ' to ' + H.xEnd); }
@@ -2650,9 +2863,23 @@ const Bot = {
         }
         // 2b) Ohio armor before Ohio: Ohiostone and obsidian from the ceiling slab around the shaft's bottom, then home to the
         // Ohioforge and the anvil, then wear it
+        // a far elevator: a bed by its mouth first (from up top only: never in the middle of a ride or in Ohio)
+        if ((H.ph === 'ride' || H.ph === 'molten') && fy < w.worldSurface + 15 && self.wantBed()) {
+          const r = self.bedStep(H, sub && sub.bedSub ? sub : null);
+          if (r.sub) { sub = r.sub; sub.bedSub = true; }
+          if (!r.done) return;
+          sub = null;
+        }
         if (H.ph === 'ride' && H.bridge && self.moltenWants().length && !H.moltenSkip && !(H.R && fy > H.R)) H.ph = 'molten';
         if (H.ph === 'molten') {
-          if (sub && !sub.done && !sub.mining) { sub.step(); return; }   // (the crafting steps; the mining one is re-checked below)
+          if (sub && !sub.done && !sub.mining) { sub.step(); return; }
+          // Wall first without the nightmare pickaxe: no Ohiostone to mine, so the skull (its obsidian sits by the lava around the
+          // shaft) only costs time and deaths
+          // (Wall first: the skull gets 25k ticks; making it stalled for ~140k on evalG)
+          if (!H.mT0) H.mT0 = G.tick;
+          if (self.WALL_FIRST && G.tick - H.mT0 > 25000 && !self.owns('obsidian_skull')) { H.moltenSkip = true; H.ph = 'ride'; self.log('no Ohio Skull after 25k ticks: going without it'); return; }
+          if (self.WALL_FIRST && SDK.obs().inv.pick.power < TILES[T.OBSIDIAN].minPick) { H.moltenSkip = true; H.ph = 'ride'; self.log('no Ohio Skull: the pickaxe can\'t mine obsidian'); return; }
+          if (self.NO_SKULL && self.WALL_FIRST && SDK.obs().inv.pick.power < TILES[T.HELLSTONE].minPick) { H.moltenSkip = true; H.ph = 'ride'; self.log('Ohio armor and skull skipped (no nightmare pickaxe)'); return; }   // (the crafting steps; the mining one is re-checked below)
           // made: put it on here (the hell trip stays committed, so the equip reflex in the decisions never runs during it)
           const unworn = self.MOLTEN_SET.find(id => self.has(id) && !p.armor.some(a => a && a.id === id));
           if (unworn) { sub = self.taskEquip(unworn); self.goal = 'putting on the ' + ITEMS[unworn].name; sub.step(); return; }
@@ -2670,6 +2897,8 @@ const Bot = {
             if (sub) { self.goal = 'making an Ohio Skull'; sub.step(); return; }
           }
           if (n.hs > 0 && (H.mDeaths || 0) >= 8) { H.moltenSkip = true; H.ph = 'ride'; self.log('8 deaths mining for the Ohio armor (' + self.count('hellstone') + ' Ohiostone, ' + self.count('obsidian') + ' obsidian): going without it'); return; }
+          // the Ohiostone needs the nightmare pickaxe: until then the prep stops here (skull and elevator done)
+          if (!needSkull && n.hs > 0 && SDK.obs().inv.pick.power < TILES[T.HELLSTONE].minPick) { if (self.WALL_FIRST) { H.moltenSkip = true; H.ph = 'ride'; self.log('Ohio armor: no nightmare pickaxe for the Ohiostone, the Wall goes first (skull only)'); return; } if (!H.waitPickLogged) { self.log('Ohio armor: the Ohiostone waits for the nightmare pickaxe'); H.waitPickLogged = true; } (self.cooldowns = self.cooldowns || {})['going to'] = G.tick + 6000; this.done = true; return; }
           if (n.hs > 0 || n.ob > 0) {
             // lava in reach (an Ohiostone spill, an opened pocket): a block on it deletes it, before anything else
             if (fy > H.R - 40) {
@@ -2744,11 +2973,19 @@ const Bot = {
         }
         // with the other bosses alive, the Wall prep stops here: the elevator and the armor are ready, Ohio waits
         if (H.bridge && H.ph === 'ride' && !self.othersDown()) { self.log('Wall prep done: hell elevator' + (self.moltenWants().length ? '' : ' and Ohio armor') + ' ready, the trip down waits for the other bosses'); this.done = true; return; }
+        // (setting off from home with few potions: the Merchant first. The Wall fight is lost without them: evalF threw with
+        // none and bled out to the eye lasers with the Wall at 79%)
+        if (H.ph === 'ride' && H.bridge && fy < w.worldSurface + 5 && self.base && Math.abs(fx - self.base[0]) < 60 && self.potionCount() < 8 && !(H.potT > G.tick - 6000) && !(sub && sub.potBuy && !sub.done)) {
+          const keeper = G.npcs.some(m => m.type === 'merchant' && !m.dead), n = Math.min(15 - self.potionCount(), Math.floor((invMoney(p.inv) - 100) / buyPrice('lesser_healing_potion')));
+          if (keeper && n >= 3) { H.potT = G.tick; sub = self.taskBuy('lesser_healing_potion', n); sub.potBuy = true; }
+        }
+        if (sub && sub.potBuy && !sub.done) { self.goal = 'buying potions before Ohio'; sub.step(); return; }
         if (H.ph === 'ride') {
           if (H.tunnel && H.tunnelDone && p.onRope && fy >= self.hangRow(H) - 1) { H.ph = 'wait'; self.milestone('reached Ohio'); return; }
           const r = self.rideDown(H);
-          if (r === true) { H.ph = H.tunnel ? 'wait' : 'bridge'; self.milestone('reached Ohio'); }
-          else if (r === 'fail') { this.rideFails = (this.rideFails || 0) + 1; if (this.rideFails > 600) { self.log('hell elevator ride failed, walking down'); H.ph = 'descend'; } }
+          // (a finished hellbridge: straight to the doll, not a walk to its far end after every respawn)
+          if (r === true) { H.ph = H.tunnel || H.bridgeDone ? 'wait' : 'bridge'; self.milestone('reached Ohio'); }
+          else if (r === 'fail') { this.rideFails = (this.rideFails || 0) + 1; if (this.rideFails > 600) { if (H.bridge) { self.log('hell elevator ride failed: trying again later'); this.rideFails = 0; (self.cooldowns = self.cooldowns || {}).hell = G.tick + 3000; this.done = true; return; } self.log('hell elevator ride failed, walking down'); H.ph = 'descend'; } }   // (a hellbridge: never the walk down without the elevator, it walked into the lava, evalG x5)
           return;
         }
         // 1) enough blocks for the whole runway
@@ -2798,10 +3035,14 @@ const Bot = {
             if (Math.abs(fy - H.y) > 6) { self.goal = 'going back down to the Wall runway'; const r0 = self.moveTo(H.col, H.y, 1); if (r0 === 'fail' && ++bridgeFails > 40) return fail(this, 'cannot get back to the island'); return; }
             // build and shoot at once (Ohio is never empty: a fight that stops the building is a runway that never ends):
             // a swing of The 67 at the nearest flyer whenever it's ready and none of them is a Voodoo Demon over the lava
-            const foe = self.foesNear().filter(n => !n.boss && dist(n.cx, n.cy, p.cx, p.cy) < 420)[0], ws = self.slotOf(it => it.id === 'the_67');
-            if (foe && ws >= 0 && ws <= 9 && p.itemAnim === 0 && !self.voodooOverLava() && (this.shotT = (this.shotT || 0) + 1) % 2) {
-              self.selectSlot(ws); self.aimWorld(foe.cx, foe.cy); self.clickOnce(); self.why = 'bridge-shoot'; return;
+            // flyers about and the open end of the runway within 4 tiles: a hit there knocks us off into the lava (evalD, five times
+            // at the same spot): back off from the edge and fight, build on when it's clear
+            if (fy === H.y) {
+              let edge = 0; for (let k = 1; k <= 8; k++) { const c = fx + k * legDir; if (!w.solid(c, H.y + 1) && !w.isPlatform(c, H.y + 1)) { edge = k; break; } }
+              const close = edge && edge <= 6 && self.foesNear().some(n => !n.boss && dist(n.cx, n.cy, p.cx, p.cy) < 260);
+              if (close) { if (edge <= 4) self.hold(legDir > 0 ? 'a' : 'd'); self.why = 'bridge-edge-backoff'; self.hellShoot(); return; }
             }
+            if (self.hellShoot()) return;
             const r = self.lineStep(legDir, H.y, legEnd);
             if (r === 'noblocks' && H.bridge) { H.ph = 'platforms'; return; }
             if (r === 'noblocks') { sub = sub || self.taskMine('stone', () => self.blockCount() >= 200); sub.step(); if (sub.done) sub = null; self.goal = 'mining blocks for the Wall bridge'; return; }
@@ -2821,7 +3062,7 @@ const Bot = {
             const s0 = self.slotOf(it => it.id === 'guide_voodoo_doll'); if (s0 > 9) { self.ensureHotbar(s0); return; }
             self.selectSlot(s0); self.aimWorld(p.cx - 100, p.cy);
             if (p.dir !== -1) { Input.keys.a = true; return; }
-            if (++throwTries > 3) { self.press('t'); self.log('threw the voodoo doll off the west end at ' + fx); throwTries = 0; H.waitSince = G.tick; }
+            if (++throwTries > 3 && p.held() && p.held().id === 'guide_voodoo_doll' && p.itemAnim === 0) { self.press('t'); self.log('threw the voodoo doll off the west end at ' + fx); throwTries = 0; H.waitSince = G.tick; }
             return;
           }
           self.goal = 'waiting mid-runway for the Wall (' + Math.round((G.tick - H.waitSince) / 60) + 's)';
@@ -2872,10 +3113,26 @@ const Bot = {
           }
         }
         // 4) back at the island's edge: wait for a Voodoo Ohio Demon's doll, then drop it off the edge into the lava
+        if (H.bridge && !H.bridgeDone && H.ph !== 'bridge') { H.ph = 'bridge'; return; }   // (a doll mid-build: the runway first)
         if (self.has('guide_voodoo_doll')) {
           if (!self.readyForWall()) { self.goal = 'got the voodoo doll, but not ready for the Wall (' + self.wallReadiness() + ')'; this.done = true; self.cooldowns = self.cooldowns || {}; self.cooldowns['got the'] = G.tick + 20000; return; }
           if (!G.npcs.some(n => n.type === 'guide' && !n.dead)) { self.goal = 'no Guide alive: waiting at home'; self.moveTo(self.base[0], self.base[1], 2); return; }
           self.goal = 'throwing the voodoo doll into lava';
+          // the hellbridge: the fight starts at the throw, so near full life (evalF threw at 138/400 and the Wall got it 44 columns on)
+          // (60%: waiting for 85% under Ohio's flyers, the regen never got there and it died waiting; the runway fight wins from
+          // 300 life with no armor, tests/hellbridge.js)
+          if (H.bridge && p.life < p.lifeMax * 0.75 && self.potionCount() > 0 && !p.buffs.potion_sickness) self.press('h');
+          // (and no flyers on us, 75% life: the fight's first ~1500 ticks are the Wall plus everything Ohio sends; evalA threw at
+          // ~60% with a crowd around and died 80 columns down the runway, twice. After 3000 ticks of trying, 60% will do)
+          if (H.bridge) { if (!H.prepT || G.tick - H.prepT > 20000) H.prepT = G.tick; }
+          const prepping = H.bridge && G.tick - H.prepT < 3000;
+          if (prepping && self.foesNear().some(n => !n.boss && dist(n.cx, n.cy, p.cx, p.cy) < 350)) { self.goal = 'clearing the island before the Wall'; if (self.hellShoot()) return; }
+          if (H.bridge && p.life < p.lifeMax * (prepping ? 0.75 : 0.6)) {
+            self.goal = 'healing up before the Wall (' + Math.round(p.life) + '/' + p.lifeMax + ')';
+            if (self.hellShoot()) return;
+            const r0 = self.alignAt(H.x0 != null ? Math.round((H.x0 + H.x1) / 2) : H.col + dir * 6, H.y); if (r0 === 'fail') huntT = 0;
+            return;
+          }
           if (H.tunnel && p.life < p.lifeMax * 0.5) { self.goal = 'healing up before the Wall (' + Math.round(p.life) + '/' + p.lifeMax + ')'; if (self.potionCount() > 0 && !p.buffs.potion_sickness && p.life < p.lifeMax * 0.6) self.press('h'); return; }
           // a couple of tiles in from the edge, where the throw (simulated) still reaches the lava: standing on the edge column
           // a bat's knockback put us in the lava under the island
@@ -2888,13 +3145,44 @@ const Bot = {
           self.aimWorld(p.cx - dir * 100, p.cy);
           if (p.dir !== -dir) { Input.keys[dir > 0 ? 'a' : 'd'] = true; return; }
           if (H.tunnel && self.drinkSpeed()) return;
-          if (++throwTries > 3) { self.press('t'); self.milestone('threw the voodoo doll'); self.log('threw the voodoo doll off the island at ' + H.col); throwTries = 0; H.thrownAt = G.tick; }
+          if (++throwTries > 3 && p.held() && p.held().id === 'guide_voodoo_doll' && p.itemAnim === 0) { self.press('t'); self.milestone('threw the voodoo doll'); self.log('threw the voodoo doll off the island at ' + H.col); throwTries = 0; H.thrownAt = G.tick; }
           return;
         }
         if (!G.npcs.some(n => n.type === 'guide' && !n.dead)) { self.goal = 'no Guide alive: demons carry no dolls, waiting at home'; self.moveTo(self.base[0], self.base[1], 2); return; }
         self.goal = 'hunting Voodoo Ohio Demons';
+        if (self.hellShoot()) return;
+        // a short runway (450 or 520: no longer site): lengthen it while waiting, 50 tiles at a time where the rows are clear
+        // (evalM's 450 ran out under it in several Wall fights)
+        if (H.bridge && H.bridgeDone && (H.len || 600) < 600 && !H.noExtend && self.count('wood_platform') >= 60) {
+          const pow = SDK.obs().inv.pick.power, lavaAt = (x, y) => w.liq(x, y) > 100 && w.ltype[w.idx(x, y)] === 1;
+          let ok = true; const x2 = H.xEnd + H.dir * 50;
+          if (x2 < 40 || x2 > w.w - 40) ok = false;
+          for (let k = 1; k <= 50 && ok; k++) { const c = H.xEnd + H.dir * k; for (let r = H.y - 4; r <= H.y + 1; r++) { const t = w.tile(c, r); if (lavaAt(c, r) || (t && (TILES[t].chest || TILES[t].unbreakable || (r >= H.y - 2 && TILES[t].solid && TILES[t].minPick > pow)))) { ok = false; break; } } }
+          if (!ok) H.noExtend = true;
+          else { H.xEnd = x2; H.len = (H.len || 600) + 50; H.bridgeDone = false; H.ph = 'bridge'; self.log('lengthening the runway to ' + H.len + ' (to ' + x2 + ')'); return; }
+        }
+        // the spawn cap full of monsters that can't reach us (Ohio Slimes sitting in the lava pools under the island): no Voodoo
+        // Demon spawns until they're gone, so shoot them from here (evalN hunted for ~200k ticks next to ten of them)
+        { const L = G.spawnLimits(p);
+          if (L.hostile >= L.max - 1) {
+            const clear = (x0, y0, x1, y1) => { const n = Math.ceil(dist(x0, y0, x1, y1) / 8); for (let i = 1; i < n; i++) { const t = i / n; if (w.solid(Math.floor((x0 + (x1 - x0) * t) / TS), Math.floor((y0 + (y1 - y0) * t) / TS))) return false; } return true; };
+            const far = G.npcs.filter(n => !n.friendly && !n.boss && !n.town && !n.dead && n.type !== 'voodoo_demon' && Math.abs(n.cx - p.cx) < 2400 && Math.abs(n.cy - p.cy) < 1600).sort((a, b) => dist(a.cx, a.cy, p.cx, p.cy) - dist(b.cx, b.cy, p.cx, p.cy));
+            const t = far.find(n => dist(n.cx, n.cy, p.cx, p.cy) < 760 && clear(p.cx, p.cy - 8, n.cx, n.cy));
+            const ws = self.slotOf(it => it.id === 'the_67');
+            if (t && ws >= 0 && ws <= 9) { self.selectSlot(ws); self.aimWorld(t.cx, t.cy); if (p.itemAnim === 0 && p.sel === ws) self.clickOnce(); self.goal = 'clearing Ohio for the Voodoo Demons (' + L.hostile + '/' + L.max + ')'; return; }
+            // nothing in sight to shoot: walk down the runway until they're 2400+ px behind (they despawn out there), then back
+            if (far.length && H.bridgeDone && H.start != null) {
+              const mx = far.reduce((a, n) => a + n.cx, 0) / far.length;
+              let tx = H.start; for (let k = 0; k <= Math.abs(H.xEnd - H.start); k++) { tx = H.start + H.dir * k; if (Math.abs(tx * TS - mx) > 2500) break; }
+              const r = self.alignAt(tx, H.y); self.goal = 'walking off so the stuck monsters despawn (' + L.hostile + '/' + L.max + ')';
+              if (r !== 'fail') return;
+            }
+          }
+        }
         // stay on the island: Ohio's flyers come to us in the open, and the patrol keeps the progress watchdog fed
-        if (G.tick - huntT > 600) { huntT = G.tick; this.patrol = H.col + dir * (Math.floor(G.tick / 600) % 2 ? 4 : 0); }
+        // (its middle, not the lava edge: knocked off there, into the lava, again and again)
+        const midI = H.x0 != null ? Math.round((H.x0 + H.x1) / 2) : H.col + dir * 3;
+        if (G.tick - huntT > 600) { huntT = G.tick; this.patrol = midI + (Math.floor(G.tick / 600) % 2 ? 2 : -2); }
         const r = self.alignAt(this.patrol || H.col, H.y);
         if (r === 'fail') huntT = 0;
       },
@@ -2935,6 +3223,16 @@ const Bot = {
       else this.why = 'wall-tunnel';
       return;
     }
+    // the hellbridge: the runway is the only way out of its path. Off it (fallen off the island's edge, knocked under it) or
+    // still behind its start: back onto it, down-runway (evalF fell 9 rows off a broken island edge right after the throw and
+    // "retreated" into a wall there until the Wall reached it)
+    if (H && H.bridge && H.bridgeDone && H.start != null && (Math.abs(fy - H.y) > 1 || H.dir * (fx - H.start) < -1) && dir === H.dir) {
+      // (still on the island, or a pot's height over it: just run that way, hopping what's in the way; the pathfinder stalled
+      // on two pots there while the Wall walked up, evalM)
+      if (Math.abs(fy - H.y) <= 4) { this.hold(H.dir > 0 ? 'd' : 'a'); if (p.onGround && (w.solid(fx + H.dir, fy) || w.solid(fx + H.dir, fy - 1) || TILES[w.tile(fx + H.dir, fy)]?.multi)) this.jump(); this.why = 'wall-onto-runway'; return; }
+      const r = this.moveTo(H.start + H.dir * 6, H.y, 2);
+      if (r !== 'fail') { this.why = 'wall-to-runway'; return; }
+    }
     // laser dodge: a laser is a 4px band at our chest height; being airborne when it passes clears it
     let hop = false;
     for (const pr of G.projectiles || []) {
@@ -2943,20 +3241,74 @@ const Bot = {
       if (dx > 0 && dx < 110 && Math.abs(pr.cy - p.cy) < 40) hop = true;
     }
     if (hop && p.onGround) this.jump();
-    if (gap < 300) { this.hold(dir > 0 ? 'd' : 'a'); this.why = 'wall-retreat'; }
+    if (gap < (this.WALL_GAP || 300)) { this.hold(dir > 0 ? 'd' : 'a'); this.why = 'wall-retreat'; }
   },
   // would a human attempt the Wall of Brainrot now? (it kills the Guide and chases you across the whole underworld)
   wallReadiness() { const p = this.p(); return 'life ' + p.lifeMax + ' def ' + p.calc.defense + ' the_67 ' + this.owns('the_67') + ' arrows ' + this.count('wooden_arrow'); },
-  othersDown() { const f = G.world.flags; return f.king_slime && f.eye_of_cthulhu && f.tung_sahur; },
+  // (off unless Bot.USE_BED: the 35 cobwebs took ~80k ticks to find on evalE, more than the walks they'd save)
+  // a spawn point by a far hell elevator: a death in Ohio otherwise means the whole walk back from home (500 columns of
+  // chasms on evalE) before the ride down; a player sets up camp by their hellevator the same way
+  wantBed() {
+    const H = this.hell, p = this.p();
+    if (!this.WALL_FIRST || !(this.USE_BED || (this.BED_IF_WEBS && (this.count('cobweb') >= 35 || this.count('silk') >= 5 || this.owns('bed')))) || !H || !H.bridge || H.sx == null || !H.R || !this.base || H.noBed || G.world.flags.wall_of_flesh) return false;
+    if (Math.abs(H.sx - this.base[0]) <= 150) return false;
+    return !(p.bedX != null && Math.abs(p.bedX - H.sx) < 40 && G.world.tile(p.bedX, p.bedY) === T.BED);
+  },
+  // one tick of making and setting up that bed: true when done (or given up)
+  bedStep(H, sub0) {
+    const w = G.world, p = this.p(), [fx, fy] = this.feet();
+    if (!H.bedT0) { H.bedT0 = G.tick; this.log('a bed by the hell elevator at ' + H.sx + ' (' + Math.abs(H.sx - this.base[0]) + ' columns from home): a spawn point for the Ohio trips'); }
+    if (G.tick - H.bedT0 > 40000) { H.noBed = true; this.log('giving up on the bed by the hell elevator'); return { done: true }; }
+    if (!this.has('bed')) {
+      if (sub0 && !sub0.done) { sub0.step(); return { sub: sub0 }; }
+      const step = this.resolve('bed', 1), sub = step && this.taskForStep(step);
+      if (!sub) { H.noBed = true; this.log('no way to make a bed (' + JSON.stringify(step) + ')'); return { done: true }; }
+      this.goal = 'making a bed for the hell elevator (' + (step.gather ? step.gather + ' ' + this.count(step.gather) : step.craft || step.station) + ')';
+      sub.step(); return { sub };
+    }
+    // a flat spot a few columns from the shaft (never over it: the bed would block the ride)
+    if (!H.bedSpot || !w.canPlaceObject(H.bedSpot[0] - 1, H.bedSpot[1] - 1, T.BED)) {
+      H.bedSpot = null; let bd = 1e9;
+      for (let x = H.sx - 16; x <= H.sx + 18; x++) {
+        if (x >= H.sx - 4 && x <= H.sx + 6) continue;
+        for (let y = H.top - 10; y <= H.top + 6; y++) { if (!w.canPlaceObject(x - 1, y - 1, T.BED)) continue; const d = Math.abs(x - H.sx) + Math.abs(y - H.top) * 2; if (d < bd) { bd = d; H.bedSpot = [x, y]; } }
+      }
+      if (!H.bedSpot) { H.noBed = true; this.log('no flat ground for a bed by the hell elevator'); return { done: true }; }
+    }
+    const [bx, by] = H.bedSpot;
+    this.goal = 'setting up a bed by the hell elevator';
+    const placed = this.nearestTile(t => t === T.BED, 6, 4, [bx, by]);
+    if (placed) {
+      const [ox, oy] = w.objOrigin(placed[0], placed[1]);
+      if (p.bedX === ox && p.bedY === oy) { this.log('spawn point set by the hell elevator (' + ox + ',' + oy + ')'); return { done: true }; }
+      if (!p.inReach(placed[0], placed[1])) { if (this.moveTo(placed[0], oy + 1, 2) === 'fail') { H.noBed = true; return { done: true }; } return {}; }
+      if (!this.uiBusy && G.tick % 20 === 0) this.rightClickWorld(placed[0], placed[1]);
+      return {};
+    }
+    if (!p.inReach(bx, by) || Math.abs(fy - by) > 3) { if (this.moveTo(bx + 3, by, 2) === 'fail') { H.bedSpot = null; H.bedFails = (H.bedFails || 0) + 1; if (H.bedFails > 5) H.noBed = true; } return {}; }
+    const s0 = this.slotOf(it => it.id === 'bed'); if (s0 > 9) { this.ensureHotbar(s0); return {}; }
+    this.selectSlot(s0); this.aimTile(bx, by); if (p.itemAnim === 0) this.clickOnce();
+    return {};
+  },
+  othersDown() { const f = G.world.flags; if (this.WALL_FIRST) return true; return f.king_slime && f.eye_of_cthulhu && f.tung_sahur; },
   // Wall prep ahead of time (the other bosses still alive): the hell elevator and the tunnel, dug in otherwise idle hours.
   // They took ~100k ticks after the third boss, more than the 90 minutes had left
+  // (the hellbridge needs no nightmare pickaxe until the Ohiostone: the platforms, the elevator (its site is picked to miss
+  // Ohiostone with the pickaxe we have) and the skull's obsidian start with a gold one, ~100k ticks earlier on most seeds)
   hellPrepOk() {
-    const H = this.hell;
-    if (SDK.obs().inv.pick.power < 65) return false;
-    if (H && H.bridge) return !['ride', 'bridge', 'wait'].includes(H.ph) || (H.ph === 'ride' && this.moltenWants().length && !H.moltenSkip);
+    const H = this.hell, pow = SDK.obs().inv.pick.power;
+    if (pow < 55 || (pow < 65 && H && !H.bridge && H.x0 != null)) return false;
+    if (H && H.bridge) {
+      if (pow < TILES[T.HELLSTONE].minPick && (H.ph === 'molten' || H.ph === 'ride') && this.owns('obsidian_skull')) return false;   // (the Ohiostone waits for the nightmare pickaxe)
+      return !['ride', 'bridge', 'wait'].includes(H.ph) || (H.ph === 'ride' && this.moltenWants().length && !H.moltenSkip);
+    }
     return !(H && (H.tunnelDone || ['chute', 'ride', 'wait', 'ropeShop'].includes(H.ph)));
   },
-  readyForWall() { const p = this.p(); return p.lifeMax >= BOSS_READY.wall_of_flesh.lifeMax && this.owns('the_67') && this.has('guide_voodoo_doll'); },
+  // (Wall first, holding a doll with 5+ potions: 240 life will do. At 300, evalL sat in Ohio with a doll at 260 for ~150k ticks
+  // and died there over and over; evalI won from 220 when a Voodoo Demon's doll fell into the lava by itself)
+  wallLifeGate() { return this.WALL_FIRST && this.potionCount() >= 5 ? 240 : BOSS_READY.wall_of_flesh.lifeMax; },
+  readyForWallLife() { return this.p().lifeMax >= this.wallLifeGate() && this.owns('the_67'); },
+  readyForWall() { const p = this.p(); return p.lifeMax >= this.wallLifeGate() && this.owns('the_67') && this.has('guide_voodoo_doll'); },
   // the deepest ore the plan still needs that the local scan doesn't know about (gold before silver before iron)
   // ore still missing for the iron anvil (if not placed) and The 67 (the boss gate): {ore id: count}
   expeditionNeeds() {
@@ -2965,7 +3317,7 @@ const Bot = {
     if (!this.owns('the_67')) items.push('the_67');
     if (this.owns('hook') && !this.owns('grappling_hook')) items.push('grappling_hook');
     // King's crown is 7 gold bars: dug on the same trip (it used to be a separate ~45k-tick hunt for gold later on)
-    if (!G.world.flags.king_slime && !this.has('slime_crown') && !this.noCrownExpedition) items.push('slime_crown');
+    if (!G.world.flags.king_slime && !this.has('slime_crown') && !this.noCrownExpedition && !this.WALL_FIRST) items.push('slime_crown');
     const acc = {}, out = {};
     for (const id of items) this.rawNeeds(id, 1, acc);
     for (const o of ['iron_ore', 'silver_ore', 'gold_ore']) { const n = (acc[o] || 0) - this.count(o); if (n > 0) out[o] = n; }

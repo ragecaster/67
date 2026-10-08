@@ -11,7 +11,7 @@ const BOSS_FARM = { gel: 'surface', lens: 'night', bone: 'caverns' };
 // the recipe tree to the first thing that is actually missing (craft it, or gather the raw material) and return a task for that.
 // This replaces the old hard-coded "smelt everything, then craft whatever there is enough of" ladder, which hoarded 500+ copper bars
 // while never finishing a single armor set.
-const RAW_ITEMS = new Set(['wood', 'stone_block', 'dirt_block', 'copper_ore', 'iron_ore', 'silver_ore', 'gold_ore', 'demonite_ore', 'hellstone', 'obsidian', 'gel', 'lens', 'rotten_chunk', 'fallen_star', 'sand_block', 'clay_block', 'bone']);
+const RAW_ITEMS = new Set(['wood', 'stone_block', 'dirt_block', 'copper_ore', 'iron_ore', 'silver_ore', 'gold_ore', 'demonite_ore', 'hellstone', 'obsidian', 'gel', 'lens', 'rotten_chunk', 'fallen_star', 'sand_block', 'clay_block', 'bone', 'cobweb']);
 const ORE_TILE = { copper_ore: 'COPPER', iron_ore: 'IRON', silver_ore: 'SILVER', gold_ore: 'GOLD', demonite_ore: 'DEMONITE', hellstone: 'HELLSTONE' };
 // Goal catalog for TerraJev's `task` question: things worth crafting (no ordering — the model decides what to go for).
 // No Ohio/hellstone gear: the Wall is the last boss and The 67 + Brainrot armor clear it (see PLAN_WEAPONS in botrules.js)
@@ -25,7 +25,7 @@ const JEV_GOALS = [
   ['shadow_helmet', 1], ['shadow_scalemail', 1], ['shadow_greaves', 1],
   ['suspicious_looking_eye', 1], ['kentongan', 1], ['grappling_hook', 1], ['empty_bucket', 1],
 ];
-const STATION_ITEM = { work_bench: 'work_bench', furnace: 'furnace', anvil: 'iron_anvil', hellforge: 'hellforge' };
+const STATION_ITEM = { work_bench: 'work_bench', furnace: 'furnace', anvil: 'iron_anvil', hellforge: 'hellforge', loom: 'loom', sawmill: 'sawmill' };
 
 Object.assign(Bot, {
   // do we own this (inventory, cursor, worn armor/accessories)?
@@ -79,6 +79,8 @@ Object.assign(Bot, {
       const tile = T[ORE_TILE[id]];
       return this.taskMine('ore', () => this.count(id) >= have + step.qty, [tile]);
     }
+    // cobwebs (silk for a bed): they hang under cave ceilings, cut with anything
+    if (id === 'cobweb') return this.taskMine('ore', () => this.count('cobweb') >= have + step.qty, [T.COBWEB]);
     return null; // gel / lens / chunks: dropped by monsters, picked up along the way
   },
   // ---- goal memory: what are we working toward, and which raw materials does it still need? ----

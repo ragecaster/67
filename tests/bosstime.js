@@ -33,10 +33,10 @@ run(async (page) => {
         const key = (G.isNight() ? 'N ' : 'D ') + g; W.goal[key] = (W.goal[key] || 0) + 50;
       }
       const p = G.player;
-      return { t: G.tick, n: Object.keys(W.kills).length, line: `t=${G.tick} day=${Math.floor(G.tick / 60000)} deaths=${Bot.deaths} life=${p.lifeMax} def=${p.calc.defense} pots=${Bot.potionCount()} hook=${Bot.owns('grappling_hook') ? 'G' : Bot.owns('hook') ? 'h' : '-'} dps=${Math.round(Bot.weaponDps(null).dps)} bosses=${Object.keys(W.kills).join('+') || '-'} | ${Bot.plan && Bot.plan.label} | ${Bot.goal}` };
+      return { t: G.tick, n: Object.keys(W.kills).length, wall: !!G.world.flags.wall_of_flesh, line: `t=${G.tick} day=${Math.floor(G.tick / 60000)} deaths=${Bot.deaths} life=${p.lifeMax} def=${p.calc.defense} pots=${Bot.potionCount()} $=${invMoney(p.inv)} hook=${Bot.owns('grappling_hook') ? 'G' : Bot.owns('hook') ? 'h' : '-'} dps=${Math.round(Bot.weaponDps(null).dps)} bosses=${Object.keys(W.kills).join('+') || '-'} | ${Bot.plan && Bot.plan.label} | ${Bot.goal}` };
     }, CH);
     console.error(r.line);
-    if (r.n >= (+process.env.NEED || 4)) break;   // NEED=3: stop after the first three (the old metric)
+    if (process.env.UNTIL_WALL ? r.wall : r.n >= (+process.env.NEED || 4)) break;   // NEED=3: stop after the first three (the old metric); UNTIL_WALL=1: only at the Wall
   }
   const W = await page.evaluate(() => window.__b);
   const show = (title, o, n) => { const tot = Object.values(o).reduce((a, b) => a + b, 0); console.log('\n' + title); for (const [k, v] of Object.entries(o).sort((a, b) => b[1] - a[1]).slice(0, n)) console.log(`  ${String(v).padStart(7)} ${(100 * v / tot).toFixed(1).padStart(5)}%  ${k}`); };

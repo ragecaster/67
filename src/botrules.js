@@ -77,7 +77,11 @@ Object.assign(Bot, {
 
   // ================= progression plan =================
   nextBoss() {
-    const w = G.world, left = BOSS_ORDER.filter(k => !w.flags[k] && k !== 'wall_of_flesh');
+    const w = G.world;
+    // Wall first: the Wall needs none of the other bosses' drops (The 67, 300 life, a gold pickaxe for the hellbridge's
+    // elevator, the Guide's doll); the other three came at 230-410k and held the Wall trip back past two hours
+    if (this.WALL_FIRST && !w.flags.wall_of_flesh) return 'wall_of_flesh';
+    const left = BOSS_ORDER.filter(k => !w.flags[k] && k !== 'wall_of_flesh');
     if (!left.length) return w.flags.wall_of_flesh ? null : 'wall_of_flesh';
     const night = G.isNight(), armed = this.weaponDps(null).dps >= BOSS_READY.king_slime.dps;
     // a summon in hand that works right now
@@ -122,7 +126,11 @@ Object.assign(Bot, {
   planFrontier(cands) {
     const p = this.p(), key = this.nextBoss();
     if (!key) return { label: 'game beaten', test: () => false };
-    const R = BOSS_READY[key], dps = this.weaponDps(null).dps, pick = SDK.obs().inv.pick.power;
+    const R0 = BOSS_READY[key], dps = this.weaponDps(null).dps, pick = SDK.obs().inv.pick.power;
+    // (the hellbridge's elevator and runway need only a gold pickaxe; the nightmare one is for the Ohio armor's Ohiostone)
+    // (and no gold at all by 150k ticks, evalJ explored for it for ~300k: the pickaxe in hand digs the elevator too, slower;
+    // the site picker skips columns it can't break)
+    const R = key === 'wall_of_flesh' && this.WALL_FIRST ? Object.assign({}, R0, { pick: G.tick < 150000 || this.wallPickGate ? 55 : 0 }) : R0;
     const byId = id => cands.some(c => c.id === id);
     const craftsOf = list => list.filter(id => byId('craft:' + id));
     // gathering that feeds a craft goal counts as on-plan too
@@ -137,7 +145,10 @@ Object.assign(Bot, {
     if (!this.houseValid() || !this.houseFinished) reqs.push({ label: 'build a house', ids: new Set(['build', 'chop']) });
     for (const st of ['furnace', 'iron_anvil']) if (!this.stationPlaced(st === 'iron_anvil' ? 'anvil' : st)) reqs.push({ label: 'place ' + st, item: st });
     // (for the Wall's 65: gold (55, it mines demonite) then the nightmare pickaxe; the copper..silver ones on the way are thrown away)
-    if (pick < R.pick) for (const id of PLAN_PICKS) if ((ITEMS[id] && ITEMS[id].pick || 0) > pick && (R.pick < 65 || ITEMS[id].pick >= 55)) reqs.push({ label: 'better pickaxe', item: id });
+    // (Wall first: The 67 before the gold pickaxe. Its 48 gold ore came first and evalB fought on with a 29-dps sword for
+    // ~120k ticks, 16 deaths; the pickaxe only matters at the hell elevator)
+    if (this.WALL_FIRST && dps < R.dps && !this.owns('the_67')) reqs.push({ label: 'better weapon', item: 'the_67' });
+    if (pick < R.pick) for (const id of PLAN_PICKS) if ((ITEMS[id] && ITEMS[id].pick || 0) > pick && (R.pick < 55 || ITEMS[id].pick >= 55)) reqs.push({ label: 'better pickaxe', item: id });
     // the nightmare pickaxe (and shadow armor) needs rotten chunks + demonite from the Brainrot biome: that skill farms both
     if (pick < 65 && R.pick >= 65) reqs.push({ label: 'farm the Brainrot for a nightmare pickaxe', ids: new Set(['brainrot', 'craft:nightmare_pickaxe']) });
     const losing = dps < R.dps;
@@ -177,6 +188,12 @@ Object.assign(Bot, {
     }
     // waiting for night (the boss's own option is hidden by day): get ahead on the Wall in those hours (the nightmare pickaxe,
     // then its elevator and tunnel: ~100k ticks that otherwise all come after the third boss), else extra life
+    // (no gold pickaxe yet: that first; it opens the Brainrot's demonite and the hellbridge's elevator, and without it evalA
+    // explored ~190k ticks of daylight away waiting for lens nights)
+    if (key !== 'wall_of_flesh' && this.owns('the_67') && SDK.obs().inv.pick.power < 55) {
+      const gp = new Set(['craft:gold_pickaxe', ...feeding('gold_pickaxe')]);
+      if ([...gp].some(byId)) return { label: 'Wall prep: gold pickaxe (waiting for night)', boss: key, test: c => gp.has(c.id) };
+    }
     if (key !== 'wall_of_flesh' && this.owns('the_67') && SDK.obs().inv.pick.power < 65 && byId('brainrot')) return { label: 'Wall prep: nightmare pickaxe (waiting for night)', boss: key, test: c => c.id === 'brainrot' || c.id === 'craft:nightmare_pickaxe' };
     if (key !== 'wall_of_flesh' && byId('hell')) return { label: 'Wall prep (waiting for night)', boss: key, test: c => c.id === 'hell' };
     if (byId('crystal') && this.p().lifeMax < 400) return { label: 'more max life (waiting for night)', boss: key, test: c => c.id === 'crystal' };
@@ -187,6 +204,8 @@ Object.assign(Bot, {
 
   // ================= the scripted teacher =================
   teacherPick(cands, foes) {
+    // in Ohio (Wall first): fights, healing, the hell trip or the way home only; never exploring, crystals or ore down here
+    if (this.WALL_FIRST && this.feet()[1] > G.world.hellLayer - 3) { const keep = cands.filter(c => ['fight', 'kite', 'heal', 'flee', 'hell', 'home', 'rest', 'reflex'].includes(c.kind) || c.id === 'hell' || c.id === 'home' || c.id === 'heal' || c.id === 'flee'); if (keep.length) cands = keep; }
     const p = this.p(), has = id => cands.find(c => c.id === id);
     const boss = foes.find(n => n.boss);
     if (boss) {   // use whichever weapon lands more: kite only when the best weapon is a ranged one
@@ -199,6 +218,9 @@ Object.assign(Bot, {
     if (has('heal') && life < 0.5) return 'heal';
     // laying the Wall runway over Ohio: the hell task shoots while it builds, so a passing flyer doesn't stop the building
     const Hb = this.hell, fyb = this.feet()[1];
+    // in Ohio itself (Wall first): the hell trip or the way home, never exploring or crystal hunting down here (it walked into
+    // the lava doing that, evalA/B/L)
+    if (this.WALL_FIRST && fyb > G.world.hellLayer - 3 && !foes.some(n => dist(n.cx, n.cy, p.cx, p.cy) < 200)) { if (has('hell') && life >= 0.35) return 'hell'; if (has('home')) return 'home'; }
     if (Hb && Hb.ph === 'bridge' && fyb === Hb.y && has('hell') && life >= 0.35) return 'hell';
     if (foes.length && (dist(foes[0].cx, foes[0].cy, p.cx, p.cy) < 200 || this.fightOdds(foes[0]).ok)) {
       const n = foes[0], odds = this.fightOdds(n), d = dist(n.cx, n.cy, p.cx, p.cy);
@@ -230,14 +252,16 @@ Object.assign(Bot, {
     const W = G.world, deep = fyb > W.worldSurface + 20;
     // underground already (day or night): an aura crystal within ~90 tiles is worth the detour (+20 max life each; the owner
     // watched it walk past them with "more max life" as its goal)
-    if (deep && cr && cr.dist <= 90 && p.lifeMax < 400 && life >= 0.5) return 'crystal';
+    // (Wall first, runway built and 300 life: no more crystal trips; evalO hunted them 800 columns from its shaft for ~200k ticks)
+    const wallReady = this.WALL_FIRST && Hb && Hb.bridgeDone && p.lifeMax >= 300;
+    if (deep && cr && cr.dist <= 90 && p.lifeMax < 400 && life >= 0.5 && !wallReady) return 'crystal';
     if (G.isNight() && deep && life >= 0.5) {
       const nightBossNow = cands.some(c => c.kind === 'boss' && BOSS_SUMMON[c.boss] && BOSS_SUMMON[c.boss].night && this.has(BOSS_SUMMON[c.boss].item) && this.bossReady(c.boss));
       if (!nightBossNow) {
         if (has('expedition')) return 'expedition';
-        if (cr && cr.dist <= 220 && p.lifeMax < 400) return 'crystal';
+        if (cr && cr.dist <= 220 && p.lifeMax < 400 && !wallReady) return 'crystal';
         const plan0 = this.plan || this.planFrontier(cands);
-        const under = cands.filter(c => (c.kind === 'ore' && plan0.test(c)) || (c.id === 'boss:tung_sahur' && !this.has('kentongan') && this.count('bone') < 7));
+        const under = cands.filter(c => (c.kind === 'ore' && plan0.test(c)) || (c.id === 'boss:tung_sahur' && !this.WALL_FIRST && !this.has('kentongan') && this.count('bone') < 7));
         if (under.length) return under.sort((a, b) => (a.dist || 0) - (b.dist || 0))[0].id;
         // nothing else down here tonight: get ahead on the Wall (the nightmare pickaxe, then the elevator and the tunnel)
         if (!this.othersDown() && has('brainrot') && SDK.obs().inv.pick.power < 65) return 'brainrot';

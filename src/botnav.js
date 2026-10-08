@@ -94,7 +94,7 @@ const Nav = {
     let out = this.hkMemo.get(key);
     if (out) return out;
     out = [];
-    const cx0 = x * TS + 16, cy0 = (y + 1) * TS - 21;
+    const cx0 = x * TS + 16, cy0 = (y + 1) * TS - 21, nc = w.noclipAt && w.tile(w.noclipAt[0], w.noclipAt[1]) === T.NOCLIP ? w.noclipAt : null;
     const grab = (tx, ty) => { const t = w.tile(tx, ty); return !!t && (TILES[t].solid || t === T.PLATFORM || !!TILES[t].tree); };
     const hits = (cx, cy) => { const x0 = Math.floor((cx - 10) / TS), x1 = Math.floor((cx + 9.9) / TS), y0 = Math.floor((cy - 21) / TS), y1 = Math.floor((cy + 20.9) / TS); for (let ty = y0; ty <= y1; ty++) for (let tx = x0; tx <= x1; tx++) if (w.solid(tx, ty)) return true; return false; };
     const seen = new Set();
@@ -119,7 +119,9 @@ const Nav = {
         if (!hits(cx + vx, cy)) { cx += vx; moved = true; }
         if (!hits(cx, cy + vy)) { cy += vy; moved = true; }
         if (!moved) break;
+        if (nc && Math.abs(cx - (nc[0] * TS + 8)) < 10 + 8 + 2 && Math.abs(cy - (nc[1] * TS + 8)) < 21 + 8 + 2) { cx = -1e9; break; }
       }
+      if (cx < -1e8) continue;   // (the pull drags the body through the glitch block: straight into the Backrooms, evalA ~50 times)
       const nx = Math.round((cx - 16) / TS), ny = Math.floor((cy + 20) / TS);
       if (Math.abs(nx - x) + Math.abs(ny - y) < 3 || this.space(nx, ny)[0] !== 0) continue;
       out.push([nx, ny, ax, ay, Math.hypot(cx - cx0, cy - cy0)]);
@@ -224,7 +226,7 @@ const Nav = {
           const [cb] = this.space(x + dx, y);
           if (cb !== 0) continue;                                          // body cells must be free (and never lava)
           // the cell the block goes into must not be solid already and must have a neighbour to attach to (the floor we stand on)
-          push(x + dx, y, cost + 5, k, { t: 'bridge', digs: null });
+          push(x + dx, y, cost + (this.BRIDGE_COST || 5), k, { t: 'bridge', digs: null });
         }
       }
       // dig straight down one row
@@ -305,7 +307,10 @@ Object.assign(Bot, {
         // hierarchical: from deep underground to a near-surface goal, first just get UP to the surface (a vertical-only heuristic
         // is far less misleading than the straight-line one), then walk the rest on open ground
         const sa = Nav.surfAt(nx), st = Nav.surfAt(Math.round(tx));
-        if (ny - sa > 22 && ty - st < 14 && far > 45) {
+        // (not while a direct plan to this same goal is being followed: from the surface it may well lead through a cave, and
+        // "ascend" from inside that cave sent us back up to where the direct plan started, over and over: evalE ~150k ticks)
+        const dg = this.directGoal, directLock = dg && dg.key === tx + ',' + ty && G.tick - dg.at < (Nav.DIRECT_LOCK != null ? Nav.DIRECT_LOCK : 6000);
+        if (ny - sa > 22 && ty - st < 14 && far > 45 && !directLock) {
           // reach open sky at roughly the target's ground level (not the bottom of some shaft we dug)
           const ref = Nav.rawSurf(Math.round(tx));
           gf = (x, y) => y <= ref + 6 && Nav.rawSurf(x) > y && Nav.rawSurf(x + 1) > y;
@@ -328,8 +333,15 @@ Object.assign(Bot, {
         const gk = (this.goal || '').split(' ').slice(0, 2).join(' '), pb = this.planBy || (this.planBy = {}); (pb[gk] || (pb[gk] = [0, 0]))[0] += dt; pb[gk][1]++;
         (this.planLog || (this.planLog = [])).push(G.tick + ' ' + (this.goal || '').slice(0, 24) + ' from ' + nx + ',' + ny + ' to ' + tx + ',' + ty + ' tol' + tol + ' ' + stage + ' len' + (res ? res.path.length : -1) + (res && !res.reached ? ' PARTIAL' : '') + ' why=' + this.replanWhy + ' exp' + (res ? res.expanded : 0) + ' ' + Math.round(dt) + 'ms'); if (this.planLog.length > 60) this.planLog.shift();
         this.navFails = res && res.path.length ? 0 : (this.navFails || 0) + 1;
-        if (!res || !res.path.length) { this.nav = { tx, ty, tol, at: G.tick, path: [], i: 0, cooldown: G.tick + 60 }; if (this.navFails > 3) { this.navFails = 0; return 'fail'; } return false; }
-        this.nav = { tx, ty, tol, at: G.tick, stage, path: res.path, i: 0, partial: !res.reached, lastProgress: G.tick, cooldown: G.tick + 30 };
+        // (an empty plan to the same goal again and again: back off 60, 120, 240 ... up to 1920 ticks. A 580-column goal with
+        // no route used the whole 300k-node budget, ~900 ms of A*, every 60 ticks on evalO: a one-second freeze each second)
+        const emptyPlan = !res || !res.path.length || (!res.reached && res.path.length <= 1);
+        if (emptyPlan) { const E = this.emptyPlans || (this.emptyPlans = {}); E[gkey] = (E[gkey] && G.tick - E[gkey].at < 4000 ? E[gkey].n + 1 : 0); E[gkey] = { n: E[gkey], at: G.tick }; }
+        else if (this.emptyPlans) delete this.emptyPlans[gkey];
+        const backoff = emptyPlan ? 60 * Math.pow(2, Math.min(5, this.emptyPlans[gkey].n)) : 0;
+        if (!res || !res.path.length) { this.nav = { tx, ty, tol, at: G.tick, path: [], i: 0, cooldown: G.tick + backoff }; if (this.navFails > 3) { this.navFails = 0; return 'fail'; } return false; }
+        this.nav = { tx, ty, tol, at: G.tick, stage, path: res.path, i: 0, partial: !res.reached, lastProgress: G.tick, cooldown: G.tick + Math.max(30, backoff) };
+        if (stage === 'direct' && !directLock && res.path.some(n => n.y > Nav.surfAt(n.x) + 22)) this.directGoal = { key: tx + ',' + ty, at: G.tick };
       }
     }
     return this.followPath();

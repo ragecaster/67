@@ -8,6 +8,7 @@ run(async (page) => {
   await page.newGame(process.env.SEED || 'bot67');
   await applyStage(page, 'hell');
   if (process.env.PRE) await page.evaluate((src) => eval(src), process.env.PRE);
+  if (process.env.STATS) await page.evaluate(() => { window.__stats = true; });
   const out = await page.evaluate(([MAX, EVERY, ARMOR, LIFE, POTS, GOD]) => {
     const w = G.world, p = G.player, o = [];
     for (const k of ['king_slime', 'eye_of_cthulhu', 'tung_sahur']) w.flags[k] = true;
@@ -40,6 +41,9 @@ run(async (page) => {
     let wall = G.npcs.find(n => n.type === 'wall_of_flesh');
     o.push('wall ' + !!wall + ' dir ' + (wall && wall.ai[3]));
     let minLife = p.life, deaths = 0;
+    // STATS=1: life lost by source over the fight, and potions drunk
+    const dmg = {}; if (window.__stats) { const h0 = p.hurt.bind(p); p.hurt = function (d, dir, src, cause, ...r) { const l0 = this.life, ok = h0(d, dir, src, cause, ...r); const k = (src && (src.name || src.type)) || cause || '?'; dmg[k] = (dmg[k] || 0) + Math.max(0, l0 - this.life); return ok; }; }
+    const pots0 = Bot.potionCount();
     for (let i = 0; i < MAX; i++) {
       Bot.wantsDraw = false; G.update(); if (Bot.wantsDraw || G.tick % 1200 === 0) G.draw(); Input.endFrame();
       wall = G.npcs.find(n => n.type === 'wall_of_flesh');
@@ -49,6 +53,7 @@ run(async (page) => {
       if (w.flags.wall_of_flesh) { o.push('WALL DEFEATED at +' + i + ' minLife ' + Math.round(minLife) + ' x=' + Bot.feet()[0]); break; }
       if (!wall && i > 10) { o.push('wall gone'); break; }
     }
+    if (window.__stats) o.push('dmg ' + JSON.stringify(Object.fromEntries(Object.entries(dmg).map(([k, v]) => [k, Math.round(v)]))) + ' pots used ' + (pots0 - Bot.potionCount()));
     return o;
   }, [MAX, EVERY, process.env.ARMOR || 'none', +process.env.LIFE || 400, process.env.POTS != null ? +process.env.POTS : 10, !!process.env.GOD]);
   console.log(out.join('\n'));

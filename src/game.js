@@ -360,21 +360,30 @@ const G = {
     const tx = e.cx / TS, ty = e.cy / TS;
     return tx >= b.x0 && tx < b.x0 + b.w && ty >= b.y0 && ty < b.y0 + b.h;
   },
+  // the glitch doorway (right-clicked): into Level 0
+  enterBackrooms(p) {
+    const b = this.world.backrooms;
+    if (!b || p.dead) return;
+    glitchBurst(p);
+    p.x = b.entry[0] * TS; p.y = (b.entry[1] + 1) * TS - p.h; p.vx = 0; p.vy = 0; p.fallStart = null; p.hook = null;
+    this.snapCamera();
+    this.chat('You noclipped out of reality. Welcome to Level 0.', '#e6d487');
+    this.chat('Find the EXIT sign. Drink Almond Water. Avoid the Smilers. =)', '#e6d487');
+    this.achieve('noclip'); speak('you noclipped out of reality', 1, 0.8);
+  },
+  // walking up to the wallpaper room for the first time: say what the doorway is
+  backroomsHint(p) {
+    const d = this.world.backroomsDoor;
+    if (!d || this.backroomsHinted || p.dead) return;
+    const tx = p.cx / TS, ty = p.cy / TS;
+    if (tx > d.x0 - 4 && tx < d.x1 + 4 && ty > d.y - 12 && ty < d.y + 2) { this.backroomsHinted = true; this.chat('The fluorescent lights hum. The wall at the back is... not rendering right. (Right-click it to noclip.)', '#e6d487'); }
+  },
   checkNoclip(p) {
     const w = this.world, b = w.backrooms;
     if (p.dead || !b) return;
     const x0 = Math.floor(p.x / TS), x1 = Math.floor((p.x + p.w - 1) / TS), y0 = Math.floor(p.y / TS), y1 = Math.floor((p.y + p.h - 1) / TS);
     for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
       const t = w.tile(x, y);
-      if (t === T.NOCLIP) {
-        glitchBurst(p);
-        p.x = b.entry[0] * TS; p.y = (b.entry[1] + 1) * TS - p.h; p.vx = 0; p.vy = 0; p.fallStart = null; p.hook = null;
-        this.snapCamera();
-        this.chat('You noclipped out of reality. Welcome to Level 0.', '#e6d487');
-        this.chat('Find the EXIT sign. Drink Almond Water. Avoid the Smilers. =)', '#e6d487');
-        this.achieve('noclip'); speak('you noclipped out of reality', 1, 0.8);
-        return;
-      }
       if (t === T.EXIT_SIGN) {
         glitchBurst(p);
         p.spawn(w); p.life = Math.max(p.life, 1);
@@ -409,7 +418,7 @@ const G = {
     this.glows = [];
     this.updateTime();
     p.update(w);
-    this.checkNoclip(p);
+    this.checkNoclip(p); this.backroomsHint(p);
     this.updateBackroomsAmbience();
     if (this.himBanner > 0) this.himBanner--;
     Net.updateRemotes();
@@ -506,6 +515,7 @@ const G = {
     const t = TILES[w.tile(tx, ty)];
     if (!t) return;
     if (t.door) { w.toggleDoor(tx, ty); return; }
+    if (t.noclip) { this.enterBackrooms(p); return; }
     if (t.chest) {
       const [ox, oy] = w.objOrigin(tx, ty);
       const inv = w.chests[ox + ',' + oy] || (w.chests[ox + ',' + oy] = new Array(40).fill(null));

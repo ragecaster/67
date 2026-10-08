@@ -8,7 +8,7 @@ const NPC_TYPES = {
   yellow_slime: { name: 'Six-Seven Slime', img: 'npcs/Yellow_Slime', w: 32, h: 22, life: 67, damage: 15, defense: 7, kb: 0.8, ai: 'slime', value: 607, drops: [['meme67_block', 1, 67, 67], ['gel', 1, 6, 7]], overlay: 'gen/text67', rare: true },
   mother_slime: { name: 'Mother Slime (Mid)', img: 'npcs/Mother_Slime', w: 44, h: 30, life: 90, damage: 20, defense: 7, kb: 0.5, ai: 'slime', value: 150, drops: [['gel', 1, 3, 6]], splitInto: 'blue_slime' },
   pinky: { name: 'Pinky (Rare Rizz)', img: 'npcs/Pinky', w: 19, h: 13, life: 150, damage: 5, defense: 5, kb: 1.4, ai: 'slime', value: 10000, drops: [['gel', 1, 5, 10]], rare: true },
-  lava_slime: { name: 'Ohio Slime', img: 'npcs/Lava_Slime', w: 32, h: 22, life: 50, damage: 15, defense: 10, kb: 0.9, ai: 'slime', value: 125, drops: [['gel', 1, 2, 4]], lavaImmune: true, leavesLava: true, onHitFire: true },
+  lava_slime: { name: 'Ohio Slime', img: 'npcs/Lava_Slime', w: 32, h: 22, life: 50, damage: 15, defense: 10, kb: 0.9, ai: 'slime', value: 125, drops: [['gel', 1, 2, 4]], lavaImmune: true, onHitFire: true },   // (no lava on death: Terraria only does that in Expert mode)
   zombie: { name: 'NPC Zombie', img: 'npcs/Zombie', w: 22, h: 44, life: 45, damage: 14, defense: 6, kb: 0.5, ai: 'fighter', speed: 1, value: 60, drops: [['shackle', 0.02, 1, 1]], chatter: 'zombie', sound: 'zombie' },
   demon_eye: { name: 'Side-Eye', img: 'npcs/Demon_Eye', w: 30, h: 22, life: 60, damage: 18, defense: 2, kb: 0.8, ai: 'flyer', speed: 4, value: 75, drops: [['lens', 0.33, 1, 1]], rotate: true },
   cave_bat: { name: 'Crashout Bat', img: 'npcs/Cave_Bat', w: 22, h: 18, life: 16, damage: 13, defense: 2, kb: 0.8, ai: 'bat', speed: 3.5, value: 90, drops: [] },

@@ -368,13 +368,10 @@ function* generateWorld(name, seedStr, size = 'small') {
       for (const n of [i - 1, i + 1, i - w, i + w]) if (world.liquid[n] && world.ltype[n] === 0) { world.tiles[i] = T.OBSIDIAN; world.liquid[i] = 0; break; }
     }
   }
-  // the glitch: a missing-texture block floating near the surface that noclips you into Level 0
-  for (let k = 0; k < 400; k++) {
-    const x = world.spawnX + (rng() < 0.5 ? -1 : 1) * R(50, 140);
-    const y = topSolid(world, x);
-    // float it at jump height so you only noclip on purpose (walking past used to teleport you)
-    if (y > 5 && world.liq(x, y - 1) === 0 && [2, 3, 4, 5, 6].every(k => world.empty(x, y - k)) && world.empty(x - 1, y - 5) && world.empty(x + 1, y - 5)) { world.setTile(x, y - 5, T.NOCLIP); world.noclipAt = [x, y - 5]; break; }
-  }
+  // the way into Level 0: a lone yellow-wallpaper room standing out on the surface away from spawn, its back wall a glitching
+  // missing-texture doorway. Right-click the doorway to noclip in (it used to be one floating pixel near spawn that took you
+  // whenever you jumped into it)
+  buildBackroomsBooth(world, rng);
   world.time = 13500; world.dayTime = true;
   yield [msg(26), 1];
   return world;
@@ -510,6 +507,40 @@ function buildOhioHouse(world, rng, x, y) {
   const cx = x + randInt(2, w - 4, rng);
   if (world.canPlaceObject(cx, y + h - 3, T.CHEST)) { world.placeObject(cx, y + h - 3, T.CHEST); fillChest(world, cx, y + h - 3, rng, 'ohio'); }
   return true;
+}
+function buildBackroomsBooth(world, rng) {
+  const BW = 11, BH = 8, R = (a, b) => randInt(a, b, rng);
+  const set = (x, y, t, fr = 0) => { const i = world.idx(x, y); world.tiles[i] = t; world.frames[i] = fr; world.liquid[i] = 0; };
+  for (let k = 0; k < 600; k++) {
+    const side = rng() < 0.5 ? -1 : 1, x0 = world.spawnX + side * R(150, 320) - (side < 0 ? BW : 0);
+    if (x0 < 60 || x0 + BW > world.w - 60) continue;
+    // flat enough ground (it's levelled to the middle column's height), dry, no trees or objects on the spot
+    const ys = []; for (let x = x0 - 1; x <= x0 + BW; x++) ys.push(topSolid(world, x));
+    const gy = ys[Math.floor(ys.length / 2)];
+    if (gy < 20 || ys.some(y => y < 0 || Math.abs(y - gy) > 3) || gy > world.worldSurface + 5) continue;
+    let bad = false;
+    for (let x = x0 - 1; x <= x0 + BW && !bad; x++) for (let y = gy - BH - 2; y <= gy + 1; y++) { if (world.liq(x, y) > 0) { bad = true; break; } const t = world.tile(x, y); if (t && y < gy && !TILES[t].block && !TILES[t].cut) { bad = true; break; } }
+    if (bad) continue;
+    // the ground: solid dirt up to the floor row, open air over it
+    for (let x = x0 - 1; x <= x0 + BW; x++) {
+      for (let y = gy - BH - 2; y < gy; y++) { set(x, y, 0); world.walls[world.idx(x, y)] = 0; }
+      for (let y = gy; y <= gy + 3; y++) if (!TILES[world.tile(x, y)]?.solid) set(x, y, T.DIRT);
+    }
+    const door = side < 0 ? x0 + BW - 1 : x0;   // the open side faces spawn
+    for (let x = x0; x < x0 + BW; x++) {
+      set(x, gy, T.CARPET); set(x, gy - BH, T.WALLPAPER);
+      for (let y = gy - BH + 1; y < gy; y++) world.walls[world.idx(x, y)] = W.WALLPAPER;
+    }
+    for (const x of [x0, x0 + BW - 1]) for (let y = gy - BH + 1; y < gy; y++) if (!(x === door && y >= gy - 4)) set(x, y, T.WALLPAPER);
+    // fluorescent lights under the ceiling (one of them broken, of course)
+    for (const [lx, fr] of [[x0 + 3, 0], [x0 + 7, 1]]) set(lx, gy - BH + 1, T.FLUORESCENT, fr);
+    // the glitch doorway: 2 wide, 3 tall, at the back
+    const px = side < 0 ? x0 + 2 : x0 + BW - 4;
+    for (let y = gy - 3; y < gy; y++) for (const x of [px, px + 1]) set(x, y, T.NOCLIP);
+    world.noclipAt = [px, gy - 3];
+    world.backroomsDoor = { x0, x1: x0 + BW - 1, y: gy, px };
+    return;
+  }
 }
 function buildBackrooms(world, rng) {
   const W_ = 150, LV = 5, LH = 9, H_ = LV * LH + 1;

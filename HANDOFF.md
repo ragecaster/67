@@ -3,7 +3,82 @@
 This is a Terraria clone with Gen Z / Gen Alpha brainrot memes. It runs in the browser with plain JS and a canvas, and there's no build step. It's live at https://ragecaster.github.io/67/ (GitHub Pages deploys from `main`, root).
 Watch the playtest bot at https://ragecaster.github.io/67/?bot&turbo=4. In the game, F8 toggles the bot and F9 cycles its speed from 1x to 64x.
 
-## Session 8: Terraria spawn rates, fall damage, early-game stalls (read this first)
+## Session 9: the Wall of Ohio within two hours (read this first)
+
+**Goal (owner, 2026-10-07):** the bot clears the Wall of Ohio within 2 hours of game time (432,000 ticks at 60/s), consistently.
+Measure with `UNTIL_WALL=1 TRIPS=1 node tests/bosstime.js 432000 <seed> teacher` (`UNTIL_WALL=1` stops at the Wall's kill
+only; `NEED=1` used to stop at the first boss of any kind, and natural Tung/Eye kills ended runs early).
+
+**Results** (Wall kill tick per seed, 432k budget; evalA-F are the old eval seeds, G-R fresh ones)
+
+| Code | Kills | Notes |
+|---|---|---|
+| session 8 (other bosses first) | 0/6 | the other three came at 120-410k |
+| Wall first, first cut | 3/6 | 309k, 336k, 419k |
+| v18 | 13/18 | B 369k, D 313k, E 403k, F 352k, H 283k, I 321k, J 175k, K 249k, L 368k, N 258k, P 233k, Q 326k, R 239k |
+| v22 | 15/18 | B 336k, C 310k, D 283k, E 401k, F 300k, H 270k, I 322k, J 169k, K 248k, L 368k, M 282k, N 203k, P 421k, Q 350k, R 238k; median ~300k (83 min) |
+| v25 (waypoints, back-off) | 15/16 finished (C, E cut short) | A fails; G 260k and O 196k now win |
+| this session's end (v26) | 14/18 | D 289k, E 356k, F 326k, G 269k, H 250k, I 374k, J 169k, K 260k, L 383k, M 346k, N 203k, O 191k, Q 322k, R 274k; median ~285k (79 min); A, B, C, P fail |
+
+Runs are chaotic: a small change reshuffles every run, so judge on many seeds (scratchpad `runset.sh` ran 6-18 at once).
+
+**Wall first (`Bot.WALL_FIRST`, default true now)**
+- `nextBoss()` is the Wall; `othersDown()` is true, so the hell trip never waits; no boss candidates, Tung bones or King's
+  crown gold before the Wall (natural Tung/Eye spawns are still fought). `false` restores King, Eye, Tung, then the Wall.
+- The 67 before the gold pickaxe (gold is scarce on some seeds); the Wall's pickaxe gate is 55 (gold), dropped after 150k
+  ticks unless no hellbridge site works with the pickaxe in hand (`wallPickGate`).
+- The Wall life gate is 240 while carrying 5+ potions (`wallLifeGate`), else 300.
+- The Ohio Skull gets 25k ticks, and is skipped without a pickaxe that mines obsidian. No Ohio armor without the nightmare
+  pickaxe. `Bot.NO_SKULL` (skip it) tested worse (4/12 vs 7/12), `Bot.USE_BED`/`BED_IF_WEBS` (a bed by the elevator as the
+  spawn point: loom, silk from 35 cobwebs, sawmill) works but the cobwebs took ~80k ticks, so it's off.
+- Potions: bought at home whenever there's money (`buy:pots` reflex) and before every ride down (`potBuy`). The Merchant only
+  moves in while the bot carries 5,000 copper, and deaths halve the coins, so some seeds have none for a long time (evalC).
+
+**Traps fixed** (each one cost a seed 50-200k ticks; found with `tests/_trace.js`, which replays a seed to a tick and prints
+state, logs, keys and a map)
+- Elevator: dig order (it dug the island's floor after dropping onto it, and every later ride fell through into lava);
+  water in the shaft (plugged with blocks; it floated on the wall lip forever); missing rungs (a rung is laid 3 rows down
+  when the next catch is 20+ rows away; S only passes a rung when the fall stays safe, and never re-lands on the rung it
+  stepped off); lava in the shaft (plugged in reach, rung-stepped down to it); standing on a platform stack under the ceiling
+  (dig it out after 120 ticks); rideDown's deep re-entry is limited to 45 columns and times out.
+- Site (`findBridge`/`shaftOk`): any column over the island (not just the middle), a clear drop under the void's ceiling,
+  no Ohiostone or unbreakable blocks down to the island, no chests in the shaft, no runway rows the pickaxe can't dig.
+  A stuck column gets a new site (no more "walk down to Ohio" fallback for the hellbridge: it walked into lava).
+- Navigation: a direct plan that dives into a cave is followed for 6000 ticks before "ascend first" may take over
+  (`Nav.DIRECT_LOCK`; the two alternated forever on evalE/H); hook pulls through the noclip block are rejected; `headTo`
+  climbs to the surface or pushes straight on after 4000 ticks without getting closer to the elevator.
+- Ohio: no exploring/crystals/ore down there (only fights, healing, the hell trip or home; the hell trip ignores its cooldown
+  there); back off from the runway's open end when flyers are close; finish a hard block (obsidian) before shooting.
+- The doll throw: T only ever throws the doll (a flyer shot re-selected The 67 between selection and throw, and The 67 went
+  into the lava). In the Wall fight the bot runs onto the runway from the island (it pathfound and stalled on two pots).
+- A Voodoo Demon killed over the lava behind us counts anywhere on the runway with 450+ tiles of it ahead.
+- The skull's "could not reach crafting station" loop is capped by the 25k limit.
+- Late fixes: the spawn cap filled by Ohio Slimes stuck in lava pools (nothing else spawned, so no Voodoo Demons): the bot
+  shoots them when in sight, else walks down the runway until they're 2400+ px away and despawn (evalN). Runways shorter than
+  600 are lengthened 50 tiles at a time while waiting (evalM had 450). Before the throw: flyers within 350 px are cleared and
+  life brought to 75% (60% after 3000 ticks). Standing exactly on the ceiling row on a lump beside the shaft: dig it and drop
+  (it used to set off back up to the mouth; evalG). In the fight the bot runs onto the runway from the island instead of
+  pathfinding (it stalled on two pots; evalM).
+
+**The Backrooms (owner's request):** the floating glitch pixel by spawn is gone. Worldgen builds a yellow-wallpaper room
+150-320 tiles from spawn (`buildBackroomsBooth`): carpet floor, fluorescent lights (one broken), an open side facing spawn and
+a 2x3 glitching doorway at the back. Touching it does nothing; right-clicking it noclips you in (`G.enterBackrooms`). A hint
+shows the first time you walk up to it. `world.backroomsDoor` is saved. Old saves keep their floating block (right-click).
+
+**Open / next**
+- Latest fixes: no far crystal trips once the runway is built and life is 300+ (evalO hunted crystals 800 columns away);
+  repeated empty A* plans to the same goal back off 60..1920 ticks (a 300k-node, ~900 ms plan every 60 ticks froze evalO's
+  game); the walk to a far elevator goes 80 columns at a time over the surface (`headTo` waypoints), paused 3000 ticks after a
+  waypoint fails.
+- v22 failures: A (dies at the island while waiting for a doll; fights lost ~80 columns in), G (natural Tung spawns kill it in
+  Ohio during the Wall phase), O (a long "riding the hell elevator" stall after its runway, see `tools/jev/data/rush/g2`).
+- Remaining failure modes: dying again and again while waiting on the island for a Voodoo Demon (they're 6% of Ohio spawns),
+  fights started hurt or without potions, and the walk back from home after each Ohio death (500 columns on some seeds).
+- Isolated fight (`tests/hellbridge.js`, `STATS=1` prints damage by source; set `Bot.BRIDGE_LEN = 600`, the test defaults
+  to 360): from full life the Wall (lasers) costs 190-240 life and flyers ~40, so 280 life wins.
+- Some planning stretches are very slow (evalI took minutes of real time around 216k ticks): A* budgets, not a hang.
+
+## Session 8: Terraria spawn rates, fall damage, early-game stalls
 
 **Game changes**
 - Spawning (`G.spawnLimits` / `G.spawnEnemies` in game.js) now follows Terraria's source (wiki "NPC spawning", 1.4.5): one 1-in-rate roll per tick (it was 4-in-rate). Rate/cap per zone: surface day 600/5, night 360/6, blood moon 108/10 (surface only), underground 300/8, caverns 240/9, underworld 600/10. A thin crowd spawns faster (×0.6..0.9 under 20..80% of the cap). Everything not yet despawned (2400×1600 px) counts toward the cap. In Ohio, with a player killing everything in range, spawns went from 36/min to 8/min (`tests/_spawnbench.js`).
